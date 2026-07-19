@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Native Page Translator VI / EN",
+  "version": "4.0.0",
+  "description": "Dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh, có API tùy chỉnh và fallback miễn phí.",
+  "minimum_chrome_version": "102",
+  "permissions": [
+    "storage",
+    "scripting",
+    "activeTab",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "https://translate.googleapis.com/*",
+    "https://translate.google.com/*",
+    "https://api.mymemory.translated.net/*",
+    "https://api.openai.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Native Translator"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "world": "ISOLATED"
+    }
+  ]
+}
