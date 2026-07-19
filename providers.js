@@ -53,6 +53,28 @@
   };
 
   /* ------------------------------------------------------------------
+   * Ngôn ngữ đích của dịch trang: chỉ VI/EN.
+   *  - deepl:       mã target_lang của DeepL
+   *  - englishName: tên tiếng Anh đưa vào prompt LLM
+   * ------------------------------------------------------------------ */
+  const BATCH_TARGET = {
+    vi: { deepl: 'VI', englishName: 'Vietnamese' },
+    en: { deepl: 'EN-US', englishName: 'English' },
+  };
+
+  function findBatchTarget(code) {
+    return BATCH_TARGET[String(code || '').toLowerCase()] || null;
+  }
+
+  // Tắt mọi bộ lọc an toàn của Gemini: dịch chat có slang/tục không bị chặn.
+  const GEMINI_SAFETY_SETTINGS = [
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+  ];
+
+  /* ------------------------------------------------------------------
    * Cấu hình lưu trong chrome.storage.local (xóa extension là mất hết).
    * {
    *   preferred: 'deepl',
@@ -229,6 +251,7 @@
           systemInstruction: { parts: [{ text: instructions }] },
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig,
+          safetySettings: GEMINI_SAFETY_SETTINGS,
         }),
       };
     }
@@ -376,24 +399,27 @@
   }
 
   /* ------------------------------------------------------------------
-   * Dịch BATCH (dịch cả trang): literal, giữ nguyên format/placeholder.
-   * KHÔNG dùng buildNativeInstructions — batch không rewrite native.
+   * Dịch BATCH (dịch cả trang): tự nhiên, trôi chảy như ngườ bản xứ viết
+   * nhưng giữ nguyên format/placeholder. KHÔNG dùng buildNativeInstructions
+   * (prompt đó là rewrite VI->EN của input helper, không dành cho dịch trang).
    * ------------------------------------------------------------------ */
-  const BATCH_TARGET_LANG = { en: 'EN-US', vi: 'VI' };
-
-  function buildBatchInstructions(sourceLanguage, targetLanguage) {
+  function buildBatchInstructions(sourceLanguage, targetName) {
     const src = sourceLanguage && sourceLanguage !== 'auto'
       ? sourceLanguage
       : 'the detected source language';
     return [
-      `Translate each array element from ${src} to ${targetLanguage}. Return ONLY a JSON array of strings, same order and length. No commentary.`,
-      'Translate literally and faithfully — no rewriting, no summarizing, no stylistic upgrades.',
+      `Translate each array element from ${src} to ${targetName}. Return ONLY a JSON array of strings, same order and length. No commentary.`,
+      'Translate naturally and fluently, the way a native speaker would actually write — never word-for-word — while keeping the exact meaning of each element.',
       'Preserve formatting, line breaks, placeholders ({name}, %s, $1...), emojis, proper names, URLs, and code exactly as they appear.',
       'If an element is already in the target language or cannot be translated, return it unchanged.',
     ].join('\n');
   }
 
   function buildBatchRequest({ providerId, providerConfig, apiKey, texts, sourceLanguage, targetLanguage }) {
+    // Ngôn ngữ đích chỉ hỗ trợ VI/EN.
+    const target = findBatchTarget(targetLanguage);
+    if (!target) throw new Error('Ngôn ngữ đích không hỗ trợ');
+
     if (providerId === 'deepl') {
       // DeepL hỗ trợ mảng text trong 1 request duy nhất.
       return {
@@ -406,12 +432,12 @@
         },
         body: JSON.stringify({
           text: texts,
-          target_lang: BATCH_TARGET_LANG[targetLanguage] || String(targetLanguage || '').toUpperCase(),
+          target_lang: target.deepl,
         }),
       };
     }
 
-    const instructions = buildBatchInstructions(sourceLanguage, targetLanguage);
+    const instructions = buildBatchInstructions(sourceLanguage, target.englishName);
     const prompt = JSON.stringify(texts);
 
     if (providerId === 'gemini') {
@@ -430,6 +456,7 @@
           systemInstruction: { parts: [{ text: instructions }] },
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig,
+          safetySettings: GEMINI_SAFETY_SETTINGS,
         }),
       };
     }
@@ -487,7 +514,8 @@
     try {
       data = JSON.parse(bodyText || '{}');
     } catch (_) {
-      return { kind: 'providerFailed', message: `${def.label}: phản hồi không phải JSON` };
+      // LỖI PARSE (không phải HTTP): caller được retry 1 lần trên cùng key.
+      return { kind: 'providerFailed', parseFailure: true, message: `${def.label}: phản hồi không phải JSON` };
     }
 
     let translations = null;
@@ -510,7 +538,8 @@
     }
 
     if (!translations) {
-      return { kind: 'providerFailed', message: `${def.label}: không parse được mảng bản dịch` };
+      // LỖI PARSE mảng JSON của LLM: caller được retry 1 lần trên cùng key.
+      return { kind: 'providerFailed', parseFailure: true, message: `${def.label}: không parse được mảng bản dịch` };
     }
     if (translations.length !== expectedLength) {
       return {
@@ -637,10 +666,11 @@
     };
   }
 
-  // Dịch batch literal (dịch cả trang): translations cùng độ dài/thứ tự với texts.
+  // Dịch batch (dịch cả trang): translations cùng độ dài/thứ tự với texts.
   async function translateBatchWithRotation({ config, texts, sourceLanguage, targetLanguage, fetchText, keyState, now, sleep }) {
     const list = Array.isArray(texts) ? texts.map(item => String(item ?? '')) : [];
     if (!list.length) throw new Error('Không có nội dung cần dịch');
+    if (!findBatchTarget(targetLanguage)) throw new Error('Ngôn ngữ đích không hỗ trợ');
 
     const outcome = await withKeyRotation({
       config,
@@ -656,15 +686,25 @@
           sourceLanguage,
           targetLanguage,
         });
-        const response = await fetchText(request);
-        const verdict = classifyBatchResponse({
-          providerId,
-          openaiFormat: request?.openaiFormat,
-          status: response.status,
-          bodyText: response.bodyText,
-          expectedLength: list.length,
-        });
-        return { verdict };
+        // LLM thỉnh thoảng trả mảng JSON hỏng: retry TỐI ĐA 1 lần trên cùng key
+        // (chỉ với lỗi parse, không phải lỗi HTTP) rồi mới chuyển provider.
+        // Cờ retriedParse đặt lại mỗi attempt nên không retry vòng vô hạn.
+        let retriedParse = false;
+        for (;;) {
+          const response = await fetchText(request);
+          const verdict = classifyBatchResponse({
+            providerId,
+            openaiFormat: request?.openaiFormat,
+            status: response.status,
+            bodyText: response.bodyText,
+            expectedLength: list.length,
+          });
+          if (verdict.kind === 'providerFailed' && verdict.parseFailure && !retriedParse) {
+            retriedParse = true;
+            continue;
+          }
+          return { verdict };
+        }
       },
     });
 

@@ -351,6 +351,125 @@ async function run() {
     );
   }
 
+  // 21. buildBatchRequest: map đích vi/en đúng mã DeepL, code lạ bị từ chối
+  {
+    const reqVi = P.buildBatchRequest({
+      providerId: 'deepl', providerConfig: {}, apiKey: 'abc:fx',
+      texts: ['hello'], targetLanguage: 'vi',
+    });
+    assert.equal(JSON.parse(reqVi.body).target_lang, 'VI');
+
+    const reqEn = P.buildBatchRequest({
+      providerId: 'deepl', providerConfig: {}, apiKey: 'abc:fx',
+      texts: ['xin chào'], targetLanguage: 'en',
+    });
+    assert.equal(JSON.parse(reqEn.body).target_lang, 'EN-US');
+
+    // Code lạ -> ném lỗi không hỗ trợ
+    assert.throws(
+      () => P.buildBatchRequest({ providerId: 'deepl', providerConfig: {}, apiKey: 'k', texts: ['x'], targetLanguage: 'zh' }),
+      /Ngôn ngữ đích không hỗ trợ/,
+    );
+    await assert.rejects(
+      P.translateBatchWithRotation({
+        config: BASE_CONFIG, texts: ['x'], targetLanguage: 'zh',
+        fetchText: async () => ({ status: 200, bodyText: '{}' }), keyState: P.createKeyState(), sleep: noSleep,
+      }),
+      /Ngôn ngữ đích không hỗ trợ/,
+    );
+  }
+
+  // 22. Prompt batch dùng tên tiếng Anh của đích + Gemini batch có safetySettings
+  {
+    const req = P.buildBatchRequest({
+      providerId: 'gemini', providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'g',
+      texts: ['xin chào'], targetLanguage: 'en',
+    });
+    const body = JSON.parse(req.body);
+    assert.match(body.systemInstruction.parts[0].text, /English/);
+    assert.match(body.systemInstruction.parts[0].text, /native speaker/); // dịch tự nhiên, không word-for-word
+    assert.equal(body.safetySettings.length, 4);
+    assert.ok(body.safetySettings.every(s => s.threshold === 'BLOCK_NONE'));
+  }
+
+  // 23. Gemini single (buildRequest) cũng có safetySettings BLOCK_NONE đủ 4 category
+  {
+    const req = P.buildRequest({
+      providerId: 'gemini', providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'g',
+      source: 'xin chào', context: '',
+    });
+    const body = JSON.parse(req.body);
+    assert.deepEqual(
+      body.safetySettings.map(s => s.category).sort(),
+      ['HARM_CATEGORY_DANGEROUS_CONTENT', 'HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT'],
+    );
+    assert.ok(body.safetySettings.every(s => s.threshold === 'BLOCK_NONE'));
+  }
+
+  // 24. Lỗi parse mảng JSON: retry đúng 1 lần trên cùng key rồi mới fallback provider
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'gemini',
+      providers: {
+        gemini: { enabled: true, keys: [{ key: 'g' }], model: 'gemini-2.5-flash' },
+        deepl: { enabled: true, keys: [{ key: 'd:fx' }] },
+      },
+    });
+    const { fetchText, calls } = fakeFetch([
+      (req) => (req.url.includes('generativelanguage')
+        ? { status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'không phải JSON array' }] } }] }) }
+        : null),
+      (req) => (req.url.includes('deepl.com')
+        ? { status: 200, bodyText: JSON.stringify({ translations: [{ text: 'f1' }, { text: 'f2' }] }) }
+        : null),
+    ]);
+    const result = await P.translateBatchWithRotation({
+      config: cfg, texts: ['một', 'hai'], targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.provider, 'deepl');
+    assert.deepEqual(result.translations, ['f1', 'f2']);
+    // 1 lần gốc + đúng 1 lần retry trên cùng key gemini
+    assert.equal(calls.filter(c => c.url.includes('generativelanguage')).length, 2);
+  }
+
+  // 25. Retry parse thành công ngay trên cùng key (không cần đổi provider)
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'gemini',
+      providers: { gemini: { enabled: true, keys: [{ key: 'g' }], model: 'gemini-2.5-flash' } },
+    });
+    let n = 0;
+    const { fetchText, calls } = fakeFetch([
+      () => (++n === 1
+        ? { status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'oops' }] } }] }) }
+        : { status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: '["ok1","ok2"]' }] } }] }) }),
+    ]);
+    const result = await P.translateBatchWithRotation({
+      config: cfg, texts: ['một', 'hai'], targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.provider, 'gemini');
+    assert.deepEqual(result.translations, ['ok1', 'ok2']);
+    assert.equal(calls.length, 2);
+  }
+
+  // 26. Lỗi HTTP (không phải parse) KHÔNG được retry trên cùng key
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'gemini',
+      providers: { gemini: { enabled: true, keys: [{ key: 'g' }], model: 'gemini-2.5-flash' } },
+    });
+    const { fetchText, calls } = fakeFetch([
+      () => ({ status: 400, bodyText: '{"error":{"message":"bad"}}' }),
+    ]);
+    await assert.rejects(P.translateBatchWithRotation({
+      config: cfg, texts: ['một'], targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    }));
+    assert.equal(calls.length, 1); // providerFailed do HTTP -> sang provider khác ngay, không retry
+  }
+
   console.log('Tất cả test providers.js đều PASS ✔');
 }
 

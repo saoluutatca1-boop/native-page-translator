@@ -2,6 +2,16 @@
  * Vibe: Ethereal Glass (OLED dark, hairline borders, soft glow, spring motion)
  */
 
+/* Font bundle cục bộ: Be Vietnam Pro variable (wght 100-900, đủ glyph tiếng Việt)
+ * Chỉ dùng cho popup/options — KHÔNG nhúng vào content script (CSP trang chặn). */
+@font-face {
+  font-family: "Be Vietnam Pro";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/be-vietnam-pro-var.ttf") format("truetype-variations");
+}
+
 * {
   box-sizing: border-box;
 }
@@ -29,7 +39,7 @@ body {
   margin: 0;
   width: 372px;
   color: var(--text);
-  font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font: 13px/1.45 "Be Vietnam Pro", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   background:
     radial-gradient(120% 90% at 85% -10%, rgba(99, 102, 241, 0.14), transparent 55%),
     radial-gradient(100% 80% at -10% 110%, rgba(59, 130, 246, 0.10), transparent 50%),
@@ -59,9 +69,9 @@ main {
 
 h1 {
   margin: 0;
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 760;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   background: linear-gradient(100deg, #fff 30%, #a5b4fc 90%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -90,8 +100,8 @@ label {
   display: block;
   margin-bottom: 7px;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-weight: 600;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--text-dim);
 }
@@ -114,6 +124,7 @@ label {
 .three { grid-template-columns: repeat(3, 1fr); }
 .two { grid-template-columns: repeat(2, 1fr); }
 
+/* Controls kế thừa font stack của body (Be Vietnam Pro đứng đầu) qua font: inherit */
 button,
 input,
 select {
@@ -156,7 +167,7 @@ select {
 
 button {
   cursor: pointer;
-  font-weight: 680;
+  font-weight: 700;
   letter-spacing: 0.01em;
 }
 
@@ -189,7 +200,7 @@ button:active {
   align-items: center;
   margin-top: 11px;
   font-size: 12.5px;
-  font-weight: 550;
+  font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
   color: var(--text);

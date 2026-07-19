@@ -163,6 +163,23 @@ async function main() {
   assert.equal(badBatch.ok, false);
   assert.match(badBatch.error, /texts/);
 
+  // 5c. providerTranslate đích 'vi': DeepL nhận target_lang VI
+  const viBatch = await sendMessage({
+    type: 'providerTranslate',
+    payload: { texts: ['hello'], targetLanguage: 'vi' },
+  });
+  assert.equal(viBatch.ok, true, JSON.stringify(viBatch));
+  const viCall = fetchCalls.filter(c => c.url.includes('deepl.com')).pop();
+  assert.equal(JSON.parse(viCall.options.body).target_lang, 'VI');
+
+  // 5d. targetLanguage ngoài vi/en -> ok:false
+  const badLang = await sendMessage({
+    type: 'providerTranslate',
+    payload: { texts: ['x'], targetLanguage: 'zh' },
+  });
+  assert.equal(badLang.ok, false);
+  assert.match(badLang.error, /chỉ hỗ trợ/);
+
   // 6. proxyFetch tới endpoint Google free (đường dịch cả trang)
   const proxied = await sendMessage({
     type: 'proxyFetch',
