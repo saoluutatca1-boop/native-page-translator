@@ -78,6 +78,21 @@
       },
     };
   }
+
+  // position:fixed bị "bẻ" thành tương đối với ancestor khi html/body có transform/filter/perspective.
+  function hasTransformedRoot() {
+    try {
+      for (const element of [document.documentElement, document.body]) {
+        if (!element) continue;
+        const style = getComputedStyle(element);
+        if (style.transform !== 'none' || style.filter !== 'none' || style.perspective !== 'none') return true;
+      }
+    } catch (_) {
+      // Không đọc được style (trang đặc biệt) → coi như không transform.
+    }
+    return false;
+  }
+
   const TRANSLATION_CORE = (() => {
     const cache = new Map();
     const providerCooldown = new Map();
@@ -217,7 +232,41 @@
       return decodeEntities(output);
     }
 
+    // Gọi API riêng của user (DeepL/Gemini) qua background. Trả về mảng bản dịch
+    // cùng thứ tự với texts, hoặc null nếu setting tắt/không có key/lỗi bất kỳ — không throw.
+    async function providerTranslateViaBackground(texts, sourceLanguage, targetLanguage) {
+      if (!GM_getValue('tm-page-use-provider', true)) return null;
+      if (!Array.isArray(texts) || !texts.length) return null;
+
+      try {
+        const response = await new Promise(resolve => {
+          const timer = setTimeout(() => resolve(null), 65000);
+          chrome.runtime.sendMessage({
+            type: 'providerTranslate',
+            payload: { texts, targetLanguage, sourceLanguage },
+          }).then(result => {
+            clearTimeout(timer);
+            resolve(result);
+          }).catch(() => {
+            clearTimeout(timer);
+            resolve(null);
+          });
+        });
+
+        const translations = response?.ok ? response.translations : null;
+        if (!Array.isArray(translations) || translations.length !== texts.length) return null;
+        if (!translations.every(item => typeof item === 'string' && item.trim())) return null;
+        return translations;
+      } catch (_) {
+        return null;
+      }
+    }
+
     async function translateRaw(text, sourceLanguage, targetLanguage) {
+      // Ưu tiên API riêng của user; null (không key/lỗi) thì xuống endpoint miễn phí.
+      const providerTranslations = await providerTranslateViaBackground([text], sourceLanguage, targetLanguage);
+      if (providerTranslations) return providerTranslations[0].trim();
+
       const errors = [];
       const providers = [
         () => googleTranslate('https://translate.googleapis.com', text, sourceLanguage, targetLanguage),
@@ -307,6 +356,21 @@
     async function translateBundle(batch, sourceLanguage, targetLanguage) {
       if (batch.length === 1) {
         return [{ index: batch[0].index, text: await translate(batch[0].text, sourceLanguage, targetLanguage) }];
+      }
+
+      // Ưu tiên API riêng của user — 1 message cho cả batch, không cần token __NPT.
+      const providerTranslations = await providerTranslateViaBackground(
+        batch.map(item => item.text),
+        sourceLanguage || 'auto',
+        targetLanguage,
+      );
+      if (providerTranslations) {
+        return batch.map((item, index) => {
+          const translated = providerTranslations[index].trim();
+          const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${item.text.trim()}`;
+          cache.set(key, translated);
+          return { index: item.index, text: preserveWhitespace(item.text, translated) };
+        });
       }
 
       const seed = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -982,6 +1046,14 @@
       });
     }
 
+    // fixed bị bẻ khi html/body có transform/filter/perspective → absolute theo toạ độ document.
+    if (hasTransformedRoot()) {
+      const box = toolbarHost.getBoundingClientRect();
+      toolbarHost.style.position = 'absolute';
+      toolbarHost.style.left = `${Math.round(window.scrollX + innerWidth - box.width - 14)}px`;
+      toolbarHost.style.top = `${Math.round(window.scrollY + innerHeight - box.height - 14)}px`;
+    }
+
     updateActiveButton();
   }
 
@@ -1113,6 +1185,10 @@
   let helperStatus = null;
   let busy = false;
   let savedSnapshot = null;
+  // Cache vị trí đã ghi — chỉ ghi lại style khi trôi > 0.5px (chống jitter từ heartbeat).
+  let lastHelperLeft = null;
+  let lastHelperTop = null;
+  let lastHelperPositionMode = null;
 
   function isSupportedEditable(element) {
     if (!(element instanceof HTMLElement)) return false;
@@ -1530,6 +1606,8 @@
   function repositionHelper() {
     if (!helperPanel || !activeEditable || !activeEditable.isConnected) {
       helperPanel?.classList.remove('visible');
+      lastHelperLeft = null;
+      lastHelperTop = null;
       closeMenu();
       return;
     }
@@ -1537,25 +1615,55 @@
     const rect = getBestEditableRect(activeEditable);
     if (rect.width < 20 || rect.height < 12 || rect.bottom < 0 || rect.top > innerHeight) {
       helperPanel.classList.remove('visible');
+      lastHelperLeft = null;
+      lastHelperTop = null;
       closeMenu();
       return;
     }
 
+    // html/body có transform/filter/perspective làm fixed bị lệch → absolute + trừ scroll.
+    const useAbsolute = hasTransformedRoot();
+    const positionMode = useAbsolute ? 'absolute' : 'fixed';
+    const offsetX = useAbsolute ? window.scrollX : 0;
+    const offsetY = useAbsolute ? window.scrollY : 0;
+
     const panelWidth = 82;
     const panelHeight = 34;
-    let left = rect.right - panelWidth - 6;
-    let top = rect.bottom - panelHeight - 5;
 
+    // Ưu tiên nằm TRONG ô, góc phải-dưới, inset 8px.
+    let left = rect.right - panelWidth - 8;
+    let top = rect.bottom - panelHeight - 8;
+
+    // Ô quá thấp hoặc nút tràn trái → đặt TRÊN ô, sát phải, cách 6px.
     if (rect.height < 42 || left < rect.left + 4) {
-      top = rect.bottom + 6;
       left = rect.right - panelWidth;
+      top = rect.top - panelHeight - 6;
+      if (top < 0) top = rect.bottom + 6; // Không có chỗ phía trên → lật xuống dưới ô.
     }
 
+    // Clamp trong viewport (toạ độ viewport), margin 8px.
     left = Math.max(8, Math.min(left, innerWidth - panelWidth - 8));
     top = Math.max(8, Math.min(top, innerHeight - panelHeight - 8));
 
-    helperPanel.style.left = `${Math.round(left)}px`;
-    helperPanel.style.top = `${Math.round(top)}px`;
+    const finalLeft = left + offsetX;
+    const finalTop = top + offsetY;
+
+    if (lastHelperPositionMode !== positionMode) {
+      helperPanel.style.position = positionMode;
+      lastHelperPositionMode = positionMode;
+      lastHelperLeft = null;
+      lastHelperTop = null;
+    }
+    if (
+      lastHelperLeft === null ||
+      Math.abs(finalLeft - lastHelperLeft) > 0.5 ||
+      Math.abs(finalTop - lastHelperTop) > 0.5
+    ) {
+      helperPanel.style.left = `${Math.round(finalLeft)}px`;
+      helperPanel.style.top = `${Math.round(finalTop)}px`;
+      lastHelperLeft = finalLeft;
+      lastHelperTop = finalTop;
+    }
     helperPanel.classList.add('visible');
   }
 

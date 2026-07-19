@@ -6,6 +6,7 @@ const {
   normalizeConfig,
   usableProviders,
   translateWithRotation,
+  translateBatchWithRotation,
   createKeyState,
 } = globalThis.NPT_PROVIDERS;
 
@@ -140,6 +141,21 @@ async function rawFetch(payload) {
   }
 }
 
+// Adapter fetchText dùng chung cho translateWithRotation/translateBatchWithRotation.
+async function providerFetchText(request) {
+  const response = await rawFetch({
+    method: request.method || 'POST',
+    url: request.url,
+    headers: request.headers,
+    data: request.body,
+    timeout: 60000,
+  });
+  if (!response.ok && response.networkError) {
+    return { status: 0, bodyText: '', networkError: response.networkError };
+  }
+  return { status: response.status, bodyText: response.responseText };
+}
+
 async function nativeTranslate(payload) {
   const config = await ensureConfig();
 
@@ -148,22 +164,51 @@ async function nativeTranslate(payload) {
     source: payload?.source,
     context: String(payload?.context || '').trim(),
     keyState,
-    fetchText: async (request) => {
-      const response = await rawFetch({
-        method: request.method || 'POST',
-        url: request.url,
-        headers: request.headers,
-        data: request.body,
-        timeout: 60000,
-      });
-      if (!response.ok && response.networkError) {
-        return { status: 0, bodyText: '', networkError: response.networkError };
-      }
-      return { status: response.status, bodyText: response.responseText };
-    },
+    fetchText: providerFetchText,
   });
 
   return { ok: true, text: result.text, provider: result.provider, providerLabel: result.providerLabel };
+}
+
+// Giới hạn an toàn cho dịch batch (dịch cả trang).
+const MAX_BATCH_ITEMS = 64;
+const MAX_BATCH_CHARS = 20000;
+
+async function providerTranslate(payload) {
+  const texts = payload?.texts;
+  if (!Array.isArray(texts) || !texts.length) {
+    throw new Error('payload.texts phải là mảng chuỗi không rỗng');
+  }
+  if (texts.length > MAX_BATCH_ITEMS) {
+    throw new Error(`Tối đa ${MAX_BATCH_ITEMS} đoạn mỗi lần dịch`);
+  }
+  const list = texts.map(item => String(item ?? ''));
+  const totalChars = list.reduce((sum, item) => sum + item.length, 0);
+  if (totalChars > MAX_BATCH_CHARS) {
+    throw new Error(`Tối đa ${MAX_BATCH_CHARS} ký tự mỗi lần dịch`);
+  }
+
+  const targetLanguage = String(payload?.targetLanguage || '').toLowerCase();
+  if (!['vi', 'en'].includes(targetLanguage)) {
+    throw new Error("targetLanguage chỉ hỗ trợ 'vi' hoặc 'en'");
+  }
+
+  const config = await ensureConfig();
+  const result = await translateBatchWithRotation({
+    config,
+    texts: list,
+    sourceLanguage: payload?.sourceLanguage,
+    targetLanguage,
+    keyState,
+    fetchText: providerFetchText,
+  });
+
+  return {
+    ok: true,
+    translations: result.translations,
+    provider: result.provider,
+    providerLabel: result.providerLabel,
+  };
 }
 
 async function providerStatus() {
@@ -217,6 +262,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'nativeTranslate') {
     nativeTranslate(message.payload).then(sendResponse).catch(error => {
+      sendResponse({ ok: false, error: error?.message || String(error) });
+    });
+    return true;
+  }
+
+  if (message?.type === 'providerTranslate') {
+    providerTranslate(message.payload).then(sendResponse).catch(error => {
       sendResponse({ ok: false, error: error?.message || String(error) });
     });
     return true;

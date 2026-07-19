@@ -43,7 +43,7 @@ async function run() {
     assert.equal(cfg.preferred, 'deepl');
     assert.equal(cfg.providers.deepl.keys.length, 1);
     assert.equal(cfg.providers.deepl.keys[0].key, 'a:fx');
-    assert.equal(cfg.providers.gemini.model, 'gemini-2.5-flash');
+    assert.equal(cfg.providers.gemini.model, 'gemini-3.1-flash-lite');
     assert.equal(cfg.providers.openai.enabled, false);
   }
 
@@ -74,6 +74,15 @@ async function run() {
     const body = JSON.parse(req.body);
     assert.ok(body.systemInstruction.parts[0].text.includes('native English'));
     assert.match(body.contents[0].parts[0].text, /ctx[\s\S]*xin chào/);
+    // Dòng 2.5 phải tắt thinking để tiết kiệm token
+    assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);
+
+    // Dòng 3.x không gửi thinkingConfig
+    const req3 = P.buildRequest({
+      providerId: 'gemini', providerConfig: { model: 'gemini-3.1-flash-lite' }, apiKey: 'gkey',
+      source: 'x', context: '',
+    });
+    assert.equal(JSON.parse(req3.body).generationConfig.thinkingConfig, undefined);
   }
 
   // 4. buildRequest OpenAI chat: Bearer + messages
@@ -240,6 +249,106 @@ async function run() {
       config: cfg, source: 'ê đi chơi hong', context: '', fetchText, keyState: P.createKeyState(), sleep: noSleep,
     });
     assert.match(JSON.parse(calls[0].body).systemInstruction.parts[0].text, /Register: CASUAL/);
+  }
+
+  // 15. Casual: hướng dẫn bỏ apostrophe kiểu texter + có few-shot
+  {
+    const casual = P.buildNativeInstructions('casual');
+    assert.match(casual, /Register: CASUAL/);
+    assert.match(casual, /dont/i); // bỏ apostrophe: im, dont, cant...
+    assert.match(casual, /\bim\b/);
+    assert.match(casual, /gonna|wanna/);
+    assert.match(casual, /anh ơi tối nay đi chơi hong/); // few-shot
+    assert.match(casual, /wyd/); // few-shot
+    // Base vẫn giữ quy tắc contractions chuẩn cho các tone khác
+    const natural = P.buildNativeInstructions('natural');
+    assert.match(natural, /contractions/);
+    assert.doesNotMatch(natural, /Register: CASUAL/);
+  }
+
+  // 16. Batch DeepL: 1 request duy nhất, đọc translations theo thứ tự
+  {
+    const { fetchText, calls } = fakeFetch([
+      () => ({ status: 200, bodyText: JSON.stringify({ translations: [{ text: 'a' }, { text: 'b' }] }) }),
+    ]);
+    const result = await P.translateBatchWithRotation({
+      config: BASE_CONFIG, texts: ['xin chào', 'tạm biệt'], targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.deepEqual(result.translations, ['a', 'b']);
+    assert.equal(result.provider, 'deepl');
+    assert.equal(result.providerLabel, 'DeepL');
+    assert.equal(calls.length, 1);
+    const body = JSON.parse(calls[0].body);
+    assert.deepEqual(body.text, ['xin chào', 'tạm biệt']);
+    assert.equal(body.target_lang, 'EN-US');
+  }
+
+  // 17. Batch Gemini: parse JSON array kèm fence ```json
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'gemini',
+      providers: { gemini: { enabled: true, keys: [{ key: 'g' }], model: 'gemini-2.5-flash' } },
+    });
+    const fenced = '```json\n["hello","goodbye"]\n```';
+    const { fetchText, calls } = fakeFetch([
+      () => ({ status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: fenced }] } }] }) }),
+    ]);
+    const result = await P.translateBatchWithRotation({
+      config: cfg, texts: ['xin chào', 'tạm biệt'], targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.deepEqual(result.translations, ['hello', 'goodbye']);
+    assert.equal(result.provider, 'gemini');
+    const body = JSON.parse(calls[0].body);
+    assert.match(body.systemInstruction.parts[0].text, /JSON array of strings, same order and length/);
+    assert.deepEqual(JSON.parse(body.contents[0].parts[0].text), ['xin chào', 'tạm biệt']);
+  }
+
+  // 18. Batch mismatch length -> providerFailed, fallback provider tiếp theo
+  {
+    const { fetchText, calls } = fakeFetch([
+      (req) => (req.url.includes('deepl.com')
+        ? { status: 200, bodyText: JSON.stringify({ translations: [{ text: 'chỉ có 1' }] }) }
+        : null),
+      (req) => (req.url.includes('generativelanguage')
+        ? { status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: '["hello","bye"]' }] } }] }) }
+        : null),
+    ]);
+    const result = await P.translateBatchWithRotation({
+      config: BASE_CONFIG, texts: ['xin chào', 'tạm biệt'], targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.provider, 'gemini');
+    assert.deepEqual(result.translations, ['hello', 'bye']);
+    assert.equal(calls[0].url.includes('deepl.com'), true);
+  }
+
+  // 19. Rotation batch: key DeepL đầu 403 -> key sau thành công
+  {
+    const { fetchText, calls } = fakeFetch([
+      (req) => (req.headers.Authorization === 'DeepL-Auth-Key key-free-1:fx' ? { status: 403, bodyText: '{}' } : null),
+      () => ({ status: 200, bodyText: JSON.stringify({ translations: [{ text: 'x1' }, { text: 'x2' }] }) }),
+    ]);
+    const result = await P.translateBatchWithRotation({
+      config: BASE_CONFIG, texts: ['một', 'hai'], targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.deepEqual(result.translations, ['x1', 'x2']);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].headers.Authorization, 'DeepL-Auth-Key key-free-2:fx');
+  }
+
+  // 20. Batch không provider nào -> NO_API_KEY
+  {
+    const cfg = P.normalizeConfig({});
+    await assert.rejects(
+      P.translateBatchWithRotation({
+        config: cfg, texts: ['x'], targetLanguage: 'en',
+        fetchText: async () => ({ status: 200, bodyText: '{}' }), sleep: noSleep,
+      }),
+      /NO_API_KEY/,
+    );
   }
 
   console.log('Tất cả test providers.js đều PASS ✔');

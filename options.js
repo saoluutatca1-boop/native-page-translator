@@ -13,6 +13,7 @@ const PREFS_KEYS = {
   context: 'tm-native-en-use-context',
   defaultMode: 'tm-native-en-default-mode',
   fallbackQuick: 'tm-native-en-fallback-quick',
+  pageUseProvider: 'tm-page-use-provider',
 };
 
 const $ = selector => document.querySelector(selector);
@@ -100,6 +101,10 @@ function renderKeyList(card, providerId) {
     }
     provider.keys.push({ key: value, label: '' });
     renderProviders();
+    if (providerId === 'gemini' && !value.startsWith('AIza')) {
+      setStatus('Đã thêm key, nhưng lưu ý: key Gemini chuẩn bắt đầu bằng "AIza". Key dạng "AQ." là key bị Google giới hạn — Gemini API sẽ từ chối. Hãy tạo key "AIza" bằng project/tài khoản Google khác, hoặc tạo trong Google Cloud Console.', true);
+      return;
+    }
     setStatus('Đã thêm key — nhớ bấm Lưu cài đặt');
   };
   addButton.addEventListener('click', addKey);
@@ -147,12 +152,26 @@ function renderProviderFields(card, providerId) {
   }
 
   if (def.needsModel) {
-    fields.appendChild(el('label', 'small-label', 'Model'));
+    fields.appendChild(el('label', 'small-label', providerId === 'gemini'
+      ? 'Model — khuyên dùng gemini-3.1-flash-lite (rẻ, ít token)'
+      : 'Model'));
     const model = document.createElement('input');
     model.type = 'text';
     model.spellcheck = false;
     model.value = provider.model || def.defaultModel;
     model.placeholder = def.defaultModel;
+    if (def.suggestedModels) {
+      const datalistId = `${providerId}-model-suggestions`;
+      model.setAttribute('list', datalistId);
+      const datalist = document.createElement('datalist');
+      datalist.id = datalistId;
+      for (const name of def.suggestedModels) {
+        const option = document.createElement('option');
+        option.value = name;
+        datalist.appendChild(option);
+      }
+      fields.appendChild(datalist);
+    }
     model.addEventListener('input', () => { provider.model = model.value.trim(); });
     fields.appendChild(model);
   }
@@ -240,6 +259,7 @@ async function saveSettings(showSaved = true) {
     [PREFS_KEYS.context]: $('#useContext').checked,
     [PREFS_KEYS.defaultMode]: $('#defaultMode').value,
     [PREFS_KEYS.fallbackQuick]: $('#fallbackQuick').checked,
+    [PREFS_KEYS.pageUseProvider]: $('#pageUseProvider').checked,
   });
   if (showSaved) setStatus('Đã lưu cài đặt');
 }
@@ -279,6 +299,7 @@ async function loadPrefs() {
   $('#useContext').checked = values[PREFS_KEYS.context] !== false;
   $('#defaultMode').value = values[PREFS_KEYS.defaultMode] === 'quick' ? 'quick' : 'native';
   $('#fallbackQuick').checked = values[PREFS_KEYS.fallbackQuick] !== false;
+  $('#pageUseProvider').checked = values[PREFS_KEYS.pageUseProvider] !== false;
 }
 
 document.querySelectorAll('[data-lang]').forEach(button => {

@@ -29,10 +29,16 @@
     gemini: {
       id: 'gemini',
       label: 'Google AI Studio (Gemini)',
-      keyPlaceholder: 'Key lấy tại aistudio.google.com/apikey',
+      keyPlaceholder: 'Key chuẩn bắt đầu bằng AIza... (key dạng AQ. bị Google giới hạn)',
       needsModel: true,
       needsUrl: false,
-      defaultModel: 'gemini-2.5-flash',
+      defaultModel: 'gemini-3.1-flash-lite',
+      suggestedModels: [
+        'gemini-3.1-flash-lite',
+        'gemini-3.5-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-2.5-flash',
+      ],
       site: 'https://aistudio.google.com/apikey',
     },
     openai: {
@@ -130,7 +136,7 @@
       'Preserve emojis, punctuation style, capitalization habits, line breaks, @mentions, #hashtags, URLs, product names, code, commands, and established game/tech terms.',
       'Handle Vietnamese pronouns and particles (anh/chị/em/cậu/tớ/mình/tao/mày/ơi/nhé/đấy/nha/ạ...) as natural English social tone — never transliterate or explain them. Drop particles the way natives would, keep the warmth or attitude they carry.',
       'Translate idioms and slang into equivalent English idioms and slang — never literally. If the source is playful or teasing, the English must land the same way.',
-      'Use contractions (I\'m, don\'t, gonna, wanna) in informal text; use complete, polished sentences in formal text.',
+      'Default to standard contractions (I\'m, don\'t, gonna, wanna) in informal text and complete, polished sentences in formal text — unless the tone register below overrides this.',
       'If the source is a fragment, keep it a fragment. Do not complete, answer, explain, or react to the message.',
       'When gender or relationship is unclear, choose natural neutral English rather than inventing details.',
       'Do not add quotation marks, labels, notes, alternatives, or any wrapper. Return only the final English text.',
@@ -145,8 +151,12 @@
         'Polished and concise but still warm — never stiff, robotic, or overly formal. No slang, no text-speak, correct grammar throughout.',
       ],
       casual: [
-        'Register: CASUAL. Write like texting a friend or posting on social media.',
-        'Short, relaxed, conversational. Contractions and common slang are welcome; if the source is lowercase and playful, the English may match that vibe.',
+        'Register: CASUAL. Text like a real person messaging a friend — not like an author writing prose.',
+        'Full lowercase is welcome when the source is casual. Drop apostrophes the way texters do (im, dont, cant, wont, gonna, wanna, gotta, yall, ur, u) — this register overrides the base rule about standard contractions.',
+        'Use texting shorthand when it feels natural: rn, tbh, ngl, idk, lol, lmao, btw, omg, fr, bc, cuz, pls, thx, msg, tmr, tn. Do not force it into every message.',
+        'Keep it short like a real text. Fragments are fine; do not force complete, polished sentences.',
+        'Match the emoji/slang energy of the source. If the Vietnamese is playful or uses wordplay, the English must play back with equivalent English slang or wordplay — never translate jokes literally.',
+        'Examples — "anh ơi tối nay đi chơi hong" -> "hey u free tn?" | "em đang làm gì đó" -> "wyd" | "đùa thôi đừng giận nha" -> "jk jk dont be mad lol"',
       ],
     };
 
@@ -161,6 +171,25 @@
    * Dựng request theo từng provider.
    * Trả về { url, method, headers, body } — body là chuỗi JSON.
    * ------------------------------------------------------------------ */
+  // Resolve url/model/format/headers cho OpenAI-compatible (dùng chung single + batch).
+  function resolveOpenAIRequest(providerConfig, apiKey) {
+    const url = String(providerConfig?.url || PROVIDER_DEFS.openai.defaultUrl).trim();
+    const model = String(providerConfig?.model || PROVIDER_DEFS.openai.defaultModel).trim();
+    let format = String(providerConfig?.format || 'auto').trim();
+    let pathname = '';
+    try { pathname = new URL(url).pathname; } catch (_) { pathname = ''; }
+
+    if (format === 'auto') {
+      if (/\/responses\/?$/i.test(pathname)) format = 'responses';
+      else if (/libretranslate|\/translate\/?$/i.test(url)) format = 'libre';
+      else format = 'chat';
+    }
+
+    const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    return { url, model, format, headers };
+  }
+
   function buildRequest({ providerId, providerConfig, apiKey, source, context, tone }) {
     const instructions = buildNativeInstructions(tone);
     const prompt = buildPrompt(source, context);
@@ -183,6 +212,11 @@
 
     if (providerId === 'gemini') {
       const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      // Dịch thuật không cần suy luận: tắt thinking để tiết kiệm token.
+      // Chỉ gửi cho dòng 2.5 (đã kiểm chứng field hợp lệ); dòng 3.x mặc định
+      // Flash-Lite đã tối thiểu thinking nên không cần gửi.
+      const generationConfig = { temperature: 0.3 };
+      if (/2\.5/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
       return {
         url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         method: 'POST',
@@ -194,26 +228,13 @@
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: instructions }] },
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3 },
+          generationConfig,
         }),
       };
     }
 
     if (providerId === 'openai') {
-      const url = String(providerConfig?.url || PROVIDER_DEFS.openai.defaultUrl).trim();
-      const model = String(providerConfig?.model || PROVIDER_DEFS.openai.defaultModel).trim();
-      let format = String(providerConfig?.format || 'auto').trim();
-      let pathname = '';
-      try { pathname = new URL(url).pathname; } catch (_) { pathname = ''; }
-
-      if (format === 'auto') {
-        if (/\/responses\/?$/i.test(pathname)) format = 'responses';
-        else if (/libretranslate|\/translate\/?$/i.test(url)) format = 'libre';
-        else format = 'chat';
-      }
-
-      const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
-      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
 
       let payload;
       if (format === 'responses') {
@@ -290,7 +311,8 @@
    *  - keyFailed:        key hỏng/hết quota -> thử key khác
    *  - providerFailed:   provider chết/request sai -> thử provider khác
    * ------------------------------------------------------------------ */
-  function classifyResponse({ providerId, openaiFormat, status, bodyText }) {
+  // Phân loại lỗi theo HTTP status (dùng chung single + batch). 2xx -> null.
+  function classifyHttpError({ providerId, status, bodyText }) {
     const def = PROVIDER_DEFS[providerId];
 
     if (status === 0) {
@@ -321,6 +343,14 @@
       return { kind: 'providerFailed', message: `${def.label}: HTTP ${status}` };
     }
 
+    return null;
+  }
+
+  function classifyResponse({ providerId, openaiFormat, status, bodyText }) {
+    const def = PROVIDER_DEFS[providerId];
+    const httpError = classifyHttpError({ providerId, status, bodyText });
+    if (httpError) return httpError;
+
     let data;
     try {
       data = JSON.parse(bodyText || '{}');
@@ -346,6 +376,153 @@
   }
 
   /* ------------------------------------------------------------------
+   * Dịch BATCH (dịch cả trang): literal, giữ nguyên format/placeholder.
+   * KHÔNG dùng buildNativeInstructions — batch không rewrite native.
+   * ------------------------------------------------------------------ */
+  const BATCH_TARGET_LANG = { en: 'EN-US', vi: 'VI' };
+
+  function buildBatchInstructions(sourceLanguage, targetLanguage) {
+    const src = sourceLanguage && sourceLanguage !== 'auto'
+      ? sourceLanguage
+      : 'the detected source language';
+    return [
+      `Translate each array element from ${src} to ${targetLanguage}. Return ONLY a JSON array of strings, same order and length. No commentary.`,
+      'Translate literally and faithfully — no rewriting, no summarizing, no stylistic upgrades.',
+      'Preserve formatting, line breaks, placeholders ({name}, %s, $1...), emojis, proper names, URLs, and code exactly as they appear.',
+      'If an element is already in the target language or cannot be translated, return it unchanged.',
+    ].join('\n');
+  }
+
+  function buildBatchRequest({ providerId, providerConfig, apiKey, texts, sourceLanguage, targetLanguage }) {
+    if (providerId === 'deepl') {
+      // DeepL hỗ trợ mảng text trong 1 request duy nhất.
+      return {
+        url: PROVIDER_DEFS.deepl.endpointFor(apiKey),
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `DeepL-Auth-Key ${apiKey}`,
+        },
+        body: JSON.stringify({
+          text: texts,
+          target_lang: BATCH_TARGET_LANG[targetLanguage] || String(targetLanguage || '').toUpperCase(),
+        }),
+      };
+    }
+
+    const instructions = buildBatchInstructions(sourceLanguage, targetLanguage);
+    const prompt = JSON.stringify(texts);
+
+    if (providerId === 'gemini') {
+      const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      const generationConfig = { temperature: 0.3 };
+      if (/2\.5/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      return {
+        url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: instructions }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig,
+        }),
+      };
+    }
+
+    if (providerId === 'openai') {
+      const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
+
+      let payload;
+      if (format === 'responses') {
+        payload = { model, instructions, input: prompt, max_output_tokens: 4000, store: false };
+      } else if (format === 'chat') {
+        payload = {
+          model,
+          messages: [
+            { role: 'system', content: instructions },
+            { role: 'user', content: prompt },
+          ],
+          stream: false,
+        };
+      } else {
+        // libre/generic không có schema batch JSON rõ ràng -> bỏ qua provider này.
+        throw new Error(`${PROVIDER_DEFS.openai.label}: format "${format}" không hỗ trợ dịch batch`);
+      }
+
+      return { url, method: 'POST', headers, body: JSON.stringify(payload), openaiFormat: format };
+    }
+
+    throw new Error(`Provider không hỗ trợ: ${providerId}`);
+  }
+
+  // Parse khoan dung mảng JSON từ text model trả về (strip fence, cắt [ ... ]).
+  function parseJsonArrayText(raw) {
+    let text = String(raw || '').trim();
+    if (!text) return null;
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']');
+    if (start === -1 || end === -1 || end <= start) return null;
+    try {
+      const parsed = JSON.parse(text.slice(start, end + 1));
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Nhánh classify cho batch: lỗi HTTP dùng chung classifyHttpError,
+  // body 2xx phải parse ra mảng bản dịch CÙNG ĐỘ DÀI với texts gửi đi.
+  function classifyBatchResponse({ providerId, openaiFormat, status, bodyText, expectedLength }) {
+    const def = PROVIDER_DEFS[providerId];
+    const httpError = classifyHttpError({ providerId, status, bodyText });
+    if (httpError) return httpError;
+
+    let data;
+    try {
+      data = JSON.parse(bodyText || '{}');
+    } catch (_) {
+      return { kind: 'providerFailed', message: `${def.label}: phản hồi không phải JSON` };
+    }
+
+    let translations = null;
+    if (providerId === 'deepl') {
+      if (Array.isArray(data?.translations)) {
+        translations = data.translations.map(item => String(item?.text ?? ''));
+      }
+    } else {
+      let text = '';
+      if (providerId === 'gemini') {
+        const parts = data?.candidates?.[0]?.content?.parts || [];
+        text = parts.map(part => part?.text || '').join('').trim();
+      } else {
+        text = extractOpenAIText(data, openaiFormat || 'chat');
+      }
+      const parsed = parseJsonArrayText(text);
+      if (parsed) {
+        translations = parsed.map(item => (typeof item === 'string' ? item : String(item ?? '')));
+      }
+    }
+
+    if (!translations) {
+      return { kind: 'providerFailed', message: `${def.label}: không parse được mảng bản dịch` };
+    }
+    if (translations.length !== expectedLength) {
+      return {
+        kind: 'providerFailed',
+        message: `${def.label}: số bản dịch (${translations.length}) không khớp số đoạn gửi (${expectedLength})`,
+      };
+    }
+
+    return { kind: 'ok', translations };
+  }
+
+  /* ------------------------------------------------------------------
    * Xoay vòng key: với mỗi provider (theo thứ tự ưu tiên), thử lần lượt
    * các key chưa bị cooldown. fetchText là hàm inject:
    *   async fetchText({ url, method, headers, body }) -> { status, bodyText }
@@ -360,13 +537,13 @@
     return `${providerId}${key}`;
   }
 
-  async function translateWithRotation({ config, source, context, fetchText, keyState, now, sleep }) {
+  // Vòng lặp rotation dùng chung. attempt({providerId, providerConfig, apiKey})
+  // phải trả về { verdict } (verdict từ classifyResponse/classifyBatchResponse);
+  // attempt throw = không dựng/gửi được request -> sang provider khác.
+  async function withKeyRotation({ config, keyState, now, sleep, attempt }) {
     const state = keyState || createKeyState();
     const currentTime = now || (() => Date.now());
     const wait = sleep || ((ms) => new Promise(resolve => setTimeout(resolve, ms)));
-
-    const text = String(source || '').trim();
-    if (!text) throw new Error('Không có nội dung cần dịch');
 
     const providerIds = usableProviders(config);
     if (!providerIds.length) {
@@ -388,34 +565,18 @@
         const cooldownUntil = state.cooldowns.get(cdKey) || 0;
         if (cooldownUntil > currentTime()) continue;
 
-        let request;
-        let response;
+        let verdict;
         try {
-          request = buildRequest({
-            providerId,
-            providerConfig,
-            apiKey: entry.key,
-            source: text,
-            context,
-            tone: config.tone,
-          });
-          response = await fetchText(request);
+          ({ verdict } = await attempt({ providerId, providerConfig, apiKey: entry.key }));
         } catch (error) {
           errors.push(`${PROVIDER_DEFS[providerId].label}: ${error?.message || error}`);
           break; // Không dựng được request -> sang provider khác.
         }
 
-        const verdict = classifyResponse({
-          providerId,
-          openaiFormat: request?.openaiFormat,
-          status: response.status,
-          bodyText: response.bodyText,
-        });
-
         if (verdict.kind === 'ok') {
           state.pointers.set(providerId, keyPool.length > 1 ? (index + 1) % keyPool.length : 0);
           return {
-            text: verdict.text,
+            verdict,
             provider: providerId,
             providerLabel: PROVIDER_DEFS[providerId].label,
             keyMasked: entry.key ? maskKey(entry.key) : '',
@@ -439,6 +600,81 @@
     throw new Error(errors.length ? errors.join(' · ') : 'Tất cả provider đều thất bại');
   }
 
+  async function translateWithRotation({ config, source, context, fetchText, keyState, now, sleep }) {
+    const text = String(source || '').trim();
+    if (!text) throw new Error('Không có nội dung cần dịch');
+
+    const outcome = await withKeyRotation({
+      config,
+      keyState,
+      now,
+      sleep,
+      attempt: async ({ providerId, providerConfig, apiKey }) => {
+        const request = buildRequest({
+          providerId,
+          providerConfig,
+          apiKey,
+          source: text,
+          context,
+          tone: config.tone,
+        });
+        const response = await fetchText(request);
+        const verdict = classifyResponse({
+          providerId,
+          openaiFormat: request?.openaiFormat,
+          status: response.status,
+          bodyText: response.bodyText,
+        });
+        return { verdict };
+      },
+    });
+
+    return {
+      text: outcome.verdict.text,
+      provider: outcome.provider,
+      providerLabel: outcome.providerLabel,
+      keyMasked: outcome.keyMasked,
+    };
+  }
+
+  // Dịch batch literal (dịch cả trang): translations cùng độ dài/thứ tự với texts.
+  async function translateBatchWithRotation({ config, texts, sourceLanguage, targetLanguage, fetchText, keyState, now, sleep }) {
+    const list = Array.isArray(texts) ? texts.map(item => String(item ?? '')) : [];
+    if (!list.length) throw new Error('Không có nội dung cần dịch');
+
+    const outcome = await withKeyRotation({
+      config,
+      keyState,
+      now,
+      sleep,
+      attempt: async ({ providerId, providerConfig, apiKey }) => {
+        const request = buildBatchRequest({
+          providerId,
+          providerConfig,
+          apiKey,
+          texts: list,
+          sourceLanguage,
+          targetLanguage,
+        });
+        const response = await fetchText(request);
+        const verdict = classifyBatchResponse({
+          providerId,
+          openaiFormat: request?.openaiFormat,
+          status: response.status,
+          bodyText: response.bodyText,
+          expectedLength: list.length,
+        });
+        return { verdict };
+      },
+    });
+
+    return {
+      translations: outcome.verdict.translations,
+      provider: outcome.provider,
+      providerLabel: outcome.providerLabel,
+    };
+  }
+
   const api = {
     CONFIG_STORAGE_KEY,
     PROVIDER_ORDER,
@@ -451,7 +687,10 @@
     buildNativeInstructions,
     buildRequest,
     classifyResponse,
+    buildBatchRequest,
+    classifyBatchResponse,
     translateWithRotation,
+    translateBatchWithRotation,
     createKeyState,
   };
 

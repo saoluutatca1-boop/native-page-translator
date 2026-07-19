@@ -18,7 +18,9 @@ Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options
 
 - **DeepL** — hỗ trợ tiếng Việt. Key free kết thúc bằng `:fx` (endpoint `api-free.deepl.com`), key Pro tự nhận diện.
   Extension **seed sẵn 1 key DeepL Free mặc định** để dùng ngay — xoá được trong Cài đặt.
-- **Google AI Studio (Gemini)** — lấy key tại <https://aistudio.google.com/apikey>, model mặc định `gemini-2.5-flash`.
+- **Google AI Studio (Gemini)** — lấy key tại <https://aistudio.google.com/apikey>, model mặc định `gemini-3.1-flash-lite` (rẻ, nhanh, ít token — hợp dịch). Có thể đổi sang `gemini-3.5-flash` nếu muốn chất lượng cao nhất.
+  - **Key chuẩn phải bắt đầu bằng `AIza`.** Nếu AI Studio trả về key dạng `AQ.`, tài khoản Google của bạn đang bị giới hạn — Gemini API sẽ từ chối key đó. Cách xử lý: tạo key trong project mới, dùng tài khoản Google khác, hoặc tạo API key tại [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (bật Generative Language API).
+  - Với model dòng 2.5, extension tự tắt "thinking" để tiết kiệm token.
 - **OpenAI-compatible** — endpoint tùy ý (OpenAI, LibreTranslate, API tự host...), có thể không cần key.
 
 Mỗi provider thêm được **nhiều key**. Khi dịch:
@@ -33,9 +35,11 @@ Mỗi provider thêm được **nhiều key**. Khi dịch:
 - Key chỉ lưu trong `chrome.storage.local` của extension — **gỡ extension là xoá sạch toàn bộ dữ liệu**.
 - Key không được gửi đi đâu ngoài chính API của provider tương ứng.
 
-## Dịch miễn phí không cần key
+## Dịch cả trang: ưu tiên API riêng, fallback miễn phí
 
-Chế độ **Free fallback** lần lượt thử: Google Translate API endpoint → Google Translate web endpoint → MyMemory (đoạn ngắn). Gặp 429/lỗi server sẽ tự chờ rồi thử lại; dịch cả trang được gom batch để tránh hàng trăm request lẻ.
+Khi bấm nút VI/EN dịch cả trang, extension **ưu tiên dùng API riêng đã cấu hình** (DeepL/Gemini/OpenAI — tốn quota). Tắt bằng toggle **"Dịch cả trang bằng API riêng"** trong popup/Cài đặt (storage key `tm-page-use-provider`, **mặc định bật**).
+
+Khi API riêng lỗi hoặc đã tắt toggle, chuỗi **fallback miễn phí không cần key** lần lượt thử: Google Translate API endpoint → Google Translate web endpoint → MyMemory (đoạn ngắn). Gặp 429/lỗi server sẽ tự chờ rồi thử lại; dịch cả trang được gom batch để tránh hàng trăm request lẻ.
 
 ## Nút ✨ EN (đổi văn bản đang gõ sang tiếng Anh)
 
@@ -48,7 +52,7 @@ Với Gemini/OpenAI, chọn giọng văn trong popup hoặc Cài đặt:
 
 - **Tự nhiên** — bám đúng văn phong gốc: nghiêm túc ra nghiêm túc, đùa cợt ra đùa cợt; xử lý anh/chị/em/ơi/nhé/đấy theo sắc thái xã giao tự nhiên của tiếng Anh, thành ngữ dịch sang thành ngữ tương đương.
 - **Trang trọng** — email, LinkedIn, chat công việc: lịch sự, gọn gàng, vẫn ấm áp chứ không cứng nhắc.
-- **Thân mật** — nhắn bạn bè, mạng xã hội: contractions, slang tự nhiên như tin nhắn thật.
+- **Thân mật** — nhắn bạn bè, mạng xã hội: contractions, slang tự nhiên như tin nhắn thật. Viết như ngườ thật nhắn tin: bỏ apostrophe (im, dont, gonna), viết tắt chat phổ biến (u, rn, tbh, ngl...), lowercase theo vibe.
 
 DeepL là engine dịch thuần nên không áp dụng phong cách này.
 
@@ -71,6 +75,13 @@ Cấu trúc:
 - `content.js` — dịch trang + nút ✨ EN trên ô nhập.
 - `options.html` / `options.js` — trang Cài đặt (quản lý key).
 - `popup.html` / `popup.js` — tác vụ nhanh.
+
+## Khắc phục sự cố
+
+- **Không dịch được trang**: reload tab sau khi cài/nâng cấp extension (content script cũ chưa khớp background mới).
+- Chỉ giữ **1 bản extension** duy nhất — xoá các bản cũ/trùng trong `chrome://extensions` để tránh xung đột.
+- Kiểm tra log lỗi tại `brave://extensions` hoặc `chrome://extensions` → mục extension → **Service worker** → Console.
+- Bấm nút **Test API** trong popup để kiểm tra provider/key còn hoạt động không.
 
 ## Lưu ý
 

@@ -6,6 +6,7 @@ const { CONFIG_STORAGE_KEY, normalizeConfig } = globalThis.NPT_PROVIDERS;
 const KEYS = {
   defaultMode: 'tm-native-en-default-mode',
   fallbackQuick: 'tm-native-en-fallback-quick',
+  pageUseProvider: 'tm-page-use-provider',
 };
 
 const $ = selector => document.querySelector(selector);
@@ -53,6 +54,7 @@ async function loadSettings() {
   const values = await chrome.storage.local.get([...Object.values(KEYS), CONFIG_STORAGE_KEY]);
   $('#defaultMode').value = values[KEYS.defaultMode] === 'quick' ? 'quick' : 'native';
   $('#fallbackQuick').checked = values[KEYS.fallbackQuick] !== false;
+  $('#pageUseProvider').checked = values[KEYS.pageUseProvider] !== false;
   $('#tone').value = normalizeConfig(values[CONFIG_STORAGE_KEY]).tone;
 }
 
@@ -60,6 +62,7 @@ async function saveSettings() {
   await chrome.storage.local.set({
     [KEYS.defaultMode]: $('#defaultMode').value,
     [KEYS.fallbackQuick]: $('#fallbackQuick').checked,
+    [KEYS.pageUseProvider]: $('#pageUseProvider').checked,
   });
 }
 
@@ -108,6 +111,7 @@ document.querySelectorAll('[data-lang]').forEach(button => {
 });
 $('#defaultMode').addEventListener('change', () => saveSettings().catch(error => setStatus(error.message, true)));
 $('#fallbackQuick').addEventListener('change', () => saveSettings().catch(error => setStatus(error.message, true)));
+$('#pageUseProvider').addEventListener('change', () => saveSettings().catch(error => setStatus(error.message, true)));
 $('#tone').addEventListener('change', () => saveTone().catch(error => setStatus(error.message, true)));
 $('#testApi').addEventListener('click', () => testApi().catch(error => setStatus(error.message, true)));
 $('#openOptions').addEventListener('click', () => chrome.runtime.openOptionsPage());
