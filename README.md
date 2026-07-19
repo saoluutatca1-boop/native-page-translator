@@ -1,51 +1,78 @@
-# Native Page Translator VI / EN — Extension v4
+# Native Page Translator VI / EN — Extension v4.1
 
-Bản v4 sửa lỗi API và giảm số request khi dịch cả trang.
+Dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh tự nhiên.
+Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini · OpenAI-compatible) với xoay vòng key tự động.
 
-## Nâng cấp từ v3
+## Cài đặt / nâng cấp
 
-1. Giải nén ZIP v4 vào một thư mục mới.
-2. Mở `chrome://extensions` hoặc `edge://extensions`.
-3. Có thể xóa v3 rồi chọn **Load unpacked**, hoặc chép đè file v4 vào thư mục cũ và bấm **Reload**.
-4. Tải lại toàn bộ tab web đang mở. Bước này bắt buộc vì tab cũ vẫn giữ content script v3.
+1. Giải nén ZIP (hoặc `git clone`) vào một thư mục.
+2. Mở `chrome://extensions` hoặc `edge://extensions`, bật **Developer mode**.
+3. Chọn **Load unpacked** → trỏ vào **đúng thư mục chứa file `manifest.json`**.
+   - Nếu tải ZIP từ GitHub, sau khi giải nén thường có thư mục lồng `native-page-translator-main/` — hãy chọn thư mục bên trong đó.
+   - Lỗi "Could not load manifest" gần như luôn do chọn sai cấp thư mục.
+4. Tải lại toàn bộ tab web đang mở sau khi cài/nâng cấp.
+
+## Nhiều API key (v4.1)
+
+Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options**):
+
+- **DeepL** — hỗ trợ tiếng Việt. Key free kết thúc bằng `:fx` (endpoint `api-free.deepl.com`), key Pro tự nhận diện.
+  Extension **seed sẵn 1 key DeepL Free mặc định** để dùng ngay — xoá được trong Cài đặt.
+- **Google AI Studio (Gemini)** — lấy key tại <https://aistudio.google.com/apikey>, model mặc định `gemini-2.5-flash`.
+- **OpenAI-compatible** — endpoint tùy ý (OpenAI, LibreTranslate, API tự host...), có thể không cần key.
+
+Mỗi provider thêm được **nhiều key**. Khi dịch:
+
+1. Thử **provider ưu tiên** trước (chọn trong Cài đặt).
+2. Key bị từ chối (401/403) hoặc hết quota (429/456) → tự xoay sang **key tiếp theo**.
+3. Hết key → tự chuyển sang **provider tiếp theo** đang bật.
+4. Tất cả đều lỗi → báo gộp lý do từng provider (và fallback miễn phí nếu bật).
+
+### Lưu trữ & riêng tư
+
+- Key chỉ lưu trong `chrome.storage.local` của extension — **gỡ extension là xoá sạch toàn bộ dữ liệu**.
+- Key không được gửi đi đâu ngoài chính API của provider tương ứng.
 
 ## Dịch miễn phí không cần key
 
-Chế độ **Free fallback** lần lượt thử:
+Chế độ **Free fallback** lần lượt thử: Google Translate API endpoint → Google Translate web endpoint → MyMemory (đoạn ngắn). Gặp 429/lỗi server sẽ tự chờ rồi thử lại; dịch cả trang được gom batch để tránh hàng trăm request lẻ.
 
-1. Google Translate API endpoint.
-2. Google Translate web endpoint.
-3. MyMemory với đoạn ngắn.
+## Nút ✨ EN (đổi văn bản đang gõ sang tiếng Anh)
 
-Khi gặp lỗi 429 hoặc lỗi máy chủ, extension tự chờ ngắn rồi thử lại. Khi dịch cả trang, nhiều đoạn chữ được gom thành batch để tránh gửi hàng trăm request riêng lẻ.
+- `✨ EN` / `Alt+Shift+E`: dùng API riêng (DeepL/Gemini/OpenAI), có fallback miễn phí nếu bật.
+- `Alt+Shift+G`: dịch miễn phí trực tiếp.
 
-## Tích hợp API free của một website
+### Phong cách dịch bản địa (v4.1)
 
-Mở popup extension → **Mở rộng**, rồi điền:
+Với Gemini/OpenAI, chọn giọng văn trong popup hoặc Cài đặt:
 
-- **API URL**: URL đầy đủ của endpoint.
-- **API key**: có thể để trống nếu API không yêu cầu.
-- **Model**: chỉ cần với API AI.
-- **Định dạng API**:
-  - `Tự nhận diện`: nhận dạng theo URL.
-  - `OpenAI Responses`: endpoint dạng `/v1/responses`.
-  - `OpenAI-compatible Chat`: endpoint dạng `/v1/chat/completions`.
-  - `LibreTranslate`: POST JSON với `q`, `source`, `target`.
-  - `Generic JSON translate`: gửi nhiều tên trường phổ biến và đọc `translatedText`, `translation`, `text`, `result` hoặc các trường tương tự trong `data`.
+- **Tự nhiên** — bám đúng văn phong gốc: nghiêm túc ra nghiêm túc, đùa cợt ra đùa cợt; xử lý anh/chị/em/ơi/nhé/đấy theo sắc thái xã giao tự nhiên của tiếng Anh, thành ngữ dịch sang thành ngữ tương đương.
+- **Trang trọng** — email, LinkedIn, chat công việc: lịch sự, gọn gàng, vẫn ấm áp chứ không cứng nhắc.
+- **Thân mật** — nhắn bạn bè, mạng xã hội: contractions, slang tự nhiên như tin nhắn thật.
 
-Bấm **Test API**. Lần đầu dùng domain API tùy chỉnh, Chrome/Edge sẽ hỏi quyền truy cập đúng domain đó.
+DeepL là engine dịch thuần nên không áp dụng phong cách này.
 
-## Fallback khi API lỗi
+## Phím tắt dịch trang
 
-Bật **Tự dịch miễn phí khi Native API lỗi**. Khi API free hoặc AI bị hết quota, sai model, timeout hay trả JSON lạ, nút `✨ EN` sẽ tự chuyển sang dịch miễn phí thay vì dừng và báo lỗi.
+- `Alt+V`: dịch trang sang tiếng Việt.
+- `Alt+E`: dịch trang sang tiếng Anh.
+- `Alt+O`: về bản gốc.
 
-## Phím tắt
+## Phát triển
 
-- `Alt + Shift + E`: Native API, có fallback nếu bật.
-- `Alt + Shift + G`: dịch miễn phí trực tiếp.
+```bash
+node tests/providers.test.js   # chạy unit test cho providers.js
+```
+
+Cấu trúc:
+
+- `providers.js` — định nghĩa provider + xoay vòng key (JS thuần, dùng chung cho background/options, test được bằng node).
+- `background.js` — service worker: routing dịch, seed config, proxy fetch có kiểm soát quyền.
+- `content.js` — dịch trang + nút ✨ EN trên ô nhập.
+- `options.html` / `options.js` — trang Cài đặt (quản lý key).
+- `popup.html` / `popup.js` — tác vụ nhanh.
 
 ## Lưu ý
 
-- Extension không tự tính phí hay trừ token. API bên thứ ba vẫn có thể áp dụng quota, giới hạn request hoặc cách tính riêng.
-- Extension không thể chạy trên `chrome://`, `edge://`, Chrome Web Store và một số trang hệ thống.
-- Với file local, bật **Allow access to file URLs** trong trang chi tiết extension.
+- Extension không tự tính phí hay trừ token; API bên thứ ba vẫn áp quota/giới hạn riêng (DeepL Free: 500.000 ký tự/tháng).
+- Extension không chạy được trên `chrome://`, `edge://`, Chrome Web Store và một số trang hệ thống.

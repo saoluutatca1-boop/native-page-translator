@@ -1,52 +1,19 @@
+/* Popup — tác vụ nhanh: dịch trang, chọn chế độ, xem trạng thái provider. */
+'use strict';
+
+const { CONFIG_STORAGE_KEY, normalizeConfig } = globalThis.NPT_PROVIDERS;
+
 const KEYS = {
-  apiUrl: 'tm-native-en-api-url',
-  apiKey: 'tm-native-en-openai-key',
-  model: 'tm-native-en-openai-model',
-  apiFormat: 'tm-native-en-api-format',
-  context: 'tm-native-en-use-context',
   defaultMode: 'tm-native-en-default-mode',
   fallbackQuick: 'tm-native-en-fallback-quick',
 };
 
-const BUILTIN_ORIGINS = new Set([
-  'https://api.openai.com',
-  'https://translate.googleapis.com',
-  'https://translate.google.com',
-  'https://api.mymemory.translated.net',
-]);
-
 const $ = selector => document.querySelector(selector);
-const status = $('#status');
+const statusElement = $('#status');
 
 function setStatus(text, error = false) {
-  status.textContent = text;
-  status.style.color = error ? '#fca5a5' : '#93c5fd';
-}
-
-function readForm() {
-  return {
-    [KEYS.apiUrl]: $('#apiUrl').value.trim() || 'https://api.openai.com/v1/responses',
-    [KEYS.apiKey]: $('#apiKey').value.trim(),
-    [KEYS.model]: $('#model').value.trim() || 'gpt-5-mini',
-    [KEYS.apiFormat]: $('#apiFormat').value,
-    [KEYS.context]: $('#useContext').checked,
-    [KEYS.defaultMode]: $('#defaultMode').value,
-    [KEYS.fallbackQuick]: $('#fallbackQuick').checked,
-  };
-}
-
-async function requestEndpointPermission(endpoint) {
-  let url;
-  try {
-    url = new URL(endpoint);
-  } catch (_) {
-    throw new Error('API URL không hợp lệ');
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('API URL phải dùng HTTP/HTTPS');
-  if (BUILTIN_ORIGINS.has(url.origin)) return true;
-
-  const pattern = `${url.origin}/*`;
-  return chrome.permissions.request({ origins: [pattern] });
+  statusElement.textContent = text;
+  statusElement.style.color = error ? '#fca5a5' : '#93c5fd';
 }
 
 async function getActiveTab() {
@@ -83,28 +50,43 @@ async function setPageLanguage(language) {
 }
 
 async function loadSettings() {
-  const values = await chrome.storage.local.get(Object.values(KEYS));
-  $('#apiUrl').value = values[KEYS.apiUrl] || 'https://api.openai.com/v1/responses';
-  $('#apiKey').value = values[KEYS.apiKey] || '';
-  $('#model').value = values[KEYS.model] || 'gpt-5-mini';
-  $('#apiFormat').value = values[KEYS.apiFormat] || 'auto';
-  $('#useContext').checked = values[KEYS.context] !== false;
+  const values = await chrome.storage.local.get([...Object.values(KEYS), CONFIG_STORAGE_KEY]);
   $('#defaultMode').value = values[KEYS.defaultMode] === 'quick' ? 'quick' : 'native';
   $('#fallbackQuick').checked = values[KEYS.fallbackQuick] !== false;
+  $('#tone').value = normalizeConfig(values[CONFIG_STORAGE_KEY]).tone;
 }
 
-async function saveSettings(showSaved = true) {
-  const values = readForm();
-  const granted = await requestEndpointPermission(values[KEYS.apiUrl]);
-  if (!granted) throw new Error('M chưa cấp quyền truy cập API URL này');
-  await chrome.storage.local.set(values);
-  if (showSaved) setStatus('Đã lưu cài đặt');
-  return values;
+async function saveSettings() {
+  await chrome.storage.local.set({
+    [KEYS.defaultMode]: $('#defaultMode').value,
+    [KEYS.fallbackQuick]: $('#fallbackQuick').checked,
+  });
+}
+
+async function saveTone() {
+  const values = await chrome.storage.local.get([CONFIG_STORAGE_KEY]);
+  const config = normalizeConfig(values[CONFIG_STORAGE_KEY]);
+  config.tone = $('#tone').value;
+  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: config });
+}
+
+async function loadProviderStatus() {
+  const element = $('#providerStatus');
+  const result = await chrome.runtime.sendMessage({ type: 'getProviderStatus' }).catch(() => null);
+  if (!result?.ok || !result.configured) {
+    element.textContent = 'Chưa cấu hình provider nào — bấm "Quản lý key" để thêm API key.';
+    return;
+  }
+
+  const parts = result.active.map(id => {
+    const provider = result.providers[id];
+    return `${provider?.label || id} (${provider?.keyCount || 0} key)`;
+  });
+  element.textContent = `Đang dùng: ${parts.join(' → ')}`;
 }
 
 async function testApi() {
   setStatus('Đang test API…');
-  await saveSettings(false);
   const result = await chrome.runtime.sendMessage({
     type: 'nativeTranslate',
     payload: {
@@ -112,14 +94,24 @@ async function testApi() {
       context: 'This is a connection test. Return only the English translation.',
     },
   });
-  if (!result?.ok) throw new Error(result?.error || 'API test thất bại');
-  setStatus(`API hoạt động:\n${result.text}`);
+  if (!result?.ok) {
+    const message = result?.error === 'NO_API_KEY'
+      ? 'Chưa có provider nào được bật kèm API key'
+      : (result?.error || 'API test thất bại');
+    throw new Error(message);
+  }
+  setStatus(`API hoạt động (${result.providerLabel}):\n${result.text}`);
 }
 
 document.querySelectorAll('[data-lang]').forEach(button => {
   button.addEventListener('click', () => setPageLanguage(button.dataset.lang).catch(error => setStatus(error.message, true)));
 });
-$('#save').addEventListener('click', () => saveSettings().catch(error => setStatus(error.message, true)));
+$('#defaultMode').addEventListener('change', () => saveSettings().catch(error => setStatus(error.message, true)));
+$('#fallbackQuick').addEventListener('change', () => saveSettings().catch(error => setStatus(error.message, true)));
+$('#tone').addEventListener('change', () => saveTone().catch(error => setStatus(error.message, true)));
 $('#testApi').addEventListener('click', () => testApi().catch(error => setStatus(error.message, true)));
-$('#openOptions')?.addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('#openOptions').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('#openOptions2').addEventListener('click', () => chrome.runtime.openOptionsPage());
+
 loadSettings().catch(error => setStatus(error.message, true));
+loadProviderStatus();

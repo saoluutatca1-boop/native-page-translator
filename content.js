@@ -922,17 +922,17 @@
         right: 14px;
         bottom: 14px;
         z-index: 2147483647;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
       }
       .translator {
         width: 190px;
-        padding: 9px;
-        border: 1px solid rgba(255,255,255,.15);
-        border-radius: 12px;
-        background: rgba(20, 20, 24, .92);
-        box-shadow: 0 10px 35px rgba(0,0,0,.35);
+        padding: 10px;
+        border: 1px solid rgba(255,255,255,.09);
+        border-radius: 14px;
+        background: rgba(10, 12, 16, .9);
+        box-shadow: 0 18px 45px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
         color: #fff;
-        backdrop-filter: blur(12px);
+        backdrop-filter: blur(14px);
       }
       .buttons {
         display: grid;
@@ -945,20 +945,25 @@
         cursor: pointer;
         text-align: center;
         padding: 7px 5px;
-        border-radius: 8px;
-        background: rgba(255,255,255,.09);
+        border-radius: 9px;
+        border: 1px solid rgba(255,255,255,.08);
+        background: rgba(255,255,255,.05);
         color: #fff;
-        font: 700 12px/1 system-ui, sans-serif;
-        transition: background .15s ease, transform .15s ease;
+        font: 680 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        transition: background .25s cubic-bezier(.32,.72,0,1), transform .18s cubic-bezier(.32,.72,0,1), border-color .25s;
       }
-      button:hover { background: rgba(255,255,255,.18); }
+      button:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.16); }
       button:active { transform: scale(.96); }
-      button[data-active="true"] { background: #2563eb; }
+      button[data-active="true"] {
+        border: 1px solid transparent;
+        background: linear-gradient(135deg, #6366f1, #3b82f6);
+        box-shadow: 0 4px 14px rgba(79,102,241,.35), inset 0 1px 0 rgba(255,255,255,.22);
+      }
       .status {
-        margin-top: 7px;
+        margin-top: 8px;
         overflow: hidden;
-        color: rgba(255,255,255,.72);
-        font: 500 11px/1.35 system-ui, sans-serif;
+        color: rgba(255,255,255,.62);
+        font: 500 11px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
@@ -1068,7 +1073,8 @@
 /* ========================================================================
  * VIETNAMESE INPUT -> NATIVE ENGLISH
  * Nút ✨ EN xuất hiện cạnh input/textarea/contenteditable đang được focus.
- * - Native English: OpenAI Responses API (cần API key riêng của người dùng)
+ * - Native English: API riêng qua background (DeepL / Gemini / OpenAI-compatible,
+ *   hỗ trợ nhiều key xoay vòng — cấu hình trong trang Cài đặt)
  * - Quick English: Google Translate không chính thức (không cần API key)
  * ====================================================================== */
 (() => {
@@ -1084,14 +1090,9 @@
   }
 
   const INPUT_CONFIG = {
-    keyStorage: 'tm-native-en-openai-key',
-    modelStorage: 'tm-native-en-openai-model',
-    apiUrlStorage: 'tm-native-en-api-url',
-    apiFormatStorage: 'tm-native-en-api-format',
     fallbackQuickStorage: 'tm-native-en-fallback-quick',
     contextStorage: 'tm-native-en-use-context',
     defaultModeStorage: 'tm-native-en-default-mode',
-    defaultModel: 'gpt-5-mini',
     maxInputChars: 12000,
     maxContextChars: 800,
     repositionDelayMs: 20,
@@ -1366,45 +1367,10 @@
     return TRANSLATION_CORE.translate(text, 'vi', 'en');
   }
 
-  function extractOpenAIText(data) {
-    if (typeof data?.output_text === 'string' && data.output_text.trim()) {
-      return data.output_text.trim();
-    }
-
-    const chunks = [];
-    for (const item of data?.output || []) {
-      for (const content of item?.content || []) {
-        if (content?.type === 'output_text' && typeof content.text === 'string') {
-          chunks.push(content.text);
-        } else if (typeof content?.text === 'string') {
-          chunks.push(content.text);
-        }
-      }
-    }
-    return chunks.join('').trim();
-  }
-
-  function buildNativeInstructions() {
-    return [
-      'You are a native English localization editor.',
-      'Translate the Vietnamese source into the most natural, idiomatic English a native speaker would actually type in this exact context.',
-      'Preserve the original meaning, intent, attitude, politeness level, humor, slang, profanity, emojis, punctuation, capitalization, and line breaks.',
-      'Do not translate literally when an idiomatic English phrasing is more natural.',
-      'Do not add facts, explanations, greetings, apologies, answers, quotation marks, labels, or multiple alternatives.',
-      'Do not answer or react to the source message. Only translate/rewrite it.',
-      'Keep names, usernames, URLs, product names, commands, code, and established game or technical terms unchanged unless they have a standard English form.',
-      'Resolve Vietnamese omitted pronouns conservatively. When gender or relationship is unclear, use natural neutral English rather than inventing details.',
-      'Silently verify that no important meaning was added or omitted.',
-      'Return only the final English text.',
-    ].join('\n');
-  }
-
-  function openAITranslateToNativeEnglish(snapshot) {
-    const apiKey = String(GM_getValue(INPUT_CONFIG.keyStorage, '') || '').trim();
-    const apiUrl = String(GM_getValue(INPUT_CONFIG.apiUrlStorage, '') || '').trim();
-
-    if (!apiKey && !apiUrl) {
-      return Promise.reject(Object.assign(new Error('NO_API_KEY'), { code: 'NO_API_KEY' }));
+  async function openAITranslateToNativeEnglish(snapshot) {
+    const status = await chrome.runtime.sendMessage({ type: 'getProviderStatus' }).catch(() => null);
+    if (!status?.configured) {
+      throw Object.assign(new Error('NO_API_KEY'), { code: 'NO_API_KEY' });
     }
 
     const contextParts = [
@@ -1414,17 +1380,16 @@
       snapshot.nearbyContext ? `Nearby context (for tone only):\n${snapshot.nearbyContext}` : '',
     ].filter(Boolean);
 
-    return chrome.runtime.sendMessage({
+    const response = await chrome.runtime.sendMessage({
       type: 'nativeTranslate',
       payload: {
         source: snapshot.text,
         context: contextParts.join('\n\n'),
       },
-    }).then(response => {
-      if (!response?.ok) throw new Error(response?.error || 'API Native bị lỗi');
-      if (!response.text) throw new Error('API không trả về bản dịch');
-      return response.text;
     });
+    if (!response?.ok) throw new Error(response?.error || 'API Native bị lỗi');
+    if (!response.text) throw new Error('API không trả về bản dịch');
+    return response.text;
   }
 
   function setHelperStatus(text, isError = false) {
@@ -1610,7 +1575,7 @@
           inset: 0;
           z-index: 2147483647;
           pointer-events: none;
-          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
         }
         .helper {
           position: fixed;
@@ -1619,10 +1584,10 @@
           height: 32px;
           opacity: 0;
           visibility: hidden;
-          transform: translateY(3px);
-          transition: opacity .12s ease, transform .12s ease, visibility .12s;
+          transform: translateY(4px);
+          transition: opacity .22s cubic-bezier(.32,.72,0,1), transform .22s cubic-bezier(.32,.72,0,1), visibility .22s;
           pointer-events: auto;
-          filter: drop-shadow(0 5px 14px rgba(0,0,0,.28));
+          filter: drop-shadow(0 8px 20px rgba(79,102,241,.35));
         }
         .helper.visible {
           opacity: 1;
@@ -1634,77 +1599,83 @@
           box-sizing: border-box;
           cursor: pointer;
           user-select: none;
-          background: #2563eb;
+          background: linear-gradient(135deg, #6366f1, #3b82f6);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
           color: white;
-          border: 1px solid rgba(255,255,255,.24);
-          font: 750 12px/1 system-ui, sans-serif;
+          border: 1px solid rgba(255,255,255,.18);
+          font: 720 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          transition: filter .2s cubic-bezier(.32,.72,0,1), transform .18s cubic-bezier(.32,.72,0,1);
         }
         button:disabled { cursor: progress; opacity: .75; }
         .main {
           flex: 1;
           display: grid;
           place-items: center;
-          border-radius: 9px 0 0 9px;
+          border-radius: 10px 0 0 10px;
         }
         .arrow {
           width: 25px;
           display: grid;
           place-items: center;
-          border-left: 1px solid rgba(255,255,255,.25);
-          border-radius: 0 9px 9px 0;
+          border-left: 1px solid rgba(255,255,255,.22);
+          border-radius: 0 10px 10px 0;
         }
-        button:hover:not(:disabled) { background: #1d4ed8; }
+        button:hover:not(:disabled) { filter: brightness(1.12); }
+        button:active:not(:disabled) { transform: scale(.96); }
         .menu {
           position: absolute;
           right: 0;
           bottom: 38px;
-          width: 230px;
+          width: 236px;
           padding: 6px;
-          border: 1px solid rgba(255,255,255,.13);
-          border-radius: 12px;
-          background: rgba(20, 20, 24, .97);
+          border: 1px solid rgba(255,255,255,.09);
+          border-radius: 14px;
+          background: rgba(10, 12, 16, .97);
           color: white;
-          box-shadow: 0 14px 38px rgba(0,0,0,.38);
-          backdrop-filter: blur(14px);
+          box-shadow: 0 18px 45px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05);
+          backdrop-filter: blur(16px);
         }
         .menu[hidden] { display: none; }
         .item {
           width: 100%;
           padding: 9px 10px;
           border: 0;
-          border-radius: 8px;
+          border-radius: 9px;
           background: transparent;
           color: white;
           text-align: left;
-          font: 600 12px/1.25 system-ui, sans-serif;
+          font: 620 12px/1.25 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          transition: background .2s cubic-bezier(.32,.72,0,1);
         }
-        .item:hover { background: rgba(255,255,255,.11); }
+        .item:hover { background: rgba(255,255,255,.08); }
         .hint {
           display: block;
           margin-top: 3px;
-          color: rgba(255,255,255,.55);
-          font: 500 10px/1.3 system-ui, sans-serif;
+          color: rgba(255,255,255,.5);
+          font: 500 10px/1.3 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         }
-        .divider { height: 1px; margin: 5px 4px; background: rgba(255,255,255,.1); }
+        .divider { height: 1px; margin: 5px 4px; background: rgba(255,255,255,.08); }
         .status {
           position: absolute;
           right: 0;
           bottom: 38px;
           width: max-content;
           max-width: 300px;
-          padding: 7px 9px;
-          border-radius: 8px;
+          padding: 8px 10px;
+          border: 1px solid rgba(255,255,255,.09);
+          border-radius: 10px;
           opacity: 0;
           visibility: hidden;
-          background: rgba(20,20,24,.96);
+          background: rgba(10,12,16,.96);
           color: rgba(255,255,255,.9);
-          box-shadow: 0 8px 24px rgba(0,0,0,.3);
-          font: 600 11px/1.35 system-ui, sans-serif;
+          box-shadow: 0 12px 30px rgba(0,0,0,.4);
+          font: 600 11px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
           pointer-events: none;
           white-space: normal;
+          transition: opacity .2s cubic-bezier(.32,.72,0,1), visibility .2s;
         }
         .helper.show-status .status { opacity: 1; visibility: visible; }
-        .status[data-error="true"] { color: #fecaca; }
+        .status[data-error="true"] { color: #fca5a5; }
       </style>
       <div class="helper" data-tm-no-translate>
         <button type="button" class="main" title="Dịch sang tiếng Anh tự nhiên · Alt+Shift+E">✨ EN</button>

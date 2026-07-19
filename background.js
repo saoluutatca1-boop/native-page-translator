@@ -1,11 +1,32 @@
+importScripts('providers.js');
+
+const {
+  CONFIG_STORAGE_KEY,
+  PROVIDER_DEFS,
+  normalizeConfig,
+  usableProviders,
+  translateWithRotation,
+  createKeyState,
+} = globalThis.NPT_PROVIDERS;
+
 const BUILTIN_ORIGINS = new Set([
   'https://translate.googleapis.com',
   'https://translate.google.com',
   'https://api.mymemory.translated.net',
   'https://api.openai.com',
+  'https://generativelanguage.googleapis.com',
+  'https://api-free.deepl.com',
+  'https://api.deepl.com',
 ]);
 
-const KEYS = {
+// Key DeepL Free được seed sẵn khi cài extension. Nằm trong chrome.storage.local
+// nên gỡ extension là mất hoàn toàn — xoá được trong trang Cài đặt.
+const DEFAULT_DEEPL_KEY = '16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx';
+
+// Trạng thái cooldown/con trỏ xoay vòng key, sống trong bộ nhớ service worker.
+const keyState = createKeyState();
+
+const LEGACY_KEYS = {
   apiUrl: 'tm-native-en-api-url',
   apiKey: 'tm-native-en-openai-key',
   model: 'tm-native-en-openai-model',
@@ -13,7 +34,7 @@ const KEYS = {
 };
 
 function normalizeEndpoint(value) {
-  const fallback = 'https://api.openai.com/v1/responses';
+  const fallback = PROVIDER_DEFS.openai.defaultUrl;
   const raw = String(value || fallback).trim();
   const url = new URL(raw);
   if (!['http:', 'https:'].includes(url.protocol)) {
@@ -22,13 +43,52 @@ function normalizeEndpoint(value) {
   return url;
 }
 
+/* ------------------------------------------------------------------
+ * Đọc cấu hình multi-provider. Nếu chưa có (lần cài đầu / sau update):
+ *  - seed key DeepL mặc định
+ *  - migrate cài đặt API đơn lẻ của bản cũ (v4.0) sang provider openai
+ * ------------------------------------------------------------------ */
+async function ensureConfig() {
+  const values = await chrome.storage.local.get([CONFIG_STORAGE_KEY, ...Object.values(LEGACY_KEYS)]);
+  if (values[CONFIG_STORAGE_KEY]) {
+    return normalizeConfig(values[CONFIG_STORAGE_KEY]);
+  }
+
+  const config = normalizeConfig({
+    preferred: 'deepl',
+    providers: {
+      deepl: {
+        enabled: true,
+        keys: [{ key: DEFAULT_DEEPL_KEY, label: 'DeepL Free (mặc định)' }],
+      },
+    },
+  });
+
+  const legacyKey = String(values[LEGACY_KEYS.apiKey] || '').trim();
+  const legacyUrl = String(values[LEGACY_KEYS.apiUrl] || '').trim();
+  const legacyModel = String(values[LEGACY_KEYS.model] || '').trim();
+  const legacyFormat = String(values[LEGACY_KEYS.apiFormat] || '').trim();
+
+  if (legacyKey || legacyUrl) {
+    const openai = config.providers.openai;
+    openai.enabled = true;
+    if (legacyUrl) openai.url = legacyUrl;
+    if (legacyModel) openai.model = legacyModel;
+    if (legacyFormat) openai.format = legacyFormat;
+    if (legacyKey) openai.keys = [{ key: legacyKey, label: 'Key từ bản cũ' }];
+  }
+
+  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: config });
+  return config;
+}
+
 async function isRemoteAllowed(url) {
   if (BUILTIN_ORIGINS.has(url.origin)) return true;
 
-  const values = await chrome.storage.local.get([KEYS.apiUrl]);
+  const config = await ensureConfig();
   let configured;
   try {
-    configured = normalizeEndpoint(values[KEYS.apiUrl]);
+    configured = normalizeEndpoint(config.providers.openai?.url);
   } catch (_) {
     return false;
   }
@@ -80,149 +140,51 @@ async function rawFetch(payload) {
   }
 }
 
-function buildNativeInstructions() {
-  return [
-    'You are a native English localization editor.',
-    'Translate the Vietnamese source into the most natural, idiomatic English a native speaker would actually type in this exact context.',
-    'Preserve the original meaning, intent, attitude, politeness level, humor, slang, profanity, emojis, punctuation, capitalization, and line breaks.',
-    'Do not translate literally when an idiomatic English phrasing is more natural.',
-    'Do not add facts, explanations, greetings, apologies, answers, quotation marks, labels, or multiple alternatives.',
-    'Do not answer or react to the source message. Only translate/rewrite it.',
-    'Keep names, usernames, URLs, product names, commands, code, and established game or technical terms unchanged unless they have a standard English form.',
-    'Resolve Vietnamese omitted pronouns conservatively. When gender or relationship is unclear, use natural neutral English rather than inventing details.',
-    'Silently verify that no important meaning was added or omitted.',
-    'Return only the final English text.',
-  ].join('\n');
-}
-
-function extractPath(object, path) {
-  return String(path || '').split('.').reduce((value, key) => value?.[key], object);
-}
-
-function extractTranslatedText(data, format) {
-  if (format === 'responses') {
-    if (typeof data?.output_text === 'string' && data.output_text.trim()) return data.output_text.trim();
-    const chunks = [];
-    for (const item of data?.output || []) {
-      for (const content of item?.content || []) {
-        if (typeof content?.text === 'string') chunks.push(content.text);
-      }
-    }
-    return chunks.join('').trim();
-  }
-
-  if (format === 'chat') {
-    const value = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text;
-    if (typeof value === 'string') return value.trim();
-    if (Array.isArray(value)) {
-      return value.map(part => typeof part === 'string' ? part : part?.text || '').join('').trim();
-    }
-    return '';
-  }
-
-  const candidates = [
-    data?.translatedText,
-    data?.translation,
-    data?.text,
-    data?.result,
-    data?.responseData?.translatedText,
-    extractPath(data, 'data.translatedText'),
-    extractPath(data, 'data.translation'),
-    extractPath(data, 'data.text'),
-  ];
-  return candidates.find(value => typeof value === 'string' && value.trim())?.trim() || '';
-}
-
 async function nativeTranslate(payload) {
-  const values = await chrome.storage.local.get(Object.values(KEYS));
-  const endpoint = normalizeEndpoint(values[KEYS.apiUrl]);
-  const apiKey = String(values[KEYS.apiKey] || '').trim();
-  const model = String(values[KEYS.model] || 'gpt-5-mini').trim();
-  let format = String(values[KEYS.apiFormat] || 'auto').trim();
+  const config = await ensureConfig();
 
-  if (format === 'auto') {
-    if (/\/responses\/?$/i.test(endpoint.pathname)) format = 'responses';
-    else if (/\/chat\/completions\/?$/i.test(endpoint.pathname)) format = 'chat';
-    else if (/libretranslate|\/translate\/?$/i.test(endpoint.href)) format = 'libre';
-    else format = 'chat';
-  }
-
-  const source = String(payload?.source || '').trim();
-  if (!source) throw new Error('Không có nội dung cần dịch');
-
-  const context = String(payload?.context || '').trim();
-  const instructions = buildNativeInstructions();
-  const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-
-  let body;
-  if (format === 'responses') {
-    body = {
-      model,
-      instructions,
-      input: context ? `${context}\n\nVietnamese source:\n${source}` : source,
-      max_output_tokens: 900,
-      store: false,
-    };
-  } else if (format === 'chat') {
-    body = {
-      model,
-      messages: [
-        { role: 'system', content: instructions },
-        { role: 'user', content: context ? `${context}\n\nVietnamese source:\n${source}` : source },
-      ],
-      stream: false,
-    };
-  } else if (format === 'libre') {
-    body = {
-      q: source,
-      source: 'vi',
-      target: 'en',
-      format: 'text',
-    };
-    if (apiKey) {
-      delete headers.Authorization;
-      body.api_key = apiKey;
-    }
-  } else {
-    body = {
-      text: source,
-      q: source,
-      source: 'vi',
-      target: 'en',
-      source_language: 'vi',
-      target_language: 'en',
-      context,
-      model,
-    };
-  }
-
-  const response = await rawFetch({
-    method: 'POST',
-    url: endpoint.href,
-    timeout: 60000,
-    headers,
-    data: JSON.stringify(body),
+  const result = await translateWithRotation({
+    config,
+    source: payload?.source,
+    context: String(payload?.context || '').trim(),
+    keyState,
+    fetchText: async (request) => {
+      const response = await rawFetch({
+        method: request.method || 'POST',
+        url: request.url,
+        headers: request.headers,
+        data: request.body,
+        timeout: 60000,
+      });
+      if (!response.ok && response.networkError) {
+        return { status: 0, bodyText: '', networkError: response.networkError };
+      }
+      return { status: response.status, bodyText: response.responseText };
+    },
   });
 
-  if (!response.ok && response.networkError) throw new Error(response.networkError);
+  return { ok: true, text: result.text, provider: result.provider, providerLabel: result.providerLabel };
+}
 
-  let data;
-  try {
-    data = JSON.parse(response.responseText || '{}');
-  } catch (_) {
-    throw new Error(`API trả về dữ liệu không phải JSON (HTTP ${response.status || 0})`);
-  }
-
-  if (response.status < 200 || response.status >= 300) {
-    const message = data?.error?.message || data?.message || data?.detail || `HTTP ${response.status}`;
-    throw new Error(String(message));
-  }
-
-  const output = extractTranslatedText(data, format);
-  if (!output) throw new Error('API không trả về trường bản dịch mà extension nhận diện được');
-
-  return { ok: true, text: output, format, endpoint: endpoint.origin };
+async function providerStatus() {
+  const config = await ensureConfig();
+  const active = usableProviders(config);
+  return {
+    ok: true,
+    configured: active.length > 0,
+    preferred: config.preferred,
+    providers: Object.fromEntries(
+      Object.entries(config.providers).map(([id, provider]) => [
+        id,
+        {
+          enabled: Boolean(provider.enabled),
+          keyCount: provider.keys.length,
+          label: PROVIDER_DEFS[id]?.label || id,
+        },
+      ]),
+    ),
+    active,
+  };
 }
 
 async function broadcastToFrames(tabId, message) {
@@ -237,6 +199,14 @@ async function broadcastToFrames(tabId, message) {
   return { ok: results.some(result => result.status === 'fulfilled') };
 }
 
+chrome.runtime.onInstalled.addListener(() => {
+  ensureConfig().catch(error => console.warn('[Native Page Translator] Seed config failed:', error));
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  ensureConfig().catch(() => {});
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'proxyFetch') {
     rawFetch(message.payload).then(sendResponse).catch(error => {
@@ -248,6 +218,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'nativeTranslate') {
     nativeTranslate(message.payload).then(sendResponse).catch(error => {
       sendResponse({ ok: false, error: error?.message || String(error) });
+    });
+    return true;
+  }
+
+  if (message?.type === 'getProviderStatus') {
+    providerStatus().then(sendResponse).catch(error => {
+      sendResponse({ ok: false, configured: false, error: error?.message || String(error) });
     });
     return true;
   }

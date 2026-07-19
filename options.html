@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Native Page Translator</title>
+  <title>Native Page Translator — Cài đặt</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body class="options-page">
   <main>
-    <h1>Native Translator v4</h1>
-    <p class="sub">Dịch trang và nội dung đang gõ.</p>
+    <h1>Native Translator v4.1</h1>
+    <p class="sub">Nhiều API key: DeepL · Google AI Studio (Gemini) · OpenAI-compatible.</p>
 
     <section>
       <label>Dịch trang hiện tại</label>
@@ -23,45 +23,36 @@
     <section>
       <label for="defaultMode">Nút ✨ EN mặc định</label>
       <select id="defaultMode">
-        <option value="native">Native API — tự nhiên</option>
+        <option value="native">API riêng — tự nhiên (DeepL/Gemini/OpenAI)</option>
         <option value="quick">Free fallback — nhanh</option>
       </select>
-      <label class="check"><input id="fallbackQuick" type="checkbox"> Tự dịch miễn phí khi Native API lỗi</label>
+
+      <label for="tone" class="small-label">Phong cách dịch bản địa (Gemini / OpenAI)</label>
+      <select id="tone">
+        <option value="natural">Tự nhiên — bám đúng văn phong gốc</option>
+        <option value="professional">Trang trọng — email, công việc</option>
+        <option value="casual">Thân mật — chat, bạn bè</option>
+      </select>
+
+      <label class="check"><input id="fallbackQuick" type="checkbox"> Tự dịch miễn phí khi API riêng lỗi</label>
+      <label class="check"><input id="useContext" type="checkbox"> Dùng ngữ cảnh gần ô nhập</label>
     </section>
 
     <section>
-      <div class="section-title">
-        <label for="apiFormat">Native API</label>
-        
-      </div>
-      <label for="apiFormat" class="small-label">Định dạng API</label>
-      <select id="apiFormat">
-        <option value="auto">Tự nhận diện</option>
-        <option value="responses">OpenAI Responses</option>
-        <option value="chat">OpenAI-compatible Chat</option>
-        <option value="libre">LibreTranslate</option>
-        <option value="generic">Generic JSON translate</option>
-      </select>
-
-      <label for="apiUrl" class="small-label">API URL</label>
-      <input id="apiUrl" type="url" spellcheck="false" placeholder="https://api.openai.com/v1/responses">
-
-      <label for="apiKey" class="small-label">API key — có thể để trống</label>
-      <input id="apiKey" type="password" autocomplete="off" placeholder="Key nếu API yêu cầu">
-
-      <label for="model" class="small-label">Model — bỏ qua với API dịch thường</label>
-      <input id="model" type="text" spellcheck="false" placeholder="gpt-5-mini">
-
-      <label class="check"><input id="useContext" type="checkbox"> Dùng ngữ cảnh gần ô nhập</label>
+      <label for="preferred">Provider ưu tiên</label>
+      <select id="preferred"></select>
+      <p class="note">Khi dịch, extension thử provider ưu tiên trước; key lỗi/hết quota sẽ tự xoay sang key khác, rồi sang provider khác.</p>
+      <div id="providers"></div>
       <div class="row two action-row">
-        <button id="save" class="primary">Lưu</button>
+        <button id="save" class="primary">Lưu cài đặt</button>
         <button id="testApi">Test API</button>
       </div>
     </section>
 
     <p id="status" aria-live="polite"></p>
-    <p class="note">Dịch miễn phí dùng nhiều endpoint dự phòng. API tùy chỉnh được gọi trực tiếp từ service worker của extension.</p>
+    <p class="note">API key chỉ lưu trong <b>chrome.storage.local</b> của extension — gỡ extension là xoá sạch toàn bộ dữ liệu. Key không gửi đi đâu khác ngoài chính API của provider.</p>
   </main>
-  <script src="popup.js"></script>
+  <script src="providers.js"></script>
+  <script src="options.js"></script>
 </body>
 </html>

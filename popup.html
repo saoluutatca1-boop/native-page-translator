@@ -8,7 +8,7 @@
 </head>
 <body>
   <main>
-    <h1>Native Translator v4</h1>
+    <h1>Native Translator v4.1</h1>
     <p class="sub">Dịch trang và nội dung đang gõ.</p>
 
     <section>
@@ -23,45 +23,34 @@
     <section>
       <label for="defaultMode">Nút ✨ EN mặc định</label>
       <select id="defaultMode">
-        <option value="native">Native API — tự nhiên</option>
+        <option value="native">API riêng — tự nhiên (DeepL/Gemini/OpenAI)</option>
         <option value="quick">Free fallback — nhanh</option>
       </select>
-      <label class="check"><input id="fallbackQuick" type="checkbox"> Tự dịch miễn phí khi Native API lỗi</label>
+      <label for="tone" class="small-label">Phong cách dịch bản địa</label>
+      <select id="tone">
+        <option value="natural">Tự nhiên — bám văn phong gốc</option>
+        <option value="professional">Trang trọng — email, công việc</option>
+        <option value="casual">Thân mật — chat, bạn bè</option>
+      </select>
+      <label class="check"><input id="fallbackQuick" type="checkbox"> Tự dịch miễn phí khi API riêng lỗi</label>
     </section>
 
     <section>
       <div class="section-title">
-        <label for="apiFormat">Native API</label>
-        <button id="openOptions" class="link-button" type="button">Mở rộng</button>
+        <label>API riêng</label>
+        <button id="openOptions" class="link-button" type="button">Cài đặt &amp; key</button>
       </div>
-      <label for="apiFormat" class="small-label">Định dạng API</label>
-      <select id="apiFormat">
-        <option value="auto">Tự nhận diện</option>
-        <option value="responses">OpenAI Responses</option>
-        <option value="chat">OpenAI-compatible Chat</option>
-        <option value="libre">LibreTranslate</option>
-        <option value="generic">Generic JSON translate</option>
-      </select>
-
-      <label for="apiUrl" class="small-label">API URL</label>
-      <input id="apiUrl" type="url" spellcheck="false" placeholder="https://api.openai.com/v1/responses">
-
-      <label for="apiKey" class="small-label">API key — có thể để trống</label>
-      <input id="apiKey" type="password" autocomplete="off" placeholder="Key nếu API yêu cầu">
-
-      <label for="model" class="small-label">Model — bỏ qua với API dịch thường</label>
-      <input id="model" type="text" spellcheck="false" placeholder="gpt-5-mini">
-
-      <label class="check"><input id="useContext" type="checkbox"> Dùng ngữ cảnh gần ô nhập</label>
+      <p id="providerStatus" class="note">Đang tải…</p>
       <div class="row two action-row">
-        <button id="save" class="primary">Lưu</button>
         <button id="testApi">Test API</button>
+        <button id="openOptions2" class="primary">Quản lý key</button>
       </div>
     </section>
 
     <p id="status" aria-live="polite"></p>
-    <p class="note">Dịch miễn phí dùng nhiều endpoint dự phòng. API tùy chỉnh được gọi trực tiếp từ service worker của extension.</p>
+    <p class="note">Key lưu trong extension — gỡ extension là xoá sạch. Phím tắt: Alt+Shift+E (API riêng), Alt+Shift+G (miễn phí).</p>
   </main>
+  <script src="providers.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
