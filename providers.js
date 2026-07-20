@@ -178,12 +178,14 @@
         'Polished and concise but still warm — never stiff, robotic, or overly formal. No slang, no text-speak, correct grammar throughout.',
       ],
       casual: [
-        'Register: CASUAL. Text like a real person messaging a friend — not like an author writing prose.',
-        'Full lowercase is welcome when the source is casual. Drop apostrophes the way texters do (im, dont, cant, wont, gonna, wanna, gotta, yall, ur, u) — this register overrides the base rule about standard contractions.',
-        'Use texting shorthand when it feels natural: rn, tbh, ngl, idk, lol, lmao, btw, omg, fr, bc, cuz, pls, thx, msg, tmr, tn. Do not force it into every message.',
-        'Keep it short like a real text. Fragments are fine; do not force complete, polished sentences.',
+        'Register: CASUAL — you are a real person in your early 20s texting a friend, NOT an author writing prose.',
+        'HARD RULE: never write apostrophes in contractions. Always write im, dont, doesnt, didnt, cant, wont, isnt, arent, couldnt, shouldnt, wouldnt, thats, its, hes, shes, youre, theyre, yall — with NO apostrophe. This overrides the base rule about standard contractions.',
+        'Use real texting shorthand when it fits: idk, rn, tbh, ngl, fr, bc, cuz, lol, lmao, btw, omg, pls, thx, msg, tmr, tn, wyd, brb, gtg, ong, fs, smh, nvm. Do not force it into every line.',
+        'Prefer casual word forms over formal ones: gonna, wanna, gotta, kinda, sorta, lemme, gimme, dunno, aight.',
+        'Lowercase is the default vibe; CAPS only for emphasis. Minimal punctuation — no semicolons, no em dashes, and drop the final period like real chats.',
+        'Keep it short like a real text. Fragments are fine; never pad or complete into polished sentences.',
         'Match the emoji/slang energy of the source. If the Vietnamese is playful or uses wordplay, the English must play back with equivalent English slang or wordplay — never translate jokes literally.',
-        'Examples — "anh ơi tối nay đi chơi hong" -> "hey u free tn?" | "em đang làm gì đó" -> "wyd" | "đùa thôi đừng giận nha" -> "jk jk dont be mad lol"',
+        'Examples — "anh ơi tối nay đi chơi hong" -> "hey u free tn?" | "em đang làm gì đó" -> "wyd" | "đùa thôi đừng giận nha" -> "jk jk dont be mad lol" | "tôi không biết nữa, chắc để mai" -> "idk tbh maybe tmr" | "đợi tôi tí, tôi đang ăn cơm" -> "gimme a sec im eating"',
       ],
     };
 
@@ -192,6 +194,49 @@
 
   function buildPrompt(source, context) {
     return context ? `${context}\n\nVietnamese source:\n${source}` : source;
+  }
+
+  /* ------------------------------------------------------------------
+   * Lớp 2 của tone casual: hậu xử lý cơ học. Model (hoặc DeepL) lỡ giữ
+   * văn chuẩn thì vẫn bị ép về kiểu nhắn tin: bỏ apostrophe trong các
+   * cụm co thông dụng. Chỉ áp dụng cho tone 'casual', chỉ đường single
+   * (input helper) — KHÔNG áp cho dịch trang/batch.
+   * ------------------------------------------------------------------ */
+  const CASUAL_REWRITES = [
+    [/\bI'm\b/g, 'im'],
+    [/\bI am\b/g, 'im'],
+    [/\bdon't\b/gi, 'dont'],
+    [/\bdoesn't\b/gi, 'doesnt'],
+    [/\bdidn't\b/gi, 'didnt'],
+    [/\bcan't\b/gi, 'cant'],
+    [/\bcannot\b/gi, 'cant'],
+    [/\bwon't\b/gi, 'wont'],
+    [/\bisn't\b/gi, 'isnt'],
+    [/\baren't\b/gi, 'arent'],
+    [/\bcouldn't\b/gi, 'couldnt'],
+    [/\bshouldn't\b/gi, 'shouldnt'],
+    [/\bwouldn't\b/gi, 'wouldnt'],
+    [/\bthat's\b/gi, 'thats'],
+    [/\bit's\b/gi, 'its'],
+    [/\bhe's\b/gi, 'hes'],
+    [/\bshe's\b/gi, 'shes'],
+    [/\byou're\b/gi, 'youre'],
+    [/\bthey're\b/gi, 'theyre'],
+    [/\by'all\b/gi, 'yall'],
+    [/\bcould've\b/gi, 'couldve'],
+    [/\bshould've\b/gi, 'shouldve'],
+    [/\bwould've\b/gi, 'wouldve'],
+    // Để cuối: đại từ "I" đứng riêng -> "i" (kiểu nhắn tin). Chạy sau các
+    // quy tắc trên nên "I'm" đã thành "im" từ trước, không bị tác động.
+    [/\bI\b/g, 'i'],
+  ];
+
+  function humanizeCasual(text) {
+    let out = String(text ?? '');
+    for (const [pattern, replacement] of CASUAL_REWRITES) {
+      out = out.replace(pattern, replacement);
+    }
+    return out;
   }
 
   /* ------------------------------------------------------------------
@@ -663,8 +708,12 @@
       },
     });
 
+    const finalText = config.tone === 'casual'
+      ? humanizeCasual(outcome.verdict.text)
+      : outcome.verdict.text;
+
     return {
-      text: outcome.verdict.text,
+      text: finalText,
       provider: outcome.provider,
       providerLabel: outcome.providerLabel,
       keyMasked: outcome.keyMasked,
@@ -822,6 +871,7 @@
     maskKey,
     deeplUsageEndpoint,
     buildNativeInstructions,
+    humanizeCasual,
     buildRequest,
     classifyResponse,
     buildBatchRequest,

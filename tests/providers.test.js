@@ -563,6 +563,59 @@ async function run() {
     assert.equal(P.deeplUsageEndpoint('abc-pro'), 'https://api.deepl.com/v2/usage');
   }
 
+  // 32. Prompt casual v2: có HARD RULE cấm apostrophe + shorthand idk + few-shot
+  {
+    const prompt = P.buildNativeInstructions('casual');
+    assert.match(prompt, /HARD RULE/);
+    assert.match(prompt, /\bim\b.*\bdont\b.*\bcant\b/);
+    assert.match(prompt, /\bidk\b/);
+    assert.match(prompt, /gimme a sec im eating/);
+    // natural không được có HARD RULE
+    assert.doesNotMatch(P.buildNativeInstructions('natural'), /HARD RULE/);
+  }
+
+  // 33. humanizeCasual: bỏ apostrophe đúng chỗ, không đụng từ thường
+  {
+    assert.equal(P.humanizeCasual("I'm not sure"), 'im not sure');
+    assert.equal(P.humanizeCasual("Don't worry, it's fine"), 'dont worry, its fine');
+    assert.equal(P.humanizeCasual("That's cool, I can't come"), 'thats cool, i cant come');
+    assert.equal(P.humanizeCasual("We were there"), 'We were there'); // we're/were: không đụng
+    assert.equal(P.humanizeCasual("I could've done it"), 'i couldve done it');
+    assert.equal(P.humanizeCasual("y'all ready?"), 'yall ready?');
+    assert.equal(P.humanizeCasual(''), '');
+  }
+
+  // 34. Tone casual: output LLM bị humanize cơ học; tone natural giữ nguyên
+  {
+    const cfgCasual = P.normalizeConfig({
+      tone: 'casual',
+      providers: { gemini: { enabled: true, keys: [{ key: 'g' }], model: 'gemini-2.5-flash' } },
+    });
+    cfgCasual.preferred = 'gemini';
+    const { fetchText } = fakeFetch([
+      () => ({ status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: "I'm not sure, don't worry about it." }] } }] }) }),
+    ]);
+    const casualResult = await P.translateWithRotation({
+      config: cfgCasual, source: 'tôi không chắc nữa, đừng lo', context: '',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(casualResult.text, 'im not sure, dont worry about it.');
+
+    const cfgNatural = P.normalizeConfig({
+      tone: 'natural',
+      providers: { gemini: { enabled: true, keys: [{ key: 'g' }], model: 'gemini-2.5-flash' } },
+    });
+    cfgNatural.preferred = 'gemini';
+    const { fetchText: fetchText2 } = fakeFetch([
+      () => ({ status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: "I'm not sure." }] } }] }) }),
+    ]);
+    const naturalResult = await P.translateWithRotation({
+      config: cfgNatural, source: 'tôi không chắc', context: '',
+      fetchText: fetchText2, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(naturalResult.text, "I'm not sure.");
+  }
+
   console.log('Tất cả test providers.js đều PASS ✔');
 }
 

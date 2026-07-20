@@ -62,9 +62,9 @@ Với Gemini/OpenAI, chọn giọng văn trong popup hoặc Cài đặt:
 
 - **Tự nhiên** — bám đúng văn phong gốc: nghiêm túc ra nghiêm túc, đùa cợt ra đùa cợt; xử lý anh/chị/em/ơi/nhé/đấy theo sắc thái xã giao tự nhiên của tiếng Anh, thành ngữ dịch sang thành ngữ tương đương.
 - **Trang trọng** — email, LinkedIn, chat công việc: lịch sự, gọn gàng, vẫn ấm áp chứ không cứng nhắc.
-- **Thân mật** — nhắn bạn bè, mạng xã hội: contractions, slang tự nhiên như tin nhắn thật. Viết như ngườ thật nhắn tin: bỏ apostrophe (im, dont, gonna), viết tắt chat phổ biến (u, rn, tbh, ngl...), lowercase theo vibe.
+- **Thân mật** — nhắn bạn bè, mạng xã hội. Hệ thống 2 lớp bảo đảm giống ngườ thật: prompt ép model viết kiểu texter (cấm apostrophe, dùng idk/rn/tbh/ngl/wyd/gonna/wanna...), cộng thêm bộ lọc hậu xử lý tự động bỏ apostrophe (`I'm→im`, `don't→dont`, `that's→thats`, `I→i`) kể cả khi model — hoặc DeepL — trả về văn chuẩn.
 
-DeepL là engine dịch thuần nên không áp dụng phong cách này.
+DeepL là engine dịch thuần nên không áp dụng phong cách qua prompt, nhưng khi chọn **Thân mật** thì kết quả DeepL vẫn được bộ lọc hậu xử lý bỏ apostrophe. Muốn văn "ngườ" nhất thì ưu tiên Gemini/OpenAI.
 
 ## Dịch ảnh (OCR qua Gemini)
 
