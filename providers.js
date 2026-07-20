@@ -844,8 +844,8 @@
     if (!targetName) throw new Error('Ngôn ngữ đích không hỗ trợ');
 
     const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
-    const instructions = `You are an OCR + translation engine. Transcribe every visible text line in the image in reading order, then translate each line into ${targetName} naturally. Return ONLY a JSON array [{"original":"...","translated":"..."}]. If no text found return [].`;
-    const prompt = `Transcribe the text in this image and translate it into ${targetName}.`;
+    const instructions = `You are an OCR + translation engine. Transcribe every visible text line in the image in reading order, then translate each line into ${targetName} naturally. Return ONLY a JSON array [{"box":[ymin,xmin,ymax,xmax],"original":"...","translated":"..."}]. "box" is the bounding box of that text line in the image: 4 integers normalized to the 0-1000 range, in ymin,xmin,ymax,xmax order. If no text found return [].`;
+    const prompt = `Transcribe the text in this image with per-line bounding boxes and translate it into ${targetName}.`;
 
     return {
       url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -870,14 +870,21 @@
     };
   }
 
-  // Parse mảng [{original, translated}] từ text Gemini trả về (tái dùng
+  // Parse mảng [{original, translated, box?}] từ text Gemini trả về (tái dùng
   // parseJsonArrayText: strip fence ```json, cắt [ đầu ] cuối). Lỗi -> throw.
+  // box = [ymin,xmin,ymax,xmax] chuẩn hóa 0-1000; thiếu/sai -> null (không vẽ đè dòng đó).
   function parseVisionLines(raw) {
     const parsed = parseJsonArrayText(raw);
     if (!parsed) throw new Error('Gemini: không parse được mảng OCR từ ảnh');
     return parsed
       .filter(item => item && typeof item.original === 'string' && typeof item.translated === 'string')
-      .map(item => ({ original: item.original.trim(), translated: item.translated.trim() }))
+      .map(item => ({
+        original: item.original.trim(),
+        translated: item.translated.trim(),
+        box: Array.isArray(item.box) && item.box.length === 4 && item.box.every(n => Number.isFinite(Number(n)))
+          ? item.box.map(Number)
+          : null,
+      }))
       .filter(item => item.original || item.translated);
   }
 

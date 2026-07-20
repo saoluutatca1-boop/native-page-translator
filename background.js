@@ -393,7 +393,7 @@ async function handleImageTranslate(info, tab) {
       fetchText: providerFetchText,
     });
 
-    await send({ type: 'imageTranslateResult', srcUrl, ok: true, lines: result.lines });
+    await send({ type: 'imageTranslateResult', srcUrl, ok: true, lines: result.lines, mimeType, imageBase64 });
   } catch (error) {
     let friendly = error?.message || String(error);
     if (friendly.includes('IMAGE_NEEDS_GEMINI')) {

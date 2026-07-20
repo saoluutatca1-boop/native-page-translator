@@ -271,7 +271,7 @@ async function main() {
     // lines được tạo trong vm sandbox (realm khác) -> so sánh qua JSON round-trip.
     assert.deepEqual(
       JSON.parse(JSON.stringify(resultMsg.message.lines)),
-      [{ original: 'Xin chào', translated: 'Hello' }],
+      [{ original: 'Xin chào', translated: 'Hello', box: null }],
     );
 
     // Request vision gửi đi: inline_data đúng mime + prompt đích mặc định Vietnamese

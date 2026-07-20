@@ -89,14 +89,15 @@ DeepL là engine dịch thuần nên không áp dụng phong cách qua prompt, n
 
 Dịch chữ trong ảnh (meme, banner, ảnh chụp màn hình...) mà không cần gõ lại:
 
-- **Cách dùng**: chuột phải vào ảnh bất kỳ → chọn **"Dịch ảnh này (Gemini)"**. Kết quả hiện trong một panel cạnh ảnh, có nút sao chép. Đích dịch mặc định là tiếng Việt.
+- **Cách dùng**: chuột phải vào ảnh bất kỳ → chọn **"Dịch ảnh này (Gemini)"**. Kết quả hiện theo 2 tầng: **chữ dịch vẽ đè trực tiếp lên ảnh gốc** (đúng vị trí, cỡ chữ co theo chữ gốc, nền lấy màu xung quanh — ảnh gốc không bị sửa, nút **"Ẩn chữ đè"** để xem gốc) và **danh sách text gốc → dịch** trong panel cạnh ảnh kèm nút sao chép. Panel **kéo di chuyển được** (giữ thanh tiêu đề). Đích dịch mặc định là tiếng Việt.
 - **Yêu cầu**: bật provider **Gemini** và có key hợp lệ (lấy tại <https://aistudio.google.com/apikey>). Gemini là model multimodal nên đọc ảnh trực tiếp — không cần OCR engine riêng.
 - **Quyền truy cập**: extension fetch ảnh từ background bằng quyền host; lần đầu dịch ảnh trên một domain, trình duyệt sẽ hỏi quyền truy cập domain đó — chọn **Cho phép** để tiếp tục.
 
 Giới hạn hiện tại:
 
-- Chưa vẽ chữ đè lên ảnh (không inpainting) — kết quả chỉ hiện dạng text trong panel.
-- Ảnh quá lớn hoặc chữ quá nhỏ/nét kém có thể đọc sai.
+- Lớp chữ đè là vẽ lại bằng canvas (mờ vùng chữ gốc + phủ màu nền lấy xung quanh + render chữ mới), không phải inpainting AI — nền phức tạp (gradient mạnh, hoạ tiết) có thể nhìn hơi "dán".
+- Dòng nào Gemini không trả về bounding box sẽ chỉ hiện trong danh sách text, không vẽ đè.
+- Ảnh quá lớn hoặc chữ quá nhỏ/nét kém có thể đọc sai; chữ dọc/xoay chưa hỗ trợ vẽ đè.
 
 ## Icon nổi trên trang (FAB)
 

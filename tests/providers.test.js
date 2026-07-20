@@ -508,21 +508,37 @@ async function run() {
   {
     assert.deepEqual(
       P.parseVisionLines('[{"original":"a","translated":"b"}]'),
-      [{ original: 'a', translated: 'b' }],
+      [{ original: 'a', translated: 'b', box: null }],
     );
     assert.deepEqual(
       P.parseVisionLines('```json\n[{"original":"x","translated":"y"}]\n```'),
-      [{ original: 'x', translated: 'y' }],
+      [{ original: 'x', translated: 'y', box: null }],
     );
     // Rác trước/sau mảng + phần tử thiếu field bị lọc bỏ
     assert.deepEqual(
       P.parseVisionLines('Kết quả đây: [{"original":"1","translated":"2"}, {"junk":true}, 5, null] xong nhé'),
-      [{ original: '1', translated: '2' }],
+      [{ original: '1', translated: '2', box: null }],
     );
     // Ảnh không có chữ -> mảng rỗng hợp lệ
     assert.deepEqual(P.parseVisionLines('[]'), []);
     // Không có mảng JSON nào -> throw
     assert.throws(() => P.parseVisionLines('không có mảng nào'), /không parse được/);
+  }
+
+  // 28b. parseVisionLines: box [ymin,xmin,ymax,xmax] hợp lệ được giữ, box rác -> null
+  {
+    assert.deepEqual(
+      P.parseVisionLines('[{"box":[10,20,30,40],"original":"a","translated":"b"}]'),
+      [{ original: 'a', translated: 'b', box: [10, 20, 30, 40] }],
+    );
+    assert.deepEqual(
+      P.parseVisionLines('[{"box":[1,2,3],"original":"a","translated":"b"}]'),
+      [{ original: 'a', translated: 'b', box: null }],
+    );
+    assert.deepEqual(
+      P.parseVisionLines('[{"box":["x",20,30,40],"original":"a","translated":"b"}]'),
+      [{ original: 'a', translated: 'b', box: null }],
+    );
   }
 
   // 29. translateVisionWithRotation: bỏ qua deepl dù enabled, chỉ chạy gemini
@@ -539,7 +555,7 @@ async function run() {
       fetchText, keyState: P.createKeyState(), sleep: noSleep,
     });
     assert.equal(result.provider, 'gemini');
-    assert.deepEqual(result.lines, [{ original: 'Xin chào', translated: 'Hello' }]);
+    assert.deepEqual(result.lines, [{ original: 'Xin chào', translated: 'Hello', box: null }]);
     assert.equal(calls.length, 1);
     assert.ok(calls[0].url.includes('generativelanguage')); // deepl không bị gọi
     assert.ok(JSON.parse(calls[0].body).contents[0].parts.some(part => part.inline_data));

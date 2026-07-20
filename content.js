@@ -1659,6 +1659,7 @@
   let imagePanel = null;
   let imageBody = null;
   let imageCopyButton = null;
+  let imageOverlayToggle = null;
   let imageLines = [];
   let imageErrorTimer = null;
   let imageCopyTimer = null;
@@ -1670,6 +1671,232 @@
       if (img.currentSrc === srcUrl || img.src === srcUrl) return img;
     }
     return null;
+  }
+
+  /* ---------- Lớp dịch đè lên ảnh (canvas, vẽ từ base64 nên không dính taint) ----------
+   * Mỗi dòng OCR có box [ymin,xmin,ymax,xmax] chuẩn hóa 0-1000:
+   *   1. Lấy màu nền từ viền quanh box + màu chữ gốc trong box (trước khi tô).
+   *   2. Làm mờ vùng chữ gốc (giảm "bóng ma"), phủ màu nền alpha cao.
+   *   3. Vẽ chữ dịch: cỡ co theo chiều cao box (chữ nhỏ→nhỏ, lớn→lớn), wrap tối đa 3 dòng.
+   * Overlay position:absolute bám theo rect của <img> (cập nhật khi scroll/resize),
+   * pointer-events:none để không chắn context menu chuột phải của trang. */
+  const OVERLAY_MAX_SIDE = 2048;
+  let overlayHost = null;
+  let overlayCanvas = null;
+  let overlayCtx = null;
+  let overlayData = null; // { srcUrl, lines, img, scale }
+  let overlayDrawn = true;
+
+  function removeImageOverlay() {
+    overlayHost?.remove();
+    overlayHost = null;
+    overlayCanvas = null;
+    overlayCtx = null;
+    overlayData = null;
+  }
+
+  function loadImageElement(src) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+
+  function roundRectPath(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') ctx.roundRect(x, y, w, h, r);
+    else ctx.rect(x, y, w, h);
+  }
+
+  // Màu nền: trung bình các điểm mẫu trên dải viền quanh box (cách mép ~3px).
+  function sampleBackground(ctx, x, y, w, h) {
+    const cw = overlayCanvas.width;
+    const ch = overlayCanvas.height;
+    const d = 3;
+    const step = 4;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let n = 0;
+    const sample = (px, py) => {
+      if (px < 0 || py < 0 || px >= cw || py >= ch) return;
+      const data = ctx.getImageData(Math.round(px), Math.round(py), 1, 1).data;
+      r += data[0]; g += data[1]; b += data[2]; n++;
+    };
+    for (let px = x; px < x + w; px += step) { sample(px, y - d); sample(px, y + h + d); }
+    for (let py = y; py < y + h; py += step) { sample(x - d, py); sample(x + w + d, py); }
+    if (!n) return { r: 255, g: 255, b: 255 };
+    return { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n) };
+  }
+
+  // Màu chữ: trung bình các pixel trong box TƯƠNG PHẢN với màu nền (gọi TRƯỚC khi tô).
+  function estimateTextColor(ctx, x, y, w, h, bg) {
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let n = 0;
+    const data = ctx.getImageData(x, y, w, h).data;
+    for (let i = 0; i < data.length; i += 8) {
+      const dr = data[i] - bg.r;
+      const dg = data[i + 1] - bg.g;
+      const db = data[i + 2] - bg.b;
+      if (dr * dr + dg * dg + db * db > 3600) {
+        r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+      }
+    }
+    if (!n) {
+      const lum = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b) / 255;
+      return lum > 0.55 ? '#17181c' : '#f7f7f9';
+    }
+    return `rgb(${Math.round(r / n)},${Math.round(g / n)},${Math.round(b / n)})`;
+  }
+
+  // Làm mờ vùng chữ gốc qua canvas phụ (blur 4px) để giảm bóng ma chữ cũ.
+  function softenRegion(ctx, x, y, w, h) {
+    const tmp = document.createElement('canvas');
+    tmp.width = w + 8;
+    tmp.height = h + 8;
+    tmp.getContext('2d').drawImage(ctx.canvas, x - 4, y - 4, w + 8, h + 8, 0, 0, w + 8, h + 8);
+    ctx.save();
+    if ('filter' in ctx) ctx.filter = 'blur(4px)';
+    ctx.drawImage(tmp, 4, 4, w, h, x, y, w, h);
+    ctx.restore();
+  }
+
+  function wrapOverlayText(ctx, text, maxW) {
+    const words = String(text).split(/\s+/).filter(Boolean);
+    if (words.length <= 1) return [text];
+    const lines = [];
+    let current = '';
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (ctx.measureText(candidate).width <= maxW || !current) {
+        current = candidate;
+      } else {
+        lines.push(current);
+        current = word;
+      }
+    }
+    if (current) lines.push(current);
+    return lines.length > 3 ? [text] : lines;
+  }
+
+  // Chữ dịch: bắt đầu từ cỡ ~72% chiều cao box, giảm dần tới khi vừa khung.
+  function drawFittedText(ctx, text, x, y, w, h, color) {
+    const maxW = w * 0.94;
+    const fontOf = size => `600 ${size}px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif`;
+    let size = Math.max(6, Math.round(h * 0.72));
+    let lines = [text];
+    for (;;) {
+      ctx.font = fontOf(size);
+      const candidate = wrapOverlayText(ctx, text, maxW);
+      const fitsWidth = candidate.length === 1 ? ctx.measureText(candidate[0]).width <= maxW : true;
+      const fitsHeight = candidate.length * size * 1.16 <= h * 0.92;
+      if (fitsWidth && fitsHeight) {
+        lines = candidate;
+        break;
+      }
+      if (size <= 6) break; // bó tay: vẽ 1 dòng cỡ tối thiểu, chấp nhận tràn nhẹ.
+      size -= 1;
+    }
+    ctx.font = fontOf(size);
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const lineH = size * 1.16;
+    const startY = y + h / 2 - ((lines.length - 1) * lineH) / 2;
+    lines.forEach((ln, index) => ctx.fillText(ln, x + w / 2, startY + index * lineH));
+  }
+
+  function paintOverlayLine(ctx, line) {
+    const w = overlayCanvas.width;
+    const h = overlayCanvas.height;
+    let x = (line.box[1] / 1000) * w;
+    let y = (line.box[0] / 1000) * h;
+    let bw = ((line.box[3] - line.box[1]) / 1000) * w;
+    let bh = ((line.box[2] - line.box[0]) / 1000) * h;
+    // Padding nhẹ để phủ kín mép chữ gốc.
+    const padX = Math.max(2, bw * 0.06);
+    const padY = Math.max(1, bh * 0.18);
+    x = Math.max(0, x - padX);
+    y = Math.max(0, y - padY);
+    bw = Math.min(w - x, bw + padX * 2);
+    bh = Math.min(h - y, bh + padY * 2);
+    if (bw < 6 || bh < 5) return;
+
+    const bg = sampleBackground(ctx, x, y, bw, bh);
+    const fg = estimateTextColor(ctx, x, y, bw, bh, bg);
+    softenRegion(ctx, x, y, bw, bh);
+    ctx.fillStyle = `rgba(${bg.r},${bg.g},${bg.b},0.88)`;
+    roundRectPath(ctx, x, y, bw, bh, Math.min(6, bh * 0.25));
+    ctx.fill();
+    drawFittedText(ctx, line.translated, x, y, bw, bh, fg);
+  }
+
+  function drawImageOverlay() {
+    if (!overlayCtx || !overlayData) return;
+    const { img, lines } = overlayData;
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    overlayCtx.drawImage(img, 0, 0, overlayCanvas.width, overlayCanvas.height);
+    if (overlayDrawn) {
+      for (const line of lines) paintOverlayLine(overlayCtx, line);
+    }
+  }
+
+  // Overlay absolute bám rect của <img> (gọi lại khi scroll/resize).
+  function positionImageOverlay() {
+    if (!overlayHost || !overlayData) return;
+    const target = findImageBySource(overlayData.srcUrl);
+    if (!target) {
+      overlayHost.style.display = 'none';
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    overlayHost.style.display = 'block';
+    overlayHost.style.left = `${Math.round(rect.left + window.scrollX)}px`;
+    overlayHost.style.top = `${Math.round(rect.top + window.scrollY)}px`;
+    overlayHost.style.width = `${Math.round(rect.width)}px`;
+    overlayHost.style.height = `${Math.round(rect.height)}px`;
+  }
+
+  window.addEventListener('scroll', () => { if (overlayHost) positionImageOverlay(); }, { passive: true, capture: true });
+  window.addEventListener('resize', () => { if (overlayHost) positionImageOverlay(); }, { passive: true });
+
+  async function renderImageOverlay(srcUrl, lines, mimeType, imageBase64) {
+    removeImageOverlay();
+    const target = findImageBySource(srcUrl);
+    const drawable = Array.isArray(lines) ? lines.filter(line => line?.box && line.translated) : [];
+    if (!target || !drawable.length || !imageBase64) return 0;
+
+    const img = await loadImageElement(`data:${mimeType || 'image/png'};base64,${imageBase64}`);
+    if (!img?.naturalWidth) return 0;
+
+    // Cap độ phân giải canvas chống phình bộ nhớ; box theo tỷ lệ 0-1000 nên tự khớp.
+    const scale = Math.min(1, OVERLAY_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+
+    overlayHost = document.createElement('div');
+    overlayHost.id = 'tm-image-overlay-host';
+    overlayHost.dataset.tmNoTranslate = 'true';
+    overlayCanvas = document.createElement('canvas');
+    overlayCanvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    overlayCanvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    overlayHost.appendChild(overlayCanvas);
+    Object.assign(overlayHost.style, {
+      position: 'absolute',
+      zIndex: '2147483646',
+      pointerEvents: 'none', // không chắn chuột phải/context menu của trang.
+    });
+    Object.assign(overlayCanvas.style, { width: '100%', height: '100%', display: 'block' });
+    document.documentElement.appendChild(overlayHost);
+
+    overlayCtx = overlayCanvas.getContext('2d');
+    overlayData = { srcUrl, lines: drawable, img, scale };
+    overlayDrawn = true;
+    drawImageOverlay();
+    positionImageOverlay();
+    return drawable.length;
   }
 
   function createImageTranslatePanel() {
@@ -1784,8 +2011,9 @@
         .error { color: #b3402f; }
       </style>
       <div class="panel" data-tm-no-translate>
-        <div class="head">
+        <div class="head" title="Kéo để di chuyển">
           <span class="title">${NPT_ICONS.image}Dịch ảnh</span>
+          <button type="button" class="overlay-toggle" hidden>Ẩn chữ đè</button>
           <button type="button" class="copy" hidden>Sao chép</button>
           <button type="button" class="close" title="Đóng">✕</button>
         </div>
@@ -1796,8 +2024,44 @@
     imagePanel = imageRoot.querySelector('.panel');
     imageBody = imageRoot.querySelector('.body');
     imageCopyButton = imageRoot.querySelector('.copy');
+    imageOverlayToggle = imageRoot.querySelector('.overlay-toggle');
     imageRoot.querySelector('.close').addEventListener('click', hideImageTranslatePanel);
     imageCopyButton.addEventListener('click', copyImageTranslations);
+
+    // Bật/tắt lớp chữ dịch đè trên ảnh (ảnh gốc nguyên vẹn bên dưới).
+    imageOverlayToggle.addEventListener('click', () => {
+      overlayDrawn = !overlayDrawn;
+      drawImageOverlay();
+      imageOverlayToggle.textContent = overlayDrawn ? 'Ẩn chữ đè' : 'Hiện chữ đè';
+    });
+
+    // Kéo panel theo thanh tiêu đề (giống kéo cửa sổ).
+    const head = imageRoot.querySelector('.head');
+    head.style.cursor = 'move';
+    head.style.touchAction = 'none';
+    let panelDrag = null;
+    head.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || event.target.closest('button')) return;
+      panelDrag = {
+        startX: event.clientX,
+        startY: event.clientY,
+        baseLeft: parseFloat(imagePanel.style.left) || 0,
+        baseTop: parseFloat(imagePanel.style.top) || 0,
+      };
+      try { head.setPointerCapture(event.pointerId); } catch (_) { /* noop */ }
+    });
+    head.addEventListener('pointermove', event => {
+      if (!panelDrag) return;
+      const left = panelDrag.baseLeft + event.clientX - panelDrag.startX;
+      const top = panelDrag.baseTop + event.clientY - panelDrag.startY;
+      const maxLeft = innerWidth - (imagePanel.offsetWidth || 300) - 8;
+      const maxTop = innerHeight - (imagePanel.offsetHeight || 140) - 8;
+      imagePanel.style.left = `${Math.round(Math.max(8, Math.min(left, maxLeft)))}px`;
+      imagePanel.style.top = `${Math.round(Math.max(8, Math.min(top, maxTop)))}px`;
+    });
+    const endPanelDrag = () => { panelDrag = null; };
+    head.addEventListener('pointerup', endPanelDrag);
+    head.addEventListener('pointercancel', endPanelDrag);
   }
 
   // Neo panel dưới-phải ảnh (canh phải theo mép ảnh); không có ảnh → góc phải-dưới.
@@ -1829,6 +2093,8 @@
     clearTimeout(imageErrorTimer);
     imageLines = [];
     imageCopyButton.hidden = true;
+    imageOverlayToggle.hidden = true;
+    removeImageOverlay(); // dịch ảnh mới → dọn overlay của ảnh trước
 
     const loading = document.createElement('div');
     loading.className = 'loading';
@@ -1841,11 +2107,12 @@
     imagePanel.classList.add('visible');
   }
 
-  function showImageTranslateResult(srcUrl, lines) {
+  function showImageTranslateResult(srcUrl, lines, mimeType, imageBase64) {
     createImageTranslatePanel();
     clearTimeout(imageErrorTimer);
     imageLines = Array.isArray(lines) ? lines : [];
     imageCopyButton.hidden = !imageLines.length;
+    imageOverlayToggle.hidden = true; // chỉ hiện khi vẽ đè lên ảnh thành công
 
     if (imageLines.length) {
       const fragment = document.createDocumentFragment();
@@ -1871,12 +2138,23 @@
 
     positionImagePanel(srcUrl);
     imagePanel.classList.add('visible');
+
+    // Vẽ bản dịch đè lên ảnh gốc (dòng nào thiếu box thì chỉ hiện ở danh sách text).
+    renderImageOverlay(srcUrl, imageLines, mimeType, imageBase64).then(count => {
+      if (count && imageOverlayToggle) {
+        overlayDrawn = true;
+        imageOverlayToggle.textContent = 'Ẩn chữ đè';
+        imageOverlayToggle.hidden = false;
+      }
+    }).catch(() => {});
   }
 
   function showImageTranslateError(srcUrl, error) {
     createImageTranslatePanel();
     imageLines = [];
     imageCopyButton.hidden = true;
+    imageOverlayToggle.hidden = true;
+    removeImageOverlay();
 
     const box = document.createElement('div');
     box.className = 'error';
@@ -1894,6 +2172,7 @@
   function hideImageTranslatePanel() {
     clearTimeout(imageErrorTimer);
     imagePanel?.classList.remove('visible');
+    removeImageOverlay(); // đóng panel = dọn luôn lớp chữ đè trên ảnh
   }
 
   function copyImageTranslations() {
@@ -1923,7 +2202,7 @@
       return false;
     }
     if (message?.type === 'imageTranslateResult') {
-      if (message.ok) showImageTranslateResult(message.srcUrl, message.lines);
+      if (message.ok) showImageTranslateResult(message.srcUrl, message.lines, message.mimeType, message.imageBase64);
       else showImageTranslateError(message.srcUrl, message.error);
       return false;
     }
