@@ -15,6 +15,9 @@ const ROOT = path.join(__dirname, '..');
 const storageData = new Map();
 const messageListeners = [];
 const installedListeners = [];
+const contextMenuListeners = [];
+const createdMenus = [];
+const sentTabMessages = [];
 
 const chromeStub = {
   storage: {
@@ -45,8 +48,15 @@ const chromeStub = {
     onStartup: { addListener() {} },
     async openOptionsPage() {},
   },
+  contextMenus: {
+    create(menu) { createdMenus.push(menu); },
+    removeAll(cb) { createdMenus.length = 0; if (cb) cb(); },
+    onClicked: { addListener(fn) { contextMenuListeners.push(fn); } },
+  },
   webNavigation: { async getAllFrames() { return null; } },
-  tabs: { async sendMessage() {} },
+  tabs: {
+    async sendMessage(tabId, message) { sentTabMessages.push({ tabId, message }); },
+  },
 };
 
 /* ---------- Stub fetch: trả dữ liệu giả theo từng host ---------- */
@@ -55,9 +65,23 @@ async function fetchStub(url, options = {}) {
   fetchCalls.push({ url: String(url), options });
   const u = String(url);
 
+  // Ảnh giả để test dịch ảnh: trả ArrayBuffer nhỏ + content-type PNG.
+  if (u.endsWith('.png')) {
+    return {
+      status: 200,
+      ok: true,
+      headers: new Map([['content-type', 'image/png']]),
+      async arrayBuffer() { return new Uint8Array([137, 80, 78, 71]).buffer; },
+      async text() { return ''; },
+    };
+  }
+
   let body = '{}';
   let status = 200;
-  if (u.includes('deepl.com')) {
+  if (u.includes('/v2/usage')) {
+    // DeepL /v2/usage: quota của key (check trước nhánh deepl.com).
+    body = JSON.stringify({ character_count: 12345, character_limit: 500000 });
+  } else if (u.includes('deepl.com')) {
     // DeepL batch: trả mảng translations cùng độ dài với mảng text gửi lên.
     let count = 1;
     try {
@@ -71,7 +95,18 @@ async function fetchStub(url, options = {}) {
   } else if (u.includes('translate.googleapis.com') || u.includes('translate.google.com')) {
     body = JSON.stringify([[['xin chào', 'hello', null, null, 1]], null, 'vi']);
   } else if (u.includes('generativelanguage')) {
-    body = JSON.stringify({ candidates: [{ content: { parts: [{ text: 'hello from gemini' }] } }] });
+    // Request vision (có part inline_data) -> trả mảng OCR dạng fence ```json.
+    let isVision = false;
+    try {
+      const parsed = JSON.parse(options.body || '{}');
+      isVision = Boolean(parsed.contents?.[0]?.parts?.some(part => part.inline_data));
+    } catch (_) { /* giữ isVision = false */ }
+    const textPart = {
+      text: isVision
+        ? '```json\n[{"original":"Xin chào","translated":"Hello"}]\n```'
+        : 'hello from gemini',
+    };
+    body = JSON.stringify({ candidates: [{ content: { parts: [textPart] } }] });
   }
 
   return {
@@ -89,6 +124,7 @@ const sandbox = {
   clearTimeout,
   URL,
   AbortController,
+  btoa,
   fetch: fetchStub,
   chrome: chromeStub,
   module: undefined,
@@ -201,7 +237,69 @@ async function main() {
   assert.equal(blocked.ok, false);
   assert.match(blocked.networkError, /chưa được cấp quyền/);
 
-  console.log('SW smoke test PASS ✔ (background khởi động OK, seed key OK, nativeTranslate OK, providerTranslate OK, proxyFetch OK)');
+  // 8. Dịch ảnh qua context menu: fetch ảnh -> gemini vision -> sendMessage kết quả
+  {
+    // onInstalled (mục 2) phải tạo menu chuột phải
+    assert.ok(createdMenus.some(menu => menu.id === 'npt-translate-image'), 'chưa tạo context menu dịch ảnh');
+    assert.equal(createdMenus.find(menu => menu.id === 'npt-translate-image').title, 'Dịch ảnh này (Gemini)');
+    assert.ok(contextMenuListeners.length > 0, 'chưa đăng ký contextMenus.onClicked');
+
+    // Config seed chỉ có deepl -> bật gemini có key để dịch ảnh được
+    const cfg = storageData.get('tm-multi-provider-config');
+    cfg.providers.gemini.enabled = true;
+    cfg.providers.gemini.keys = [{ key: 'gemini-key-1', label: 'gm' }];
+    await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+
+    contextMenuListeners[0](
+      { menuItemId: 'npt-translate-image', srcUrl: 'https://example.com/meme.png' },
+      { id: 7 },
+    );
+
+    // Handler chạy async (fire-and-forget): poll chờ message kết quả
+    let resultMsg = null;
+    for (let i = 0; i < 50 && !resultMsg; i++) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      resultMsg = sentTabMessages.find(entry => entry.message.type === 'imageTranslateResult');
+    }
+    const startMsg = sentTabMessages.find(entry => entry.message.type === 'imageTranslateStart');
+    assert.ok(startMsg, 'thiếu imageTranslateStart');
+    assert.equal(startMsg.tabId, 7);
+    assert.equal(startMsg.message.srcUrl, 'https://example.com/meme.png');
+    assert.ok(resultMsg, 'thiếu imageTranslateResult');
+    assert.equal(resultMsg.tabId, 7);
+    assert.equal(resultMsg.message.ok, true, JSON.stringify(resultMsg.message));
+    // lines được tạo trong vm sandbox (realm khác) -> so sánh qua JSON round-trip.
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(resultMsg.message.lines)),
+      [{ original: 'Xin chào', translated: 'Hello' }],
+    );
+
+    // Request vision gửi đi: inline_data đúng mime + prompt đích mặc định Vietnamese
+    const visionCall = fetchCalls.filter(c => c.url.includes('generativelanguage')).pop();
+    const visionBody = JSON.parse(visionCall.options.body);
+    assert.ok(visionBody.contents[0].parts.some(part => part.inline_data?.mime_type === 'image/png'));
+    assert.ok(visionBody.contents[0].parts.some(part => part.inline_data?.data));
+    assert.match(visionBody.systemInstruction.parts[0].text, /Vietnamese/);
+  }
+
+  // 9. deeplUsage -> quota của key DeepL seed sẵn
+  {
+    const usage = await sendMessage({ type: 'deeplUsage' });
+    assert.equal(usage.ok, true, JSON.stringify(usage));
+    assert.equal(usage.usages.length, 1);
+    assert.equal(usage.usages[0].count, 12345);
+    assert.equal(usage.usages[0].limit, 500000);
+    assert.equal(usage.usages[0].free, true); // key seed đuôi :fx
+    assert.match(usage.usages[0].keyMasked, /^.{3}….{4}$/); // dạng mask, không lộ key
+
+    // Request phải đi host free, GET kèm auth header của key đó
+    const usageCall = fetchCalls.filter(c => c.url.includes('/v2/usage')).pop();
+    assert.ok(usageCall.url.startsWith('https://api-free.deepl.com/'));
+    assert.equal(usageCall.options.method, 'GET');
+    assert.equal(usageCall.options.headers.Authorization, 'DeepL-Auth-Key 16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx');
+  }
+
+  console.log('SW smoke test PASS ✔ (background khởi động OK, seed key OK, nativeTranslate OK, providerTranslate OK, proxyFetch OK, dịch ảnh OK, deeplUsage OK)');
 }
 
 main().catch(error => {

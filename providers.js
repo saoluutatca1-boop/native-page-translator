@@ -144,6 +144,11 @@
     return `${value.slice(0, 3)}…${value.slice(-4)}`;
   }
 
+  // Endpoint GET /v2/usage (xem quota) của DeepL: cùng host free/pro với /v2/translate.
+  function deeplUsageEndpoint(key) {
+    return PROVIDER_DEFS.deepl.endpointFor(key).replace(/\/v2\/translate$/, '/v2/usage');
+  }
+
   /* ------------------------------------------------------------------
    * Prompt dịch kiểu bản địa. Ba phong cách:
    *  - natural:      bám giọng văn gốc, tự nhiên như ngưởi bản xứ viết
@@ -715,6 +720,97 @@
     };
   }
 
+  /* ------------------------------------------------------------------
+   * Dịch ảnh (OCR + dịch) qua Gemini vision. CHỈ gemini hỗ trợ ảnh —
+   * deepl/openai bị bỏ qua dù đang enabled.
+   * ------------------------------------------------------------------ */
+  const VISION_TARGET = { vi: 'Vietnamese', en: 'English' };
+
+  // Dựng request Gemini kèm ảnh inline base64 (part inline_data, snake_case
+  // theo chuẩn REST v1beta của Google).
+  function buildVisionRequest({ providerConfig, apiKey, mimeType, imageBase64, targetLanguage }) {
+    const targetName = VISION_TARGET[String(targetLanguage || '').toLowerCase()];
+    if (!targetName) throw new Error('Ngôn ngữ đích không hỗ trợ');
+
+    const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+    const instructions = `You are an OCR + translation engine. Transcribe every visible text line in the image in reading order, then translate each line into ${targetName} naturally. Return ONLY a JSON array [{"original":"...","translated":"..."}]. If no text found return [].`;
+    const prompt = `Transcribe the text in this image and translate it into ${targetName}.`;
+
+    return {
+      url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: instructions }] },
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: String(mimeType || 'image/png'), data: String(imageBase64 || '') } },
+          ],
+        }],
+        generationConfig: { temperature: 0.2 },
+        safetySettings: GEMINI_SAFETY_SETTINGS,
+      }),
+    };
+  }
+
+  // Parse mảng [{original, translated}] từ text Gemini trả về (tái dùng
+  // parseJsonArrayText: strip fence ```json, cắt [ đầu ] cuối). Lỗi -> throw.
+  function parseVisionLines(raw) {
+    const parsed = parseJsonArrayText(raw);
+    if (!parsed) throw new Error('Gemini: không parse được mảng OCR từ ảnh');
+    return parsed
+      .filter(item => item && typeof item.original === 'string' && typeof item.translated === 'string')
+      .map(item => ({ original: item.original.trim(), translated: item.translated.trim() }))
+      .filter(item => item.original || item.translated);
+  }
+
+  // Rotation key giống translateBatchWithRotation nhưng ép config chỉ còn gemini.
+  async function translateVisionWithRotation({ config, mimeType, imageBase64, targetLanguage, fetchText, keyState, now, sleep }) {
+    if (!imageBase64) throw new Error('Không có dữ liệu ảnh');
+    const target = String(targetLanguage || 'vi').toLowerCase();
+    if (!VISION_TARGET[target]) throw new Error('Ngôn ngữ đích không hỗ trợ');
+
+    const gemini = config?.providers?.gemini;
+    if (!gemini?.enabled || !gemini.keys?.length) {
+      throw new Error('IMAGE_NEEDS_GEMINI');
+    }
+    const geminiOnlyConfig = {
+      ...config,
+      preferred: 'gemini',
+      providers: { gemini },
+    };
+
+    const outcome = await withKeyRotation({
+      config: geminiOnlyConfig,
+      keyState,
+      now,
+      sleep,
+      attempt: async ({ providerConfig, apiKey }) => {
+        const request = buildVisionRequest({ providerConfig, apiKey, mimeType, imageBase64, targetLanguage: target });
+        const response = await fetchText(request);
+        const verdict = classifyResponse({
+          providerId: 'gemini',
+          status: response.status,
+          bodyText: response.bodyText,
+        });
+        return { verdict };
+      },
+    });
+
+    return {
+      lines: parseVisionLines(outcome.verdict.text),
+      provider: outcome.provider,
+      providerLabel: outcome.providerLabel,
+      keyMasked: outcome.keyMasked,
+    };
+  }
+
   const api = {
     CONFIG_STORAGE_KEY,
     PROVIDER_ORDER,
@@ -724,6 +820,7 @@
     orderedProviderIds,
     usableProviders,
     maskKey,
+    deeplUsageEndpoint,
     buildNativeInstructions,
     buildRequest,
     classifyResponse,
@@ -731,6 +828,9 @@
     classifyBatchResponse,
     translateWithRotation,
     translateBatchWithRotation,
+    buildVisionRequest,
+    parseVisionLines,
+    translateVisionWithRotation,
     createKeyState,
   };
 

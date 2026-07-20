@@ -37,6 +37,40 @@
     }
   });
 
+  // Site trong blacklist ('tm-site-blacklist' = mảng domain) → tắt mọi tính năng.
+  // Khớp khi hostname === domain hoặc hostname kết thúc bằng '.domain'.
+  function isSiteBlacklisted() {
+    const list = GM_getValue('tm-site-blacklist', []);
+    if (!Array.isArray(list)) return false;
+    const hostname = String(location.hostname || '').toLowerCase();
+    if (!hostname) return false;
+    return list.some(entry => {
+      const domain = String(entry || '').trim().toLowerCase();
+      if (!domain) return false;
+      return hostname === domain || hostname.endsWith(`.${domain}`);
+    });
+  }
+
+  // Extension vừa reload/update thì content script trong tab cũ bị mồ côi —
+  // mọi lệnh gọi background đều lỗi "Extension context invalidated".
+  const CONTEXT_DEAD_MESSAGE = 'Extension vừa cập nhật — tải lại trang này (F5) để dùng tiếp';
+
+  function isExtensionContextAlive() {
+    try {
+      return Boolean(chrome.runtime?.id);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isContextInvalidated(error) {
+    return /Extension context invalidated/i.test(String(error?.message || error || ''));
+  }
+
+  function friendlyError(error) {
+    return isContextInvalidated(error) ? CONTEXT_DEAD_MESSAGE : (error?.message || String(error));
+  }
+
   function GM_xmlhttpRequest(options) {
     let aborted = false;
     const payload = {
@@ -61,7 +95,7 @@
       });
     }).catch(error => {
       if (timeoutId) clearTimeout(timeoutId);
-      if (!aborted) options.onerror?.({ error: error?.message || String(error) });
+      if (!aborted) options.onerror?.({ error: friendlyError(error) });
     });
 
     const timeoutId = options.timeout ? setTimeout(() => {
@@ -405,9 +439,25 @@
       }
     }
 
+    // Google free chỉ detect 1 ngôn ngữ nguồn cho cả request, nên trang lẫn
+    // Anh/Trung/Nhật/Hàn phải gom batch theo nhóm chữ thì mới dịch hết.
+    function detectScriptClass(text) {
+      if (/[぀-ヿ]/.test(text)) return 'ja';   // Hiragana/Katakana
+      if (/[가-힯]/.test(text)) return 'ko';   // Hangul
+      if (/[一-鿿]/.test(text)) return 'zh';   // Hán tự (không kana)
+      return 'other';
+    }
+
     async function translateMany(texts, sourceLanguage, targetLanguage) {
       const items = texts.map((text, index) => ({ index, text: String(text ?? '') }));
-      const batches = makeBatches(items);
+      const byScript = new Map();
+      for (const item of items) {
+        const cls = detectScriptClass(item.text);
+        if (!byScript.has(cls)) byScript.set(cls, []);
+        byScript.get(cls).push(item);
+      }
+      const batches = [];
+      for (const group of byScript.values()) batches.push(...makeBatches(group));
       const results = new Array(items.length);
       let cursor = 0;
 
@@ -436,6 +486,18 @@
   'use strict';
 
   const IS_TOP_FRAME = window === window.top;
+
+  // Icon SVG inline: stroke 1.6-1.8, round cap/join, currentColor — không emoji, không asset ngoài.
+  const NPT_ICONS = {
+    undo: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
+    globe: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a3.9 9 0 0 1 0 18 3.9 9 0 0 1 0-18"/></svg>',
+    copy: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+    close: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+    image: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 4.5-4.5 3 3L16 13l3 3"/></svg>',
+  };
+  const NPT_SELECTION_FAB_LABEL = `${NPT_ICONS.globe}<span>Dịch</span>`;
+  const NPT_SELECTION_COPY_LABEL = `${NPT_ICONS.copy}<span>Sao chép</span>`;
+  const NPT_SELECTION_COPIED_LABEL = `${NPT_ICONS.copy}<span>Đã sao chép</span>`;
 
   function getExtensionShadowRoot(element) {
     if (!(element instanceof Element)) return null;
@@ -802,8 +864,34 @@
     return { completed, failed };
   }
 
+  // Viewport-first: node nằm trong (hoặc sát) khung nhìn được dịch trước.
+  // 2 bucket nối nhau, giữ nguyên thứ tự DOM tương đối — KHÔNG sort toàn phần.
+  function orderViewportFirst(textNodes) {
+    const inView = [];
+    const outView = [];
+    for (const node of textNodes) {
+      const parent = node.parentElement;
+      let visible = false;
+      if (parent) {
+        try {
+          const rect = parent.getBoundingClientRect();
+          visible = rect.top < innerHeight * 1.5 && rect.bottom > -innerHeight * 0.5;
+        } catch (_) {
+          visible = false;
+        }
+      }
+      (visible ? inView : outView).push(node);
+    }
+    return inView.concat(outView);
+  }
+
   async function setLanguage(language, roots = [document.body]) {
     if (!['original', 'vi', 'en'].includes(language)) return;
+
+    if (language !== 'original' && !isExtensionContextAlive()) {
+      setStatus(CONTEXT_DEAD_MESSAGE, true);
+      return;
+    }
 
     currentLanguage = language;
     const runGeneration = ++generation;
@@ -831,7 +919,7 @@
       }
     }
 
-    const textNodes = [...uniqueTextNodes];
+    const textNodes = orderViewportFirst([...uniqueTextNodes]);
     const attributeTargets = [];
     for (const [element, attributes] of uniqueAttributeTargets) {
       for (const attribute of attributes) attributeTargets.push({ element, attribute });
@@ -973,9 +1061,12 @@
       <div class="buttons">
         <button type="button" data-language="vi" title="Dịch sang tiếng Việt">VI</button>
         <button type="button" data-language="en" title="Translate to English">EN</button>
-        <button type="button" data-language="original" title="Khôi phục bản gốc">Gốc</button>
+        <button type="button" data-language="original" title="Khôi phục bản gốc">${NPT_ICONS.undo}Gốc</button>
       </div>
-      <div class="status" aria-live="polite">Sẵn sàng</div>
+      <div class="foot">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <div class="status" aria-live="polite">Sẵn sàng</div>
+      </div>
     `;
 
     const style = document.createElement('style');
@@ -1023,8 +1114,19 @@
         background: linear-gradient(135deg, #6366f1, #3b82f6);
         box-shadow: 0 4px 14px rgba(79,102,241,.35), inset 0 1px 0 rgba(255,255,255,.22);
       }
+      button[data-language="original"] svg { margin-right: 4px; vertical-align: -2px; }
+      .foot { display: flex; align-items: center; gap: 7px; margin-top: 8px; }
+      .brand-dot {
+        width: 14px;
+        height: 14px;
+        flex: none;
+        border-radius: 22%;
+        background: linear-gradient(135deg, #6366f1, #3b82f6);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 6px rgba(79,102,241,.4);
+      }
       .status {
-        margin-top: 8px;
+        flex: 1;
+        min-width: 0;
         overflow: hidden;
         color: rgba(255,255,255,.62);
         font: 500 11px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -1057,6 +1159,291 @@
     updateActiveButton();
   }
 
+  /* ===================== DỊCH ẢNH (OCR qua Gemini vision) =====================
+   * Background gửi: imageTranslateStart {srcUrl} và
+   * imageTranslateResult {srcUrl, ok, lines:[{original,translated}] | error}.
+   * Panel shadow DOM neo cạnh <img> khớp srcUrl; không thấy ảnh thì hiện góc
+   * phải-dưới màn hình. Message mới (kể cả ảnh khác) thay toàn bộ nội dung. */
+
+  let imageHost = null;
+  let imageRoot = null;
+  let imagePanel = null;
+  let imageBody = null;
+  let imageCopyButton = null;
+  let imageLines = [];
+  let imageErrorTimer = null;
+  let imageCopyTimer = null;
+
+  function findImageBySource(srcUrl) {
+    if (!srcUrl) return null;
+    for (const img of document.images) {
+      // currentSrc/src luôn là URL tuyệt đối, khớp srcUrl từ contextMenus.
+      if (img.currentSrc === srcUrl || img.src === srcUrl) return img;
+    }
+    return null;
+  }
+
+  function createImageTranslatePanel() {
+    if (imageHost) {
+      // Trang tự dọn DOM lạ thì gắn lại host đã tạo.
+      if (!imageHost.isConnected) document.documentElement.appendChild(imageHost);
+      return;
+    }
+
+    imageHost = document.createElement('div');
+    imageHost.id = 'tm-image-translate-host';
+    imageHost.dataset.tmNoTranslate = 'true';
+    document.documentElement.appendChild(imageHost);
+
+    imageRoot = imageHost.attachShadow({ mode: 'open' });
+    imageRoot.innerHTML = `
+      <style>
+        :host {
+          all: initial;
+          position: fixed;
+          inset: 0;
+          z-index: 2147483647;
+          pointer-events: none;
+          font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+        }
+        .panel {
+          position: fixed;
+          left: 0;
+          top: 0;
+          box-sizing: border-box;
+          display: flex;
+          flex-direction: column;
+          min-width: 220px;
+          max-width: 360px;
+          max-height: 70vh;
+          padding: 9px 10px 10px;
+          border: 1px solid rgba(255,255,255,.09);
+          border-radius: 14px;
+          background: rgba(10, 12, 16, .94);
+          box-shadow: 0 18px 45px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
+          color: #fff;
+          backdrop-filter: blur(14px);
+          opacity: 0;
+          visibility: hidden;
+          transform: translateY(4px);
+          transition: opacity .2s cubic-bezier(.32,.72,0,1), transform .2s cubic-bezier(.32,.72,0,1), visibility .2s;
+          pointer-events: auto;
+        }
+        .panel.visible { opacity: 1; visibility: visible; transform: translateY(0); }
+        .head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+        .title {
+          flex: 1;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          letter-spacing: .04em;
+          background: linear-gradient(135deg, #818cf8, #60a5fa);
+          -webkit-background-clip: text;
+          background-clip: text;
+          -webkit-text-fill-color: transparent;
+          color: transparent;
+          font: 720 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        }
+        .title svg { flex: none; color: #818cf8; }
+        button {
+          all: unset;
+          box-sizing: border-box;
+          cursor: pointer;
+          padding: 4px 8px;
+          border-radius: 8px;
+          border: 1px solid rgba(255,255,255,.08);
+          background: rgba(255,255,255,.05);
+          color: rgba(255,255,255,.85);
+          font: 640 11px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          transition: background .2s cubic-bezier(.32,.72,0,1);
+        }
+        button:hover { background: rgba(255,255,255,.12); }
+        button[hidden] { display: none; }
+        .close { padding: 4px 6px; color: rgba(255,255,255,.6); }
+        .body { overflow-y: auto; overscroll-behavior: contain; }
+        .loading {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 2px;
+          color: rgba(255,255,255,.75);
+          font: 560 12px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        }
+        .spinner {
+          width: 13px;
+          height: 13px;
+          flex: none;
+          border: 2px solid rgba(255,255,255,.16);
+          border-top-color: #818cf8;
+          border-radius: 50%;
+          animation: npt-image-spin .8s linear infinite;
+        }
+        @keyframes npt-image-spin { to { transform: rotate(360deg); } }
+        .line { padding: 5px 0; border-top: 1px solid rgba(255,255,255,.06); }
+        .line:first-child { border-top: 0; padding-top: 0; }
+        .original {
+          color: rgba(255,255,255,.48);
+          font: 500 11px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        }
+        .translated {
+          margin-top: 1px;
+          color: rgba(255,255,255,.95);
+          font: 620 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        }
+        .empty, .error {
+          padding: 6px 2px;
+          font: 560 12px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        }
+        .empty { color: rgba(255,255,255,.6); }
+        .error { color: #fca5a5; }
+      </style>
+      <div class="panel" data-tm-no-translate>
+        <div class="head">
+          <span class="title">${NPT_ICONS.image}Dịch ảnh</span>
+          <button type="button" class="copy" hidden>Sao chép</button>
+          <button type="button" class="close" title="Đóng">✕</button>
+        </div>
+        <div class="body"></div>
+      </div>
+    `;
+
+    imagePanel = imageRoot.querySelector('.panel');
+    imageBody = imageRoot.querySelector('.body');
+    imageCopyButton = imageRoot.querySelector('.copy');
+    imageRoot.querySelector('.close').addEventListener('click', hideImageTranslatePanel);
+    imageCopyButton.addEventListener('click', copyImageTranslations);
+  }
+
+  // Neo panel dưới-phải ảnh (canh phải theo mép ảnh); không có ảnh → góc phải-dưới.
+  function positionImagePanel(srcUrl) {
+    const panelWidth = imagePanel.offsetWidth || 300;
+    const panelHeight = imagePanel.offsetHeight || 140;
+    const image = findImageBySource(srcUrl);
+
+    let left;
+    let top;
+    if (image) {
+      const rect = image.getBoundingClientRect();
+      left = rect.right - panelWidth;
+      top = rect.bottom + 8;
+    } else {
+      left = innerWidth - panelWidth - 8;
+      top = innerHeight - panelHeight - 8;
+    }
+
+    // Clamp trong viewport, margin 8px.
+    left = Math.max(8, Math.min(left, innerWidth - panelWidth - 8));
+    top = Math.max(8, Math.min(top, innerHeight - panelHeight - 8));
+    imagePanel.style.left = `${Math.round(left)}px`;
+    imagePanel.style.top = `${Math.round(top)}px`;
+  }
+
+  function showImageTranslateLoading(srcUrl) {
+    createImageTranslatePanel();
+    clearTimeout(imageErrorTimer);
+    imageLines = [];
+    imageCopyButton.hidden = true;
+
+    const loading = document.createElement('div');
+    loading.className = 'loading';
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner';
+    loading.append(spinner, document.createTextNode('Đang đọc ảnh bằng Gemini…'));
+    imageBody.replaceChildren(loading);
+
+    positionImagePanel(srcUrl);
+    imagePanel.classList.add('visible');
+  }
+
+  function showImageTranslateResult(srcUrl, lines) {
+    createImageTranslatePanel();
+    clearTimeout(imageErrorTimer);
+    imageLines = Array.isArray(lines) ? lines : [];
+    imageCopyButton.hidden = !imageLines.length;
+
+    if (imageLines.length) {
+      const fragment = document.createDocumentFragment();
+      for (const line of imageLines) {
+        const item = document.createElement('div');
+        item.className = 'line';
+        const original = document.createElement('div');
+        original.className = 'original';
+        original.textContent = line?.original || '';
+        const translated = document.createElement('div');
+        translated.className = 'translated';
+        translated.textContent = line?.translated || '';
+        item.append(original, translated);
+        fragment.appendChild(item);
+      }
+      imageBody.replaceChildren(fragment);
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'Không thấy chữ trong ảnh';
+      imageBody.replaceChildren(empty);
+    }
+
+    positionImagePanel(srcUrl);
+    imagePanel.classList.add('visible');
+  }
+
+  function showImageTranslateError(srcUrl, error) {
+    createImageTranslatePanel();
+    imageLines = [];
+    imageCopyButton.hidden = true;
+
+    const box = document.createElement('div');
+    box.className = 'error';
+    box.textContent = error || 'Dịch ảnh thất bại';
+    imageBody.replaceChildren(box);
+
+    positionImagePanel(srcUrl);
+    imagePanel.classList.add('visible');
+
+    // Lỗi tự ẩn sau 6s.
+    clearTimeout(imageErrorTimer);
+    imageErrorTimer = setTimeout(hideImageTranslatePanel, 6000);
+  }
+
+  function hideImageTranslatePanel() {
+    clearTimeout(imageErrorTimer);
+    imagePanel?.classList.remove('visible');
+  }
+
+  function copyImageTranslations() {
+    const text = imageLines.map(line => line?.translated || '').filter(Boolean).join('\n');
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      imageCopyButton.textContent = 'Đã chép';
+      clearTimeout(imageCopyTimer);
+      imageCopyTimer = setTimeout(() => {
+        if (imageCopyButton) imageCopyButton.textContent = 'Sao chép';
+      }, 1500);
+    }).catch(() => {
+      // Clipboard bị chặn (mất focus / không có quyền) — bỏ qua.
+    });
+  }
+
+  // Đóng panel khi click ra ngoài (composedPath xuyên qua shadow DOM).
+  document.addEventListener('mousedown', event => {
+    if (!imagePanel?.classList.contains('visible')) return;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    if (!path.includes(imageHost)) hideImageTranslatePanel();
+  }, true);
+
+  chrome.runtime.onMessage.addListener(message => {
+    if (message?.type === 'imageTranslateStart') {
+      showImageTranslateLoading(message.srcUrl);
+      return false;
+    }
+    if (message?.type === 'imageTranslateResult') {
+      if (message.ok) showImageTranslateResult(message.srcUrl, message.lines);
+      else showImageTranslateError(message.srcUrl, message.error);
+      return false;
+    }
+    return false;
+  });
+
   function installKeyboardShortcuts() {
     window.addEventListener('keydown', event => {
       if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -1077,6 +1464,330 @@
         setLanguage('original');
       }
     }, true);
+  }
+
+  /* ===================== DỊCH ĐOẠN BÔI ĐEN =====================
+   * Bôi đen 2..1000 ký tự (ngoài ô nhập, ngoài UI extension) → nút "Dịch" nổi
+   * neo góc dưới-phải vùng chọn; bấm → panel mini: bản dịch + Sao chép + ✕.
+   * Setting 'tm-selection-translate' = false → tắt hẳn tính năng. */
+
+  const SELECTION_CONFIG = {
+    storageKey: 'tm-selection-translate',
+    minChars: 2,
+    maxChars: 1000,
+    scrollHideDelta: 120,
+  };
+
+  let selectionHost = null;
+  let selectionButton = null;
+  let selectionPanel = null;
+  let selectionResult = null;
+  let selectionCopyButton = null;
+  let selectionText = '';
+  let selectionRect = null;
+  let selectionScrollY = 0;
+  let selectionBusy = false;
+  let selectionCopyTimer = null;
+
+  function ensureSelectionUI() {
+    if (selectionHost) {
+      // Trang tự dọn DOM lạ thì gắn lại host đã tạo.
+      if (!selectionHost.isConnected) document.documentElement.appendChild(selectionHost);
+      return;
+    }
+
+    selectionHost = document.createElement('div');
+    selectionHost.id = 'tm-selection-translate-host';
+    selectionHost.dataset.tmNoTranslate = 'true';
+    document.documentElement.appendChild(selectionHost);
+
+    const shadow = selectionHost.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+      <style>
+        :host {
+          all: initial;
+          position: fixed;
+          inset: 0;
+          z-index: 2147483647;
+          pointer-events: none;
+          font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+        }
+        [hidden] { display: none !important; }
+        .fab {
+          all: unset;
+          position: fixed;
+          box-sizing: border-box;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          cursor: pointer;
+          padding: 6px 10px;
+          border: 1px solid rgba(255,255,255,.09);
+          border-radius: 10px;
+          background: rgba(10, 12, 16, .94);
+          box-shadow: 0 12px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+          color: #fff;
+          backdrop-filter: blur(14px);
+          font: 700 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          pointer-events: auto;
+          transition: background .2s cubic-bezier(.32,.72,0,1), transform .18s cubic-bezier(.32,.72,0,1);
+        }
+        .fab:hover { background: rgba(30, 34, 44, .95); }
+        .fab:active { transform: scale(.96); }
+        .fab[data-busy="true"] { cursor: progress; color: rgba(255,255,255,.6); }
+        .panel {
+          position: fixed;
+          box-sizing: border-box;
+          min-width: 180px;
+          max-width: 320px;
+          max-height: 40vh;
+          overflow-y: auto;
+          padding: 9px 10px 10px;
+          border: 1px solid rgba(255,255,255,.09);
+          border-radius: 10px;
+          background: rgba(10, 12, 16, .94);
+          box-shadow: 0 18px 45px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
+          color: #fff;
+          backdrop-filter: blur(14px);
+          pointer-events: auto;
+        }
+        .result {
+          white-space: pre-wrap;
+          word-break: break-word;
+          color: rgba(255,255,255,.92);
+          font: 500 13px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        }
+        .result[data-error="true"] { color: #fca5a5; }
+        .actions { display: flex; gap: 6px; margin-top: 8px; }
+        .actions button {
+          all: unset;
+          box-sizing: border-box;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          cursor: pointer;
+          padding: 4px 8px;
+          border-radius: 8px;
+          border: 1px solid rgba(255,255,255,.08);
+          background: rgba(255,255,255,.05);
+          color: rgba(255,255,255,.85);
+          font: 640 11px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          transition: background .2s cubic-bezier(.32,.72,0,1);
+        }
+        .actions button:hover { background: rgba(255,255,255,.12); }
+        .actions .close { margin-left: auto; padding: 4px 7px; color: rgba(255,255,255,.6); }
+      </style>
+      <button type="button" class="fab" data-tm-no-translate title="Dịch đoạn đã chọn" hidden>${NPT_SELECTION_FAB_LABEL}</button>
+      <div class="panel" data-tm-no-translate hidden>
+        <div class="result"></div>
+        <div class="actions">
+          <button type="button" class="copy">${NPT_SELECTION_COPY_LABEL}</button>
+          <button type="button" class="close" title="Đóng">${NPT_ICONS.close}</button>
+        </div>
+      </div>
+    `;
+
+    selectionButton = shadow.querySelector('.fab');
+    selectionPanel = shadow.querySelector('.panel');
+    selectionResult = shadow.querySelector('.result');
+    selectionCopyButton = shadow.querySelector('.copy');
+
+    // Giữ nguyên vùng bôi đen khi bấm vào nút/panel.
+    shadow.addEventListener('mousedown', event => event.preventDefault());
+
+    selectionButton.addEventListener('click', () => { translateSelection(); });
+    shadow.querySelector('.close').addEventListener('click', () => hideSelectionUI());
+    selectionCopyButton.addEventListener('click', () => copySelectionResult());
+  }
+
+  // Neo element theo góc dưới-phải vùng chọn, clamp trong viewport 8px.
+  function placeSelectionElement(element, width, height) {
+    if (!selectionRect) return;
+    // html/body có transform/filter/perspective làm fixed bị lệch → absolute + trừ scroll.
+    const useAbsolute = hasTransformedRoot();
+    const offsetX = useAbsolute ? window.scrollX : 0;
+    const offsetY = useAbsolute ? window.scrollY : 0;
+
+    let left = selectionRect.right + 6;
+    let top = selectionRect.bottom + 6;
+    left = Math.max(8, Math.min(left, innerWidth - width - 8));
+    top = Math.max(8, Math.min(top, innerHeight - height - 8));
+
+    const mode = useAbsolute ? 'absolute' : 'fixed';
+    if (element.style.position !== mode) element.style.position = mode;
+    element.style.left = `${Math.round(left + offsetX)}px`;
+    element.style.top = `${Math.round(top + offsetY)}px`;
+  }
+
+  function hideSelectionUI() {
+    if (selectionButton) {
+      selectionButton.hidden = true;
+      selectionButton.dataset.busy = 'false';
+      selectionButton.innerHTML = NPT_SELECTION_FAB_LABEL;
+    }
+    if (selectionPanel) selectionPanel.hidden = true;
+    selectionText = '';
+    selectionRect = null;
+    selectionBusy = false;
+  }
+
+  function updateSelectionFromEvent(event) {
+    if (!GM_getValue(SELECTION_CONFIG.storageKey, true)) {
+      hideSelectionUI();
+      return;
+    }
+
+    // Click bên trong UI extension (toolbar/helper/panel ảnh/panel này) → giữ nguyên.
+    const path = typeof event?.composedPath === 'function' ? event.composedPath() : [];
+    if (path.some(node => node instanceof Element && node.dataset?.tmNoTranslate)) return;
+
+    const selection = window.getSelection();
+    const text = String(selection?.toString() || '').trim();
+
+    if (!selection || selection.isCollapsed ||
+        text.length < SELECTION_CONFIG.minChars ||
+        text.length > SELECTION_CONFIG.maxChars) {
+      hideSelectionUI();
+      return;
+    }
+
+    const anchor = selection.anchorNode;
+    const anchorElement = anchor?.nodeType === Node.ELEMENT_NODE ? anchor : anchor?.parentElement;
+    if (!anchorElement) {
+      hideSelectionUI();
+      return;
+    }
+
+    // Không hiện nút khi bôi đen trong input/textarea/contenteditable.
+    if (anchorElement.isContentEditable ||
+        anchorElement.closest('input, textarea, [contenteditable]:not([contenteditable="false"])')) {
+      hideSelectionUI();
+      return;
+    }
+
+    // Không hiện nút khi bôi đen trong UI của chính extension.
+    if (anchorElement.closest('[data-tm-no-translate]')) {
+      hideSelectionUI();
+      return;
+    }
+
+    let rect;
+    try {
+      rect = selection.getRangeAt(0).getBoundingClientRect();
+    } catch (_) {
+      hideSelectionUI();
+      return;
+    }
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+      hideSelectionUI();
+      return;
+    }
+
+    ensureSelectionUI();
+
+    // Chọn vùng khác → ẩn panel kết quả cũ, chỉ hiện nút ở vị trí mới.
+    if (text !== selectionText) {
+      selectionPanel.hidden = true;
+      selectionBusy = false;
+      selectionButton.dataset.busy = 'false';
+      selectionButton.innerHTML = NPT_SELECTION_FAB_LABEL;
+    }
+
+    selectionText = text;
+    selectionRect = rect;
+    selectionScrollY = window.scrollY;
+
+    if (selectionPanel.hidden) {
+      selectionButton.hidden = false;
+      placeSelectionElement(selectionButton, selectionButton.offsetWidth || 48, selectionButton.offsetHeight || 26);
+    }
+  }
+
+  async function translateSelection() {
+    const text = selectionText;
+    if (!text || selectionBusy) return;
+
+    // Trang đang ở chế độ vi/en thì dịch theo ngôn ngữ đó, ngược lại mặc định VI.
+    const target = ['vi', 'en'].includes(currentLanguage) ? currentLanguage : 'vi';
+
+    selectionBusy = true;
+    selectionButton.dataset.busy = 'true';
+    selectionButton.textContent = '…';
+
+    try {
+      const translated = await TRANSLATION_CORE.translate(text, 'auto', target);
+      if (text !== selectionText || selectionButton.hidden) return; // vùng chọn đã đổi/đã ẩn
+      showSelectionResult(String(translated ?? ''), false);
+    } catch (error) {
+      if (text !== selectionText || selectionButton.hidden) return;
+      showSelectionResult(friendlyError(error), true);
+    } finally {
+      selectionBusy = false;
+      if (selectionButton) {
+        selectionButton.dataset.busy = 'false';
+        selectionButton.innerHTML = NPT_SELECTION_FAB_LABEL;
+      }
+    }
+  }
+
+  function showSelectionResult(message, isError) {
+    ensureSelectionUI();
+    selectionResult.textContent = message;
+    selectionResult.dataset.error = String(isError);
+    selectionCopyButton.hidden = isError;
+    selectionButton.hidden = true;
+    selectionPanel.hidden = false;
+    placeSelectionElement(selectionPanel, selectionPanel.offsetWidth || 220, selectionPanel.offsetHeight || 90);
+  }
+
+  function copySelectionResult() {
+    const text = selectionResult?.textContent || '';
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      selectionCopyButton.innerHTML = NPT_SELECTION_COPIED_LABEL;
+      clearTimeout(selectionCopyTimer);
+      selectionCopyTimer = setTimeout(() => {
+        selectionCopyButton.innerHTML = NPT_SELECTION_COPY_LABEL;
+      }, 1500);
+    }).catch(() => {
+      // Clipboard bị chặn (mất focus / không có quyền) — bỏ qua.
+    });
+  }
+
+  function initSelectionTranslator() {
+    document.addEventListener('mouseup', updateSelectionFromEvent, true);
+    document.addEventListener('keyup', event => {
+      if (event.key === 'Escape') {
+        hideSelectionUI();
+        return;
+      }
+      updateSelectionFromEvent(event);
+    }, true);
+
+    // Click ra ngoài (composedPath xuyên qua shadow DOM) → ẩn nút/panel.
+    document.addEventListener('mousedown', event => {
+      if (!selectionHost) return;
+      if (selectionButton.hidden && selectionPanel.hidden) return;
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      if (path.includes(selectionHost)) return;
+      hideSelectionUI();
+    }, true);
+
+    // Vùng bôi đen bị collapse (click chỗ khác, phím di chuyển…) → ẩn.
+    document.addEventListener('selectionchange', () => {
+      if (!selectionHost) return;
+      const selection = window.getSelection();
+      if ((!selection || selection.isCollapsed) && !selectionBusy) hideSelectionUI();
+    });
+
+    // Scroll xa khỏi vị trí bôi đen → ẩn.
+    window.addEventListener('scroll', () => {
+      if (!selectionHost) return;
+      if (selectionButton.hidden && selectionPanel.hidden) return;
+      if (Math.abs(window.scrollY - selectionScrollY) > SELECTION_CONFIG.scrollHideDelta) {
+        hideSelectionUI();
+      }
+    }, { passive: true, capture: true });
   }
 
   const observedMutationRoots = new WeakSet();
@@ -1113,10 +1824,12 @@
 
   function init() {
     if (!document.documentElement) return;
+    if (isSiteBlacklisted()) return; // Site bị chặn: không toolbar, không auto-translate.
     if (IS_TOP_FRAME) {
       createToolbar();
       installKeyboardShortcuts();
     }
+    initSelectionTranslator();
     startObserver();
 
     const savedLanguage = GM_getValue(`${CONFIG.storageKey}:${location.hostname}`, 'original');
@@ -1133,7 +1846,7 @@
       return false;
     }
     if (message?.type === 'setPageLanguage' && ['original', 'vi', 'en'].includes(message.language)) {
-      setLanguage(message.language);
+      if (!isSiteBlacklisted()) setLanguage(message.language);
       sendResponse({ ok: true });
       return false;
     }
@@ -1169,6 +1882,17 @@
     maxContextChars: 800,
     repositionDelayMs: 20,
   };
+
+  // Icon SVG inline: stroke 1.6-1.8, round cap/join, currentColor — không emoji, không asset ngoài.
+  const NPT_INPUT_ICONS = {
+    spark: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5 13.9 10l5.6 2-5.6 2L12 19.5 10.1 14l-5.6-2 5.6-2z"/></svg>',
+    sparkLarge: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5 13.9 10l5.6 2-5.6 2L12 19.5 10.1 14l-5.6-2 5.6-2z"/></svg>',
+    chevron: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+    bolt: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2.5 4.5 13.5H11l-1 8L18.5 10.5H12z"/></svg>',
+    chat: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>',
+    gear: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.4M12 18.6V21M3 12h2.4M18.6 12H21M5.6 5.6l1.7 1.7M16.7 16.7l1.7 1.7M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7"/></svg>',
+  };
+  const NPT_MAIN_LABEL = `${NPT_INPUT_ICONS.spark}<span>EN</span>`;
 
   const UNSUPPORTED_INPUT_TYPES = new Set([
     'password', 'file', 'checkbox', 'radio', 'button', 'submit', 'reset',
@@ -1478,7 +2202,7 @@
     busy = value;
     if (mainButton) mainButton.disabled = value;
     if (arrowButton) arrowButton.disabled = value;
-    if (mainButton) mainButton.textContent = value ? '…' : '✨ EN';
+    if (mainButton) mainButton.innerHTML = value ? '…' : NPT_MAIN_LABEL;
     if (label) setHelperStatus(label);
   }
 
@@ -1493,6 +2217,11 @@
 
   async function runInputTranslation(mode) {
     if (busy || !activeEditable) return;
+
+    if (!isExtensionContextAlive()) {
+      showToast(CONTEXT_DEAD_MESSAGE, true);
+      return;
+    }
 
     let snapshot;
     try {
@@ -1534,11 +2263,11 @@
             applyTranslation(snapshot, fallback);
             const reason = nativeError?.code === 'NO_API_KEY' || nativeError?.message === 'NO_API_KEY'
               ? 'chưa cấu hình API'
-              : String(nativeError?.message || 'API lỗi').slice(0, 70);
+              : friendlyError(nativeError).slice(0, 70);
             showToast(`Đã fallback miễn phí · ${reason}`);
             return;
           } catch (fallbackError) {
-            throw new Error(`Native: ${nativeError?.message || nativeError} · Free: ${fallbackError?.message || fallbackError}`);
+            throw new Error(`Native: ${friendlyError(nativeError)} · Free: ${friendlyError(fallbackError)}`);
           }
         }
       }
@@ -1551,7 +2280,7 @@
       if (error?.code === 'NO_API_KEY' || error?.message === 'NO_API_KEY') {
         showToast('Chưa cấu hình API Native · mở ⚙ Cài đặt', true);
       } else {
-        showToast(String(error?.message || 'Dịch thất bại').slice(0, 240), true);
+        showToast(friendlyError(error).slice(0, 240), true);
       }
     } finally {
       setBusy(false);
@@ -1576,7 +2305,8 @@
     const contextItem = menuElement?.querySelector('[data-action="context"]');
     if (contextItem) {
       const enabled = GM_getValue(INPUT_CONFIG.contextStorage, true);
-      contextItem.textContent = `${enabled ? '✓' : '○'} Dùng ngữ cảnh xung quanh`;
+      // Giữ glyph trạng thái ✓/○ như cũ, chỉ bọc thêm icon + nhãn.
+      contextItem.innerHTML = `${NPT_INPUT_ICONS.chat}<span class="item-text">${enabled ? '✓' : '○'} Dùng ngữ cảnh xung quanh</span>`;
     }
   }
 
@@ -1717,8 +2447,10 @@
         button:disabled { cursor: progress; opacity: .75; }
         .main {
           flex: 1;
-          display: grid;
-          place-items: center;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
           border-radius: 10px 0 0 10px;
         }
         .arrow {
@@ -1745,6 +2477,9 @@
         }
         .menu[hidden] { display: none; }
         .item {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
           width: 100%;
           padding: 9px 10px;
           border: 0;
@@ -1755,6 +2490,8 @@
           font: 620 12px/1.25 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
           transition: background .2s cubic-bezier(.32,.72,0,1);
         }
+        .item > svg { flex: none; margin-top: 1px; }
+        .item-text { flex: 1; }
         .item:hover { background: rgba(255,255,255,.08); }
         .hint {
           display: block;
@@ -1786,20 +2523,24 @@
         .status[data-error="true"] { color: #fca5a5; }
       </style>
       <div class="helper" data-tm-no-translate>
-        <button type="button" class="main" title="Dịch sang tiếng Anh tự nhiên · Alt+Shift+E">✨ EN</button>
-        <button type="button" class="arrow" title="Mở tùy chọn">▾</button>
+        <button type="button" class="main" title="Dịch sang tiếng Anh tự nhiên · Alt+Shift+E">${NPT_MAIN_LABEL}</button>
+        <button type="button" class="arrow" title="Mở tùy chọn">${NPT_INPUT_ICONS.chevron}</button>
         <div class="menu" hidden>
           <button type="button" class="item" data-action="native">
-            ✨ Native English
-            <span class="hint">API tùy chỉnh · hỗ trợ key hoặc không key</span>
+            ${NPT_INPUT_ICONS.sparkLarge}
+            <span class="item-text">Native English
+              <span class="hint">API tùy chỉnh · hỗ trợ key hoặc không key</span>
+            </span>
           </button>
           <button type="button" class="item" data-action="quick">
-            ⚡ Quick English
-            <span class="hint">Google Translate · nhanh, không cần key</span>
+            ${NPT_INPUT_ICONS.bolt}
+            <span class="item-text">Quick English
+              <span class="hint">Google Translate · nhanh, không cần key</span>
+            </span>
           </button>
           <div class="divider"></div>
-          <button type="button" class="item" data-action="context">✓ Dùng ngữ cảnh xung quanh</button>
-          <button type="button" class="item" data-action="settings">⚙ Cài đặt API</button>
+          <button type="button" class="item" data-action="context">${NPT_INPUT_ICONS.chat}<span class="item-text">✓ Dùng ngữ cảnh xung quanh</span></button>
+          <button type="button" class="item" data-action="settings">${NPT_INPUT_ICONS.gear}<span class="item-text">Cài đặt API</span></button>
         </div>
         <div class="status" aria-live="polite"></div>
       </div>
@@ -1931,6 +2672,7 @@
 
   function initInputTranslator() {
     if (!document.documentElement || document.getElementById('tm-native-en-helper-host')) return;
+    if (isSiteBlacklisted()) return; // Site bị chặn: không tạo nút ✨ EN.
     createInputHelper();
     installInputListeners();
   }

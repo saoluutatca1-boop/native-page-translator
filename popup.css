@@ -136,8 +136,8 @@ select {
   color: var(--text);
   font: inherit;
   outline: none;
-  transition: border-color 0.25s var(--spring), background 0.25s var(--spring),
-    box-shadow 0.25s var(--spring), transform 0.18s var(--spring);
+  transition: border-color 0.3s var(--spring), background 0.3s var(--spring),
+    box-shadow 0.3s var(--spring), transform 0.18s var(--spring), color 0.3s var(--spring);
 }
 
 input::placeholder {
@@ -166,6 +166,10 @@ select {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   cursor: pointer;
   font-weight: 700;
   letter-spacing: 0.01em;
@@ -478,4 +482,80 @@ button:active {
 
 .provider-fields .small-label:first-child {
   margin-top: 3px;
+}
+
+/* ---------- Brand refresh: header, icon SVG, micro-motion ---------- */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo {
+  flex: none;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.version-pill {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: #c7d2fe;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+/* Icon SVG inline: stroke currentColor, size cố định trong nút/label */
+.ico {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+label .ico {
+  margin-right: 6px;
+  vertical-align: -2.5px;
+}
+
+/* Provider badge 22px đứng trước tên provider */
+.provider-badge {
+  flex: none;
+  border-radius: 6px;
+}
+
+/* Key-row: icon chìa khóa nhỏ đầu dòng */
+.key-ico {
+  flex: none;
+  color: var(--text-faint);
+}
+
+/* Micro-animation fadeIn cho provider-card khi load */
+.provider-card {
+  animation: cardIn 0.45s var(--spring) both;
+}
+
+.provider-card:nth-child(2) { animation-delay: 0.05s; }
+.provider-card:nth-child(3) { animation-delay: 0.1s; }
+
+/* Chỉ khai from — end state theo computed style, không đè opacity card disabled */
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
+/* Chấm trạng thái đầu thanh status (màu theo currentColor — đổi theo lỗi/ok) */
+#status:not(:empty)::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  vertical-align: 1px;
 }

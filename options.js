@@ -14,6 +14,8 @@ const PREFS_KEYS = {
   defaultMode: 'tm-native-en-default-mode',
   fallbackQuick: 'tm-native-en-fallback-quick',
   pageUseProvider: 'tm-page-use-provider',
+  selectionTranslate: 'tm-selection-translate',
+  siteBlacklist: 'tm-site-blacklist',
 };
 
 const $ = selector => document.querySelector(selector);
@@ -46,6 +48,16 @@ function el(tag, className, text) {
   return node;
 }
 
+/* Badge thương hiệu 22px (bo góc 6) đứng trước tên provider — chuỗi SVG tĩnh, an toàn innerHTML. */
+const PROVIDER_BADGES = {
+  deepl: '<svg class="provider-badge" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><defs><linearGradient id="pb-deepl" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f2b46"/><stop offset="1" stop-color="#14b8a6"/></linearGradient></defs><rect width="22" height="22" rx="6" fill="url(#pb-deepl)"/><text x="11" y="15" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="inherit">D</text></svg>',
+  gemini: '<svg class="provider-badge" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><defs><linearGradient id="pb-gemini" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs><rect width="22" height="22" rx="6" fill="url(#pb-gemini)"/><path d="M11 5c.4 3 1.5 4.1 4.5 4.5-3 .4-4.1 1.5-4.5 4.5-.4-3-1.5-4.1-4.5-4.5 3-.4 4.1-1.5 4.5-4.5Z" fill="#fff"/><path d="M16.4 13.2c.2 1.3.8 1.8 2.1 2-1.3.2-1.9.7-2.1 2-.2-1.3-.8-1.8-2.1-2 1.3-.2 1.9-.7 2.1-2Z" fill="#fff" opacity=".85"/></svg>',
+  openai: '<svg class="provider-badge" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><defs><linearGradient id="pb-openai" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#4b5563"/></linearGradient></defs><rect width="22" height="22" rx="6" fill="url(#pb-openai)"/><text x="11" y="15" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="inherit">O</text></svg>',
+};
+
+/* Icon chìa khóa nhỏ đầu mỗi key-row. */
+const KEY_ICON = '<svg class="key-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="12" r="3.2"/><path d="M10.7 12h9.3m-3 0v3m3-3v2"/></svg>';
+
 function renderPreferredSelect() {
   const select = $('#preferred');
   select.textContent = '';
@@ -70,6 +82,7 @@ function renderKeyList(card, providerId) {
 
   provider.keys.forEach((entry, index) => {
     const row = el('div', 'key-row');
+    row.insertAdjacentHTML('afterbegin', KEY_ICON);
     row.appendChild(el('span', 'key-text', maskKey(entry.key)));
     if (entry.label) row.appendChild(el('span', 'key-label', entry.label));
     const remove = el('button', '', 'Xoá');
@@ -200,6 +213,7 @@ function renderProviders() {
       card.dataset.enabled = String(provider.enabled);
     });
     head.appendChild(toggle);
+    if (PROVIDER_BADGES[providerId]) head.insertAdjacentHTML('beforeend', PROVIDER_BADGES[providerId]);
     head.appendChild(el('span', '', def.label));
     head.appendChild(el('span', 'badge', `${provider.keys.length} key`));
     card.appendChild(head);
@@ -246,6 +260,14 @@ async function requestEndpointPermission(endpoint) {
 
 /* ------------------------- Lưu / Test / Dịch trang ------------------------- */
 
+// Parse textarea blacklist: mỗi dòng 1 domain — trim, lowercase, bỏ dòng rỗng.
+function parseSiteBlacklist(text) {
+  return String(text || '')
+    .split('\n')
+    .map(line => line.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 async function saveSettings(showSaved = true) {
   config.preferred = $('#preferred').value;
   const openai = config.providers.openai;
@@ -260,6 +282,8 @@ async function saveSettings(showSaved = true) {
     [PREFS_KEYS.defaultMode]: $('#defaultMode').value,
     [PREFS_KEYS.fallbackQuick]: $('#fallbackQuick').checked,
     [PREFS_KEYS.pageUseProvider]: $('#pageUseProvider').checked,
+    [PREFS_KEYS.selectionTranslate]: $('#selectionTranslate').checked,
+    [PREFS_KEYS.siteBlacklist]: parseSiteBlacklist($('#siteBlacklist').value),
   });
   if (showSaved) setStatus('Đã lưu cài đặt');
 }
@@ -300,6 +324,57 @@ async function loadPrefs() {
   $('#defaultMode').value = values[PREFS_KEYS.defaultMode] === 'quick' ? 'quick' : 'native';
   $('#fallbackQuick').checked = values[PREFS_KEYS.fallbackQuick] !== false;
   $('#pageUseProvider').checked = values[PREFS_KEYS.pageUseProvider] !== false;
+  $('#selectionTranslate').checked = values[PREFS_KEYS.selectionTranslate] !== false;
+  const blacklist = values[PREFS_KEYS.siteBlacklist];
+  $('#siteBlacklist').value = Array.isArray(blacklist) ? blacklist.join('\n') : '';
+}
+
+/* ------------------------- Quota DeepL ------------------------- */
+
+// Một dòng quota: 'DeepL <keyMasked>: count/limit ký tự' + thanh progress theo %.
+function renderUsageRow(container, usage) {
+  const row = el('div');
+  row.style.cssText = 'margin-top:8px';
+
+  if (usage.error) {
+    const line = el('div', 'note', `DeepL ${usage.keyMasked || ''}: ${usage.error}`);
+    line.style.cssText = 'margin:0;color:#fca5a5';
+    row.appendChild(line);
+    container.appendChild(row);
+    return;
+  }
+
+  const count = Number(usage.count) || 0;
+  const limit = Number(usage.limit) || 0;
+  const label = el('div', 'note',
+    `DeepL ${usage.keyMasked}: ${count.toLocaleString('vi-VN')}/${limit.toLocaleString('vi-VN')} ký tự`);
+  label.style.margin = '0';
+  row.appendChild(label);
+
+  if (limit > 0) {
+    const percent = Math.min(100, Math.round((count / limit) * 100));
+    const track = el('div');
+    track.style.cssText = 'height:6px;margin-top:4px;border-radius:99px;background:var(--panel-strong);overflow:hidden';
+    const fill = el('div');
+    fill.style.cssText = `height:100%;width:${percent}%;border-radius:99px;background:linear-gradient(135deg,var(--accent),var(--accent-2))`;
+    track.appendChild(fill);
+    row.appendChild(track);
+  }
+  container.appendChild(row);
+}
+
+async function renderDeeplUsage() {
+  const container = $('#deeplUsage');
+  container.textContent = '';
+  const result = await chrome.runtime.sendMessage({ type: 'deeplUsage' }).catch(() => null);
+  const usages = Array.isArray(result?.usages) ? result.usages : [];
+  if (!result?.ok || !usages.length) {
+    const line = el('div', 'note', result?.error || 'Chưa có dữ liệu quota DeepL.');
+    if (!result?.ok) line.style.color = '#fca5a5';
+    container.appendChild(line);
+    return;
+  }
+  for (const usage of usages) renderUsageRow(container, usage);
 }
 
 document.querySelectorAll('[data-lang]').forEach(button => {
@@ -309,6 +384,15 @@ $('#save').addEventListener('click', () => saveSettings().catch(error => setStat
 $('#testApi').addEventListener('click', () => testApi().catch(error => setStatus(error.message, true)));
 $('#preferred').addEventListener('change', () => { config.preferred = $('#preferred').value; });
 $('#tone').addEventListener('change', () => { config.tone = $('#tone').value; });
+$('#refreshDeeplUsage').addEventListener('click', async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    await renderDeeplUsage();
+  } finally {
+    button.disabled = false;
+  }
+});
 
 (async () => {
   try {
@@ -317,6 +401,7 @@ $('#tone').addEventListener('change', () => { config.tone = $('#tone').value; })
     renderPreferredSelect();
     renderProviders();
     await loadPrefs();
+    renderDeeplUsage();
   } catch (error) {
     setStatus(error.message, true);
   }

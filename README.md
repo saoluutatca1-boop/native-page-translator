@@ -35,11 +35,21 @@ Mỗi provider thêm được **nhiều key**. Khi dịch:
 - Key chỉ lưu trong `chrome.storage.local` của extension — **gỡ extension là xoá sạch toàn bộ dữ liệu**.
 - Key không được gửi đi đâu ngoài chính API của provider tương ứng.
 
+## Quota DeepL
+
+Trang **Cài đặt** hiển thị mức dùng ký tự (đã dùng/giới hạn) của từng DeepL key ngay đầu phần provider, kèm thanh tiến trình — bấm **Làm mới quota** để cập nhật.
+
 ## Dịch cả trang: ưu tiên API riêng, fallback miễn phí
 
 Khi bấm nút VI/EN dịch cả trang, extension **ưu tiên dùng API riêng đã cấu hình** (DeepL/Gemini/OpenAI — tốn quota). Tắt bằng toggle **"Dịch cả trang bằng API riêng"** trong popup/Cài đặt (storage key `tm-page-use-provider`, **mặc định bật**).
 
 Khi API riêng lỗi hoặc đã tắt toggle, chuỗi **fallback miễn phí không cần key** lần lượt thử: Google Translate API endpoint → Google Translate web endpoint → MyMemory (đoạn ngắn). Gặp 429/lỗi server sẽ tự chờ rồi thử lại; dịch cả trang được gom batch để tránh hàng trăm request lẻ.
+
+Chặn dịch trên từng site tại mục **"Không dịch trên các site"** trong Cài đặt — mỗi dòng 1 domain, khớp cả sub-domain (ví dụ `reddit.com` chặn luôn `old.reddit.com`).
+
+## Dịch đoạn bôi đen
+
+Bôi đen một đoạn chữ trên trang → hiện **nút nổi** cạnh vùng chọn → bấm để dịch đoạn đó qua **provider riêng** (DeepL/Gemini/OpenAI, theo thứ tự ưu tiên). Kết quả hiện trong panel nhỏ kèm **nút sao chép**. Tắt được bằng toggle **"Dịch đoạn bôi đen"** trong Cài đặt (mặc định bật).
 
 ## Nút ✨ EN (đổi văn bản đang gõ sang tiếng Anh)
 
@@ -55,6 +65,19 @@ Với Gemini/OpenAI, chọn giọng văn trong popup hoặc Cài đặt:
 - **Thân mật** — nhắn bạn bè, mạng xã hội: contractions, slang tự nhiên như tin nhắn thật. Viết như ngườ thật nhắn tin: bỏ apostrophe (im, dont, gonna), viết tắt chat phổ biến (u, rn, tbh, ngl...), lowercase theo vibe.
 
 DeepL là engine dịch thuần nên không áp dụng phong cách này.
+
+## Dịch ảnh (OCR qua Gemini)
+
+Dịch chữ trong ảnh (meme, banner, ảnh chụp màn hình...) mà không cần gõ lại:
+
+- **Cách dùng**: chuột phải vào ảnh bất kỳ → chọn **"Dịch ảnh này (Gemini)"**. Kết quả hiện trong một panel cạnh ảnh, có nút sao chép. Đích dịch mặc định là tiếng Việt.
+- **Yêu cầu**: bật provider **Gemini** và có key hợp lệ (lấy tại <https://aistudio.google.com/apikey>). Gemini là model multimodal nên đọc ảnh trực tiếp — không cần OCR engine riêng.
+- **Quyền truy cập**: extension fetch ảnh từ background bằng quyền host; lần đầu dịch ảnh trên một domain, trình duyệt sẽ hỏi quyền truy cập domain đó — chọn **Cho phép** để tiếp tục.
+
+Giới hạn hiện tại:
+
+- Chưa vẽ chữ đè lên ảnh (không inpainting) — kết quả chỉ hiện dạng text trong panel.
+- Ảnh quá lớn hoặc chữ quá nhỏ/nét kém có thể đọc sai.
 
 ## Phím tắt dịch trang
 
@@ -73,12 +96,14 @@ Cấu trúc:
 - `providers.js` — định nghĩa provider + xoay vòng key (JS thuần, dùng chung cho background/options, test được bằng node).
 - `background.js` — service worker: routing dịch, seed config, proxy fetch có kiểm soát quyền.
 - `content.js` — dịch trang + nút ✨ EN trên ô nhập.
-- `options.html` / `options.js` — trang Cài đặt (quản lý key).
+- `options.html` / `options.js` — trang Cài đặt (quản lý key, quota DeepL, blacklist site).
 - `popup.html` / `popup.js` — tác vụ nhanh.
 
 ## Khắc phục sự cố
 
+- **"Extension context invalidated"**: extension vừa reload/nâng cấp trong khi tab cũ còn script cũ — chỉ cần **F5 tải lại trang**. Bản mới tự hiện thông báo này thay vì chuỗi lỗi gốc.
 - **Không dịch được trang**: reload tab sau khi cài/nâng cấp extension (content script cũ chưa khớp background mới).
+- **Trang nhiễu nhiều ngôn ngữ (Anh/Trung/Nhật/Hàn)**: extension tự gom các đoạn cùng nhóm chữ vào một batch để dịch hết — nếu dùng API riêng, DeepL/Gemini tự detect từng đoạn.
 - Chỉ giữ **1 bản extension** duy nhất — xoá các bản cũ/trùng trong `chrome://extensions` để tránh xung đột.
 - Kiểm tra log lỗi tại `brave://extensions` hoặc `chrome://extensions` → mục extension → **Service worker** → Console.
 - Bấm nút **Test API** trong popup để kiểm tra provider/key còn hoạt động không.

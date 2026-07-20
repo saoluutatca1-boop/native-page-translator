@@ -470,6 +470,99 @@ async function run() {
     assert.equal(calls.length, 1); // providerFailed do HTTP -> sang provider khác ngay, không retry
   }
 
+  // 27. buildVisionRequest: inline_data đúng chuẩn + prompt nhắc đúng ngôn ngữ đích
+  {
+    const req = P.buildVisionRequest({
+      providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'gkey',
+      mimeType: 'image/png', imageBase64: 'QUJD', targetLanguage: 'vi',
+    });
+    assert.match(req.url, /v1beta\/models\/gemini-2\.5-flash:generateContent$/);
+    assert.equal(req.headers['x-goog-api-key'], 'gkey');
+    const body = JSON.parse(req.body);
+    assert.equal(body.contents[0].role, 'user');
+    const inline = body.contents[0].parts.find(part => part.inline_data);
+    assert.deepEqual(inline.inline_data, { mime_type: 'image/png', data: 'QUJD' });
+    assert.match(body.systemInstruction.parts[0].text, /Vietnamese/);
+    assert.match(body.systemInstruction.parts[0].text, /OCR \+ translation engine/);
+    assert.match(body.contents[0].parts[0].text, /Vietnamese/);
+    assert.equal(body.generationConfig.temperature, 0.2);
+    assert.equal(body.safetySettings.length, 4);
+    assert.ok(body.safetySettings.every(s => s.threshold === 'BLOCK_NONE'));
+
+    // Đích 'en' -> prompt phải nhắc English, không còn Vietnamese
+    const reqEn = P.buildVisionRequest({
+      providerConfig: {}, apiKey: 'g', mimeType: 'image/jpeg', imageBase64: 'QQ==', targetLanguage: 'en',
+    });
+    const bodyEn = JSON.parse(reqEn.body);
+    assert.match(bodyEn.systemInstruction.parts[0].text, /English/);
+    assert.doesNotMatch(bodyEn.systemInstruction.parts[0].text, /Vietnamese/);
+
+    // Ngôn ngữ lạ -> từ chối
+    assert.throws(
+      () => P.buildVisionRequest({ providerConfig: {}, apiKey: 'g', mimeType: 'image/png', imageBase64: 'QQ==', targetLanguage: 'zh' }),
+      /Ngôn ngữ đích không hỗ trợ/,
+    );
+  }
+
+  // 28. parseVisionLines: JSON sạch / fence ```json / rác thừa / phần tử hỏng
+  {
+    assert.deepEqual(
+      P.parseVisionLines('[{"original":"a","translated":"b"}]'),
+      [{ original: 'a', translated: 'b' }],
+    );
+    assert.deepEqual(
+      P.parseVisionLines('```json\n[{"original":"x","translated":"y"}]\n```'),
+      [{ original: 'x', translated: 'y' }],
+    );
+    // Rác trước/sau mảng + phần tử thiếu field bị lọc bỏ
+    assert.deepEqual(
+      P.parseVisionLines('Kết quả đây: [{"original":"1","translated":"2"}, {"junk":true}, 5, null] xong nhé'),
+      [{ original: '1', translated: '2' }],
+    );
+    // Ảnh không có chữ -> mảng rỗng hợp lệ
+    assert.deepEqual(P.parseVisionLines('[]'), []);
+    // Không có mảng JSON nào -> throw
+    assert.throws(() => P.parseVisionLines('không có mảng nào'), /không parse được/);
+  }
+
+  // 29. translateVisionWithRotation: bỏ qua deepl dù enabled, chỉ chạy gemini
+  {
+    const visionPart = { text: '[{"original":"Xin chào","translated":"Hello"}]' };
+    const geminiVisionBody = JSON.stringify({
+      candidates: [{ content: { parts: [visionPart] } }],
+    });
+    const { fetchText, calls } = fakeFetch([
+      (req) => (req.url.includes('generativelanguage') ? { status: 200, bodyText: geminiVisionBody } : null),
+    ]);
+    const result = await P.translateVisionWithRotation({
+      config: BASE_CONFIG, mimeType: 'image/png', imageBase64: 'QUJD', targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.provider, 'gemini');
+    assert.deepEqual(result.lines, [{ original: 'Xin chào', translated: 'Hello' }]);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes('generativelanguage')); // deepl không bị gọi
+    assert.ok(JSON.parse(calls[0].body).contents[0].parts.some(part => part.inline_data));
+  }
+
+  // 30. Config có deepl mà không có key gemini -> IMAGE_NEEDS_GEMINI
+  {
+    const cfg = P.normalizeConfig({ providers: { deepl: { enabled: true, keys: [{ key: 'd:fx' }] } } });
+    await assert.rejects(
+      P.translateVisionWithRotation({
+        config: cfg, mimeType: 'image/png', imageBase64: 'QUJD', targetLanguage: 'vi',
+        fetchText: async () => ({ status: 200, bodyText: '{}' }), keyState: P.createKeyState(), sleep: noSleep,
+      }),
+      /IMAGE_NEEDS_GEMINI/,
+    );
+  }
+
+  // 31. deeplUsageEndpoint: key :fx -> host free /v2/usage, key pro -> host pro
+  {
+    assert.equal(P.deeplUsageEndpoint('abc:fx'), 'https://api-free.deepl.com/v2/usage');
+    assert.equal(P.deeplUsageEndpoint('abc-pro'), 'https://api.deepl.com/v2/usage');
+  }
+
   console.log('Tất cả test providers.js đều PASS ✔');
 }
 

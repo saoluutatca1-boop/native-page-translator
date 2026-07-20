@@ -5,8 +5,11 @@ const {
   PROVIDER_DEFS,
   normalizeConfig,
   usableProviders,
+  maskKey,
+  deeplUsageEndpoint,
   translateWithRotation,
   translateBatchWithRotation,
+  translateVisionWithRotation,
   createKeyState,
 } = globalThis.NPT_PROVIDERS;
 
@@ -232,6 +235,40 @@ async function providerStatus() {
   };
 }
 
+/* ------------------------------------------------------------------
+ * Mức dùng quota của TỪNG key DeepL đang cấu hình (GET /v2/usage).
+ * Key lỗi không chặn các key khác: phần tử đó trả { keyMasked, error }.
+ * ------------------------------------------------------------------ */
+async function deeplUsage() {
+  const config = await ensureConfig();
+  const keys = config.providers.deepl?.keys || [];
+  const usages = await Promise.all(keys.map(async (entry) => {
+    const keyMasked = maskKey(entry.key);
+    const response = await rawFetch({
+      method: 'GET',
+      url: deeplUsageEndpoint(entry.key),
+      headers: { Authorization: `DeepL-Auth-Key ${entry.key}` },
+      timeout: 15000,
+    });
+    if (!response.ok || response.status < 200 || response.status >= 300) {
+      return { keyMasked, error: `HTTP ${response.status || 0}` };
+    }
+    let data;
+    try {
+      data = JSON.parse(response.responseText || '{}');
+    } catch (_) {
+      return { keyMasked, error: 'Phản hồi không phải JSON' };
+    }
+    return {
+      keyMasked,
+      count: Number(data.character_count) || 0,
+      limit: Number(data.character_limit) || 0,
+      free: /:fx\s*$/i.test(entry.key),
+    };
+  }));
+  return { ok: true, usages };
+}
+
 async function broadcastToFrames(tabId, message) {
   const frames = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null);
   if (!frames?.length) {
@@ -244,12 +281,117 @@ async function broadcastToFrames(tabId, message) {
   return { ok: results.some(result => result.status === 'fulfilled') };
 }
 
+/* ------------------------------------------------------------------
+ * Dịch ảnh: menu chuột phải trên ảnh -> OCR + dịch qua Gemini vision.
+ * Fetch ảnh cần host permission của origin chứa ảnh — context menu click
+ * là user gesture nên chrome.permissions.request gọi được ngay tại đây.
+ * ------------------------------------------------------------------ */
+const IMAGE_MENU_ID = 'npt-translate-image';
+const IMAGE_TARGET_KEY = 'tm-image-target';
+const IMAGE_MAX_BYTES = 8 * 1024 * 1024; // ~8MB
+
+function registerImageContextMenu() {
+  // removeAll trước để tránh lỗi trùng id khi tạo lại.
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: IMAGE_MENU_ID,
+      title: 'Dịch ảnh này (Gemini)',
+      contexts: ['image'],
+    });
+  });
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const CHUNK = 0x8000; // tránh tràn stack khi spread mảng lớn
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+// Tải ảnh -> { mimeType, imageBase64 }. Timeout 30s, tối đa ~8MB.
+async function fetchImageAsBase64(srcUrl) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(srcUrl, {
+      signal: controller.signal,
+      credentials: 'omit',
+      redirect: 'follow',
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`Không tải được ảnh (HTTP ${response.status})`);
+    const mimeType = (response.headers.get('content-type') || '').split(';')[0].trim() || 'image/png';
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > IMAGE_MAX_BYTES) throw new Error('Ảnh quá lớn (tối đa 8MB)');
+    return { mimeType, imageBase64: arrayBufferToBase64(buffer) };
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('Tải ảnh quá chậm (timeout 30s)');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleImageTranslate(info, tab) {
+  const srcUrl = String(info?.srcUrl || '');
+  const tabId = tab?.id;
+  if (!srcUrl || !Number.isInteger(tabId)) return;
+
+  // Content script có thể không có trên trang (chrome://...) -> nuốt lỗi gửi.
+  const send = (message) => chrome.tabs.sendMessage(tabId, message).catch(() => {});
+  await send({ type: 'imageTranslateStart', srcUrl });
+
+  try {
+    const origin = new URL(srcUrl).origin;
+    const granted = await chrome.permissions.contains({ origins: [`${origin}/*`] });
+    if (!granted) {
+      const allowed = await chrome.permissions.request({ origins: [`${origin}/*`] });
+      if (!allowed) throw new Error('Chưa được cấp quyền truy cập ảnh');
+    }
+
+    const { mimeType, imageBase64 } = await fetchImageAsBase64(srcUrl);
+
+    const values = await chrome.storage.local.get([IMAGE_TARGET_KEY]);
+    const stored = String(values[IMAGE_TARGET_KEY] || '').toLowerCase();
+    const targetLanguage = ['vi', 'en'].includes(stored) ? stored : 'vi';
+
+    const config = await ensureConfig();
+    const result = await translateVisionWithRotation({
+      config,
+      mimeType,
+      imageBase64,
+      targetLanguage,
+      keyState,
+      fetchText: providerFetchText,
+    });
+
+    await send({ type: 'imageTranslateResult', srcUrl, ok: true, lines: result.lines });
+  } catch (error) {
+    let friendly = error?.message || String(error);
+    if (friendly.includes('IMAGE_NEEDS_GEMINI')) {
+      friendly = 'Dịch ảnh cần API key Gemini (bật trong Cài đặt)';
+    }
+    await send({ type: 'imageTranslateResult', srcUrl, ok: false, error: friendly });
+  }
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info?.menuItemId !== IMAGE_MENU_ID) return;
+  handleImageTranslate(info, tab).catch(error =>
+    console.warn('[Native Page Translator] Dịch ảnh thất bại:', error));
+});
+
 chrome.runtime.onInstalled.addListener(() => {
   ensureConfig().catch(error => console.warn('[Native Page Translator] Seed config failed:', error));
+  registerImageContextMenu();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   ensureConfig().catch(() => {});
+  registerImageContextMenu();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -277,6 +419,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'getProviderStatus') {
     providerStatus().then(sendResponse).catch(error => {
       sendResponse({ ok: false, configured: false, error: error?.message || String(error) });
+    });
+    return true;
+  }
+
+  if (message?.type === 'deeplUsage') {
+    deeplUsage().then(sendResponse).catch(error => {
+      sendResponse({ ok: false, error: error?.message || String(error) });
     });
     return true;
   }
