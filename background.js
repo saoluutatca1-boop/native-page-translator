@@ -339,6 +339,17 @@ async function fetchImageAsBase64(srcUrl) {
   }
 }
 
+// Cache trong bộ nhớ các origin đã được cấp quyền fetch ảnh — khỏi gọi
+// permissions.request (no-op) lặp lại mỗi lần dịch ảnh cùng domain.
+const grantedImageOrigins = new Set();
+
+async function seedGrantedImageOrigins() {
+  const all = await chrome.permissions.getAll().catch(() => null);
+  for (const pattern of all?.origins || []) {
+    try { grantedImageOrigins.add(new URL(pattern).origin); } catch (_) { /* pattern lạ */ }
+  }
+}
+
 async function handleImageTranslate(info, tab) {
   const srcUrl = String(info?.srcUrl || '');
   const tabId = tab?.id;
@@ -346,16 +357,26 @@ async function handleImageTranslate(info, tab) {
 
   // Content script có thể không có trên trang (chrome://...) -> nuốt lỗi gửi.
   const send = (message) => chrome.tabs.sendMessage(tabId, message).catch(() => {});
+
+  // permissions.request CHỈ chạy được trong user gesture: phải là await ĐẦU TIÊN
+  // của handler (contextMenus.onClicked là gesture). Bất kỳ await nào đứng trước
+  // nó (sendMessage, permissions.contains...) đều làm mất gesture → lỗi
+  // "This function must be called during a user gesture".
+  let imageOrigin = null;
+  try { imageOrigin = new URL(srcUrl).origin; } catch (_) { imageOrigin = null; }
+  if (imageOrigin && imageOrigin.startsWith('http') && !grantedImageOrigins.has(imageOrigin)) {
+    // Quyền đã có sẵn thì request() trả true ngay, không hiện prompt.
+    const allowed = await chrome.permissions.request({ origins: [`${imageOrigin}/*`] });
+    if (!allowed) {
+      await send({ type: 'imageTranslateResult', srcUrl, ok: false, error: 'Chưa được cấp quyền truy cập ảnh' });
+      return;
+    }
+    grantedImageOrigins.add(imageOrigin);
+  }
+
   await send({ type: 'imageTranslateStart', srcUrl });
 
   try {
-    const origin = new URL(srcUrl).origin;
-    const granted = await chrome.permissions.contains({ origins: [`${origin}/*`] });
-    if (!granted) {
-      const allowed = await chrome.permissions.request({ origins: [`${origin}/*`] });
-      if (!allowed) throw new Error('Chưa được cấp quyền truy cập ảnh');
-    }
-
     const { mimeType, imageBase64 } = await fetchImageAsBase64(srcUrl);
 
     const values = await chrome.storage.local.get([IMAGE_TARGET_KEY]);
@@ -391,11 +412,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.runtime.onInstalled.addListener(() => {
   ensureConfig().catch(error => console.warn('[Native Page Translator] Seed config failed:', error));
   registerImageContextMenu();
+  seedGrantedImageOrigins().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
   ensureConfig().catch(() => {});
   registerImageContextMenu();
+  seedGrantedImageOrigins().catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
