@@ -61,6 +61,7 @@ Bộ tuỳ chọn tinh chỉnh cách dịch cả trang — chỉnh nhanh trong p
 - **Không dịch code** — bỏ qua `code`/`pre`/`kbd`/`samp`, editor (Monaco, CodeMirror), block có class `hljs`/`prettyprint`/`prism`/`code-block`...; tôn trọng `translate="no"` và `.notranslate` (mặc định bật).
 - **Không dịch username** — nhận diện heuristic: class chứa username/nickname/screen-name, handle `@abc`, `u/abc` (mặc định bật; có thể bổ sung selector theo site).
 - **Nội dung động & SPA** — MutationObserver dịch nội dung tải động, kèm hook history (`pushState`/`replaceState`/`popstate`) cho SPA như Discord/Reddit/Facebook; bài mới tự dịch khi cuộn (mặc định bật).
+- **Dịch "font đặc biệt"** — text kiểu 𝕕𝕠𝕦𝕓𝕝𝕖-𝕤𝕥𝕣𝕦𝕔𝕜, 𝓈𝒸𝓇𝒾𝓅𝓉, ᴛɪɴʏ ᴄᴀᴘs, ｆｕｌｌｗｉｄｔｈ, ⓒⓘⓡⓒⓛⓔⓓ... được chuẩn hóa về ASCII để engine dịch hiểu, rồi **gán lại đúng style đó vào bản dịch** (module `fancy-text.js`, ~20 style). Lưu ý: block Unicode đặc biệt chỉ có a-z/A-Z/0-9 trần nên dịch sang tiếng Việt sẽ **bỏ dấu thanh** để giữ font; dịch sang tiếng Anh giữ nguyên vẹn.
 - **Dịch lướt theo khung nhìn (lazy)** — trang dài chỉ dịch phần sắp hiển thị (IntersectionObserver, rootMargin 250px), cuộn tới đâu dịch tới đó — tiết kiệm quota. Tắt được trong Cài đặt (mặc định bật).
 
 ## Dịch đoạn bôi đen
@@ -114,11 +115,13 @@ Giới hạn hiện tại:
 
 ```bash
 node tests/providers.test.js   # chạy unit test cho providers.js
+node tests/fancy-text.test.js  # unit test cho fancy-text.js (font đặc biệt)
 ```
 
 Cấu trúc:
 
 - `providers.js` — định nghĩa provider + xoay vòng key (JS thuần, dùng chung cho background/options, test được bằng node).
+- `fancy-text.js` — chuẩn hóa/gán style "font đặc biệt" Unicode (JS thuần, test được bằng node).
 - `background.js` — service worker: routing dịch, seed config, proxy fetch có kiểm soát quyền.
 - `content.js` — dịch trang + nút ✨ EN trên ô nhập.
 - `options.html` / `options.js` — trang Cài đặt (quản lý key, quota DeepL, blacklist site).

@@ -130,6 +130,8 @@
   const TRANSLATION_CORE = (() => {
     const cache = new Map();
     const providerCooldown = new Map();
+    // Module font đặc biệt (fancy-text.js nạp trước content.js trong manifest).
+    const FANCY = globalThis.NPT_FANCY || null;
 
     // Tuỳ chọn style trang (contract tm-page-*). Hàm này nằm TRƯỚC page IIFE nên tự đọc
     // GM_getValue trực tiếp — duplicate nhỏ defaults ở đây là cố ý.
@@ -388,12 +390,20 @@
       const trimmed = original.trim();
       if (!trimmed) return original;
 
+      // Font đặc biệt (𝕕𝕠𝕦𝕓𝕝𝕖-𝕤𝕥𝕣𝕦𝕔𝕜, 𝓈𝒸𝓇𝒾𝓅𝓉, ᴛɪɴʏ...): chuẩn hóa về
+      // ASCII để engine dịch hiểu, dịch xong gán lại style vào kết quả.
+      const styledFancy = FANCY ? FANCY.normalizeStyledText(trimmed) : null;
+      const sourceText = styledFancy ? styledFancy.text : trimmed;
+
       // Không salt khi không dùng pageOptions → namespace cache tách biệt 2 chế độ.
       const salt = usePageOptions ? styleCacheSalt() : '';
-      const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${trimmed}\u0000${salt}`;
-      if (cache.has(key)) return preserveWhitespace(original, cache.get(key));
+      const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${sourceText}\u0000${salt}`;
+      if (cache.has(key)) {
+        const cached = cache.get(key);
+        return preserveWhitespace(original, styledFancy ? FANCY.applyStyleToText(cached, styledFancy.style) : cached);
+      }
 
-      const chunks = splitLongText(trimmed);
+      const chunks = splitLongText(sourceText);
       const translated = [];
       for (const chunk of chunks) {
         const chunkKey = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${chunk}\u0000${salt}`;
@@ -407,7 +417,7 @@
 
       const output = translated.join('');
       cache.set(key, output);
-      return preserveWhitespace(original, output);
+      return preserveWhitespace(original, styledFancy ? FANCY.applyStyleToText(output, styledFancy.style) : output);
     }
 
     function makeBatches(items, maxChars = 2800, maxItems = 28) {
@@ -492,7 +502,16 @@
     }
 
     async function translateMany(texts, sourceLanguage, targetLanguage, usePageOptions) {
-      const items = texts.map((text, index) => ({ index, text: String(text ?? '') }));
+      // Font đặc biệt: chuẩn hóa từng đoạn về ASCII trước khi gom batch, nhớ
+      // style để gán lại vào kết quả (whitespace rìa giữ nguyên cho preserveWhitespace).
+      const items = texts.map((text, index) => {
+        const raw = String(text ?? '');
+        const styled = FANCY ? FANCY.normalizeStyledText(raw.trim()) : null;
+        if (!styled) return { index, text: raw, styled: null };
+        const lead = raw.match(/^\s*/u)?.[0] || '';
+        const trail = raw.match(/\s*$/u)?.[0] || '';
+        return { index, text: `${lead}${styled.text}${trail}`, styled };
+      });
       const byScript = new Map();
       for (const item of items) {
         const cls = detectScriptClass(item.text);
@@ -518,6 +537,15 @@
       }
 
       await Promise.all(Array.from({ length: Math.min(3, Math.max(1, batches.length)) }, worker));
+      // Gán lại style font đặc biệt vào kết quả dịch (đoạn nào nguồn là font đặc biệt).
+      if (FANCY) {
+        for (const item of items) {
+          const result = results[item.index];
+          if (item.styled && result?.text) {
+            result.text = FANCY.applyStyleToText(result.text, item.styled.style);
+          }
+        }
+      }
       return results;
     }
 
