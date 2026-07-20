@@ -422,6 +422,10 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Chỉ phục vụ message nội bộ từ chính extension (content script/popup/options).
+  // Không khai báo externally_connectable nên lớp này là phòng thủ thứ hai.
+  if (sender.id !== chrome.runtime.id) return false;
+
   if (message?.type === 'proxyFetch') {
     rawFetch(message.payload).then(sendResponse).catch(error => {
       sendResponse({ ok: false, status: 0, responseText: '', networkError: error?.message || String(error) });

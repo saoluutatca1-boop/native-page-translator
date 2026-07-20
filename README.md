@@ -36,6 +36,14 @@ Mỗi provider thêm được **nhiều key**. Khi dịch:
 - Key chỉ lưu trong `chrome.storage.local` của extension — **gỡ extension là xoá sạch toàn bộ dữ liệu**.
 - Key không được gửi đi đâu ngoài chính API của provider tương ứng.
 
+### Bảo mật & dữ liệu đi đâu (minh bạch)
+
+- **Content script không bao giờ giữ API key**: script tiêm vào trang chỉ đọc đúng whitelist các key cài đặt; toàn bộ request ký key do service worker (background) thực hiện và chỉ gửi tới đúng host của provider (`isRemoteAllowed` chặn mọi origin lạ, luôn `credentials: 'omit'`).
+- **UI của extension dùng closed Shadow DOM** — JS của trang web không đọc/sửa được panel, nút bấm; các handler kích hoạt dịch đều kiểm tra `event.isTrusted` (chặn sự kiện giả do trang tự phát).
+- **Khi dùng fallback miễn phí** (không có API key riêng): nội dung trang được gửi tới endpoint không chính thức của Google (`translate.googleapis.com` / `translate.google.com`) và MyMemory — đây là bản chất của mọi dịch vụ dịch miễn phí. Muốn kiểm soát dữ liệu hoàn toàn, hãy thêm API key riêng (DeepL/Gemini/OpenAI) trong Cài đặt.
+- **Dịch ảnh**: ảnh được tải về background và gửi tới Gemini API (kèm base64) để OCR — không qua bên thứ tư nào khác.
+- **Key DeepL Free seed sẵn là key DÙNG CHUNG** cho mọi ngưởi cài extension (nằm trong mã nguồn public): đủ để dùng thử, nhưng quota chia sẻ và ai cũng lấy được — khuyến nghị thêm key riêng trong Cài đặt cho ổn định và riêng tư.
+
 ## Quota DeepL
 
 Trang **Cài đặt** hiển thị mức dùng ký tự (đã dùng/giới hạn) của từng DeepL key ngay đầu phần provider, kèm thanh tiến trình — bấm **Làm mới quota** để cập nhật.

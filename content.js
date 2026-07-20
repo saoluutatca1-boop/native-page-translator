@@ -16,7 +16,32 @@
     });
   }
 
-  const storageCache = await chrome.storage.local.get(null);
+  /* Chỉ đọc đúng các key content script cần — TUYỆT ĐỐI không get(null) kéo cả
+   * config chứa API key ('tm-multi-provider-config') vào bộ nhớ của mọi trang
+   * (nguyên tắc đặc quyền tối thiểu; key API chỉ ở background). */
+  const STORAGE_WHITELIST = [
+    'tm-site-blacklist',
+    'tm-page-use-provider',
+    'tm-page-display-mode',
+    'tm-page-style',
+    'tm-page-dialect',
+    'tm-page-translate-mode',
+    'tm-page-grammar-fix',
+    'tm-page-skip-code',
+    'tm-page-skip-usernames',
+    'tm-page-keep-proper-nouns',
+    'tm-page-dynamic-translate',
+    'tm-page-lazy-translate',
+    'tm-selection-translate',
+    'tm-input-helper-enabled',
+    'tm-input-helper-offset',
+    'tm-native-en-fallback-quick',
+    'tm-native-en-use-context',
+    'tm-native-en-default-mode',
+    'tm-fab-position',
+    `tm-page-translator-language:${location.hostname}`,
+  ];
+  const storageCache = await chrome.storage.local.get(STORAGE_WHITELIST);
 
   function GM_getValue(key, defaultValue) {
     return Object.prototype.hasOwnProperty.call(storageCache, key) ? storageCache[key] : defaultValue;
@@ -29,9 +54,16 @@
     });
   }
 
+  // Chỉ cho thay đổi thuộc whitelist chảy vào cache — config/API key đổi bên
+  // background/options không bao giờ lọt vào content script.
+  function isAllowedStorageKey(key) {
+    return STORAGE_WHITELIST.includes(key) || key.startsWith('tm-page-translator-language:');
+  }
+
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
     for (const [key, change] of Object.entries(changes)) {
+      if (!isAllowedStorageKey(key)) continue;
       if ('newValue' in change) storageCache[key] = change.newValue;
       else delete storageCache[key];
     }
@@ -1631,7 +1663,7 @@
         GM_setValue(FAB_POSITION_KEY, { x: Math.round(fabPos.x), y: Math.round(fabPos.y) });
         return;
       }
-      if (event.type === 'pointerup' && event.button === 0) toggleQuickTranslate();
+      if (event.type === 'pointerup' && event.button === 0 && event.isTrusted) toggleQuickTranslate();
     };
     fabElement.addEventListener('pointerup', endDrag);
     fabElement.addEventListener('pointercancel', endDrag);
@@ -1911,7 +1943,7 @@
     imageHost.dataset.tmNoTranslate = 'true';
     document.documentElement.appendChild(imageHost);
 
-    imageRoot = imageHost.attachShadow({ mode: 'open' });
+    imageRoot = imageHost.attachShadow({ mode: 'closed' });
     imageRoot.innerHTML = `
       <style>
         :host {
@@ -2211,6 +2243,7 @@
 
   function installKeyboardShortcuts() {
     window.addEventListener('keydown', event => {
+      if (!event.isTrusted) return; // bỏ sự kiện giả do JS trang tự phát
       if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       if (event.target instanceof HTMLElement && (
         event.target.isContentEditable ||
@@ -2266,7 +2299,7 @@
     selectionHost.dataset.tmNoTranslate = 'true';
     document.documentElement.appendChild(selectionHost);
 
-    const shadow = selectionHost.attachShadow({ mode: 'open' });
+    const shadow = selectionHost.attachShadow({ mode: 'closed' });
     shadow.innerHTML = `
       <style>
         :host {
@@ -2362,7 +2395,10 @@
     // Giữ nguyên vùng bôi đen khi bấm vào nút/panel.
     shadow.addEventListener('mousedown', event => event.preventDefault());
 
-    selectionButton.addEventListener('click', () => { translateSelection(); });
+    selectionButton.addEventListener('click', event => {
+      if (!event.isTrusted) return; // chặn click giả từ JS trang
+      translateSelection();
+    });
     shadow.querySelector('.close').addEventListener('click', () => hideSelectionUI());
     selectionCopyButton.addEventListener('click', () => copySelectionResult());
   }
@@ -3032,14 +3068,22 @@
     if (snapshot.kind === 'value') {
       let newValue;
       let cursor;
+      const currentValue = element.value;
 
       if (snapshot.hasSelection) {
-        const currentValue = element.value;
         newValue = `${currentValue.slice(0, snapshot.start)}${translatedText}${currentValue.slice(snapshot.end)}`;
         cursor = snapshot.start + translatedText.length;
-      } else {
+      } else if (currentValue === snapshot.originalValue) {
         newValue = translatedText;
         cursor = translatedText.length;
+      } else if (currentValue.startsWith(snapshot.originalValue)) {
+        // User gõ THÊM phía sau trong lúc dịch → dịch phần cũ, giữ nguyên phần mới.
+        const suffix = currentValue.slice(snapshot.originalValue.length);
+        newValue = translatedText + suffix;
+        cursor = newValue.length;
+      } else {
+        // Sửa/xoá ở giữa → hủy thay vì ghi đè mất chữ user vừa nhập.
+        throw new Error('Bạn vừa sửa nội dung trong lúc dịch — đã hủy để không mất chữ');
       }
 
       setNativeValue(element, newValue);
@@ -3053,7 +3097,21 @@
       return;
     }
 
-    insertIntoContentEditable(snapshot, translatedText);
+    // Contenteditable: user có thể đã gõ thêm trong lúc dịch — giữ phần gõ thêm
+    // (nối sau bản dịch), sửa ở giữa thì hủy thay vì ghi đè mất chữ.
+    let contentToInsert = translatedText;
+    if (!snapshot.hasSelection) {
+      const currentText = getEditablePlainText(element);
+      if (currentText === snapshot.text) {
+        // Không đổi: thay toàn bộ bằng bản dịch như cũ.
+      } else if (currentText.startsWith(snapshot.text)) {
+        contentToInsert = translatedText + currentText.slice(snapshot.text.length);
+      } else {
+        throw new Error('Bạn vừa sửa nội dung trong lúc dịch — đã hủy để không mất chữ');
+      }
+    }
+
+    insertIntoContentEditable(snapshot, contentToInsert);
   }
 
   function googleTranslateToEnglish(text) {
@@ -3315,7 +3373,7 @@
     helperHost.dataset.tmNoInputTranslate = 'true';
     document.documentElement.appendChild(helperHost);
 
-    helperRoot = helperHost.attachShadow({ mode: 'open' });
+    helperRoot = helperHost.attachShadow({ mode: 'closed' });
     helperRoot.innerHTML = `
       <style>
         :host {
@@ -3485,7 +3543,8 @@
       }
     });
 
-    mainButton.addEventListener('click', () => {
+    mainButton.addEventListener('click', event => {
+      if (!event.isTrusted) return; // chặn click giả: JS trang tự bấm nút dịch của extension
       const mode = GM_getValue(INPUT_CONFIG.defaultModeStorage, 'native');
       runInputTranslation(mode === 'quick' ? 'quick' : 'native');
     });
@@ -3621,6 +3680,7 @@
     }, true);
 
     document.addEventListener('keydown', event => {
+      if (!event.isTrusted) return; // bỏ sự kiện giả do JS trang tự phát
       if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
       if (!helperEnabled()) return; // Tắt nút → tắt luôn phím tắt cho gọn.
       const editable = findEditableFromEvent(event) || getDeepActiveEditable();
