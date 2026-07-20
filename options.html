@@ -33,8 +33,45 @@
       </div>
       <label class="check"><input id="pageUseProvider" type="checkbox"> Dịch cả trang bằng API riêng (tốn quota DeepL/Gemini)</label>
       <label class="check"><input id="selectionTranslate" type="checkbox"> Dịch đoạn bôi đen (hiện nút nổi khi chọn chữ)</label>
+      <label class="check"><input id="inputHelper" type="checkbox"> Hiện nút ✨ EN cạnh ô nhập liệu</label>
       <label class="small-label" for="siteBlacklist">Không dịch trên các site (mỗi dòng 1 domain)</label>
       <textarea id="siteBlacklist" rows="3" spellcheck="false" placeholder="reddit.com&#10;x.com"></textarea>
+    </section>
+
+    <section>
+      <label for="pageDisplayMode"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"/><path d="m17 15 3 3-3 3"/></svg>Dịch trang: hiển thị &amp; văn phong</label>
+      <select id="pageDisplayMode">
+        <option value="replace">Chỉ hiện bản dịch</option>
+        <option value="bilingual">Song ngữ (gốc + dịch)</option>
+      </select>
+      <label for="pageStyle" class="small-label">Văn phong bản dịch</label>
+      <select id="pageStyle">
+        <option value="natural">Tự nhiên</option>
+        <option value="casual">Trò chuyện thân mật</option>
+        <option value="work-email">Email công việc</option>
+        <option value="game-chat">Chat game</option>
+        <option value="genz">Văn phong Gen Z</option>
+        <option value="formal">Lịch sự, trang trọng</option>
+      </select>
+      <label for="pageDialect" class="small-label">Phương ngữ</label>
+      <select id="pageDialect">
+        <option value="us">Tiếng Anh Mỹ</option>
+        <option value="uk">Tiếng Anh Anh</option>
+      </select>
+      <p class="note">Phương ngữ chỉ ảnh hưởng khi dịch sang tiếng Anh.</p>
+      <label for="pageTranslateMode" class="small-label">Chế độ dịch</label>
+      <select id="pageTranslateMode">
+        <option value="natural">Dịch tự nhiên</option>
+        <option value="literal">Dịch sát chữ</option>
+      </select>
+      <label class="check"><input id="pageGrammarFix" type="checkbox"> Sửa ngữ pháp sau khi dịch</label>
+      <p class="note">Văn phong chỉ áp dụng với Gemini/OpenAI — DeepL/Google free bỏ qua.</p>
+      <label class="check"><input id="pageSkipCode" type="checkbox"> Không dịch code (code block, editor)</label>
+      <label class="check"><input id="pageSkipUsernames" type="checkbox"> Không dịch username/handle</label>
+      <p class="note">Nhận diện theo selector phổ biến (class chứa username/nickname, handle @abc, u/abc) — có thể bổ sung theo site.</p>
+      <label class="check"><input id="pageKeepProperNouns" type="checkbox"> Giữ nguyên tên riêng</label>
+      <label class="check"><input id="pageDynamicTranslate" type="checkbox"> Tự dịch nội dung tải động (SPA, cuộn trang)</label>
+      <label class="check"><input id="pageLazyTranslate" type="checkbox"> Dịch lướt theo khung nhìn (tiết kiệm quota trang dài)</label>
     </section>
 
     <section>

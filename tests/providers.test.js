@@ -616,6 +616,169 @@ async function run() {
     assert.equal(naturalResult.text, "I'm not sure.");
   }
 
+  // 35. normalizePageOptions: default khi null/undefined; giữ giá trị hợp lệ; ép rác về default
+  {
+    const def = {
+      style: 'natural', dialect: 'us', mode: 'natural',
+      grammarFix: false, keepProperNouns: true,
+    };
+    assert.deepEqual(P.normalizePageOptions(null), def);
+    assert.deepEqual(P.normalizePageOptions(undefined), def);
+    assert.deepEqual(P.normalizePageOptions({}), def);
+    // Giá trị hợp lệ được giữ nguyên
+    assert.deepEqual(
+      P.normalizePageOptions({ style: 'genz', dialect: 'uk', mode: 'literal', grammarFix: true, keepProperNouns: false }),
+      { style: 'genz', dialect: 'uk', mode: 'literal', grammarFix: true, keepProperNouns: false },
+    );
+    // Từng field rác (sai enum / sai kiểu) -> về default của field đó
+    assert.deepEqual(
+      P.normalizePageOptions({ style: 'hacker', dialect: 'mars', mode: 'yolo', grammarFix: 'yes', keepProperNouns: 1 }),
+      def,
+    );
+  }
+
+  // 36. PAGE_STYLES / PAGE_DIALECTS: export đúng nguyên văn label + instruction theo contract
+  {
+    assert.equal(P.PAGE_STYLES.natural.label, 'Tự nhiên');
+    assert.equal(P.PAGE_STYLES.natural.instruction, '');
+    assert.equal(P.PAGE_STYLES.casual.label, 'Trò chuyện thân mật');
+    assert.equal(P.PAGE_STYLES.casual.instruction, 'Register: casual chat between friends — relaxed, warm, natural contractions and texting shorthand where it fits (idk, rn, tbh, ngl, lol, gonna, wanna...). Never stiff or formal.');
+    assert.equal(P.PAGE_STYLES['work-email'].label, 'Email công việc');
+    assert.equal(P.PAGE_STYLES['work-email'].instruction, 'Register: professional work email — courteous, polished, concise. Proper greetings/closings if present. No slang, no text-speak, grammatically impeccable.');
+    assert.equal(P.PAGE_STYLES['game-chat'].label, 'Chat game');
+    assert.equal(P.PAGE_STYLES['game-chat'].instruction, 'Register: in-game / gamer chat — keep game titles, item names, and gaming terms untranslated; match the trash-talk/hype energy; gaming slang welcome (gg, wp, noob, camping, buff, nerf...).');
+    assert.equal(P.PAGE_STYLES.genz.label, 'Văn phong Gen Z');
+    assert.equal(P.PAGE_STYLES.genz.instruction, 'Register: Gen Z internet voice — current slang where it fits (fr, no cap, lowkey, highkey, bet, slay, sus, vibe...), playful and punchy, never corporate. Do not force slang into every line.');
+    assert.equal(P.PAGE_STYLES.formal.label, 'Lịch sự, trang trọng');
+    assert.equal(P.PAGE_STYLES.formal.instruction, 'Register: formal and respectful — polite, complete sentences, honorific-aware. For Vietnamese output use appropriate kính ngữ (anh/chị/quý/cậu...); no slang.');
+    assert.equal(P.PAGE_DIALECTS.us.label, 'Tiếng Anh Mỹ');
+    assert.equal(P.PAGE_DIALECTS.us.instruction, 'Use American English spelling, vocabulary and idioms (color, organize, apartment...).');
+    assert.equal(P.PAGE_DIALECTS.uk.label, 'Tiếng Anh Anh');
+    assert.equal(P.PAGE_DIALECTS.uk.instruction, 'Use British English spelling, vocabulary and idioms (colour, organise, flat, cheers...).');
+  }
+
+  // 37. buildBatchInstructions mặc định (không pageOptions): có proper-nouns, không lẫn style/dialect
+  {
+    const vi = P.buildBatchInstructions('auto', 'Vietnamese');
+    assert.match(vi, /Keep proper nouns/); // keepProperNouns mặc định true
+    assert.doesNotMatch(vi, /casual|British|American/); // target VI: không style, không dialect
+    // 4 line base giữ nguyên nội dung
+    assert.match(vi, /Return ONLY a JSON array of strings, same order and length/);
+    assert.match(vi, /never word-for-word/);
+    const en = P.buildBatchInstructions('auto', 'English');
+    assert.match(en, /American English/); // target EN: dialect us luôn có
+  }
+
+  // 38. Mỗi style -> instruction tương ứng xuất hiện trong output
+  {
+    assert.match(P.buildBatchInstructions('auto', 'Vietnamese', { style: 'casual' }), /Register: casual chat between friends/);
+    assert.match(P.buildBatchInstructions('auto', 'Vietnamese', { style: 'work-email' }), /Register: professional work email/);
+    assert.match(P.buildBatchInstructions('auto', 'Vietnamese', { style: 'game-chat' }), /Register: in-game \/ gamer chat/);
+    assert.match(P.buildBatchInstructions('auto', 'Vietnamese', { style: 'genz' }), /Register: Gen Z internet voice/);
+    assert.match(P.buildBatchInstructions('auto', 'Vietnamese', { style: 'formal' }), /Register: formal and respectful/);
+  }
+
+  // 39. Dialect uk: target English -> có "British"; target Vietnamese -> không dialect line nào
+  {
+    const en = P.buildBatchInstructions('auto', 'English', { dialect: 'uk' });
+    assert.match(en, /British English/);
+    assert.doesNotMatch(en, /American English/);
+    const vi = P.buildBatchInstructions('auto', 'Vietnamese', { dialect: 'uk' });
+    assert.doesNotMatch(vi, /British|American/);
+  }
+
+  // 40. mode literal -> line fidelity; grammarFix -> line flawless
+  {
+    assert.match(
+      P.buildBatchInstructions('auto', 'Vietnamese', { mode: 'literal' }),
+      /prioritize fidelity over flow/,
+    );
+    assert.match(
+      P.buildBatchInstructions('auto', 'Vietnamese', { grammarFix: true }),
+      /grammatically flawless/,
+    );
+  }
+
+  // 41. Line chốt "idiomatically" chỉ xuất hiện khi có ít nhất 1 rule bổ sung
+  {
+    // Mặc định keepProperNouns=true -> có rule bổ sung -> có line chốt
+    assert.match(P.buildBatchInstructions('auto', 'Vietnamese'), /idiomatically in Vietnamese/);
+    // Tắt hết rule bổ sung + target không phải English -> không có line chốt
+    const bare = P.buildBatchInstructions('auto', 'Vietnamese', { keepProperNouns: false });
+    assert.doesNotMatch(bare, /idiomatically/);
+  }
+
+  // 42. buildBatchRequest: gemini + openai chat nhận pageOptions; openai libre vẫn throw
+  {
+    const gem = P.buildBatchRequest({
+      providerId: 'gemini', providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'g',
+      texts: ['xin chào'], targetLanguage: 'en',
+      pageOptions: { style: 'genz' },
+    });
+    assert.match(JSON.parse(gem.body).systemInstruction.parts[0].text, /Gen Z/);
+
+    const chat = P.buildBatchRequest({
+      providerId: 'openai',
+      providerConfig: { url: 'https://api.openai.com/v1/chat/completions', format: 'chat' },
+      apiKey: 'k', texts: ['xin chào'], targetLanguage: 'en',
+      pageOptions: { style: 'casual' },
+    });
+    assert.match(JSON.parse(chat.body).messages[0].content, /casual chat between friends/);
+
+    const responses = P.buildBatchRequest({
+      providerId: 'openai',
+      providerConfig: { url: 'https://api.openai.com/v1/responses', format: 'responses' },
+      apiKey: 'k', texts: ['xin chào'], targetLanguage: 'en',
+      pageOptions: { style: 'formal' },
+    });
+    assert.match(JSON.parse(responses.body).instructions, /formal and respectful/);
+
+    assert.throws(
+      () => P.buildBatchRequest({
+        providerId: 'openai',
+        providerConfig: { url: 'https://libretranslate.local/translate', format: 'libre' },
+        apiKey: '', texts: ['x'], targetLanguage: 'en',
+        pageOptions: { style: 'genz' },
+      }),
+      /không hỗ trợ dịch batch/,
+    );
+  }
+
+  // 43. buildBatchRequest deepl: pageOptions bị bỏ qua, body JSON không đổi
+  {
+    const base = P.buildBatchRequest({
+      providerId: 'deepl', providerConfig: {}, apiKey: 'abc:fx',
+      texts: ['xin chào'], targetLanguage: 'en',
+    });
+    const styled = P.buildBatchRequest({
+      providerId: 'deepl', providerConfig: {}, apiKey: 'abc:fx',
+      texts: ['xin chào'], targetLanguage: 'en',
+      pageOptions: { style: 'formal', dialect: 'uk', mode: 'literal', grammarFix: true },
+    });
+    assert.equal(styled.body, base.body);
+    assert.equal(styled.url, base.url);
+  }
+
+  // 44. translateBatchWithRotation truyền pageOptions xuống request (gemini 1 key)
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'gemini',
+      providers: { gemini: { enabled: true, keys: [{ key: 'g' }], model: 'gemini-2.5-flash' } },
+    });
+    const { fetchText, calls } = fakeFetch([
+      () => ({ status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: '["hello"]' }] } }] }) }),
+    ]);
+    const result = await P.translateBatchWithRotation({
+      config: cfg, texts: ['xin chào'], targetLanguage: 'en',
+      pageOptions: { style: 'formal', dialect: 'uk' },
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.deepEqual(result.translations, ['hello']);
+    const instructions = JSON.parse(calls[0].body).systemInstruction.parts[0].text;
+    assert.match(instructions, /formal/);
+    assert.match(instructions, /British/);
+  }
+
   console.log('Tất cả test providers.js đều PASS ✔');
 }
 

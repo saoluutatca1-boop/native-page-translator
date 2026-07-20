@@ -7,6 +7,7 @@ const {
   usableProviders,
   maskKey,
   deeplUsageEndpoint,
+  normalizePageOptions,
   translateWithRotation,
   translateBatchWithRotation,
   translateVisionWithRotation,
@@ -202,6 +203,9 @@ async function providerTranslate(payload) {
     texts: list,
     sourceLanguage: payload?.sourceLanguage,
     targetLanguage,
+    // Văn phong dịch trang (v4.2): style/dialect/mode/grammar/proper-nouns.
+    // normalizePageOptions ép giá trị rác về default; DeepL tự bỏ qua ở tầng providers.
+    pageOptions: normalizePageOptions(payload?.pageOptions),
     keyState,
     fetchText: providerFetchText,
   });

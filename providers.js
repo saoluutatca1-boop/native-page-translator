@@ -453,19 +453,78 @@
    * nhưng giữ nguyên format/placeholder. KHÔNG dùng buildNativeInstructions
    * (prompt đó là rewrite VI->EN của input helper, không dành cho dịch trang).
    * ------------------------------------------------------------------ */
-  function buildBatchInstructions(sourceLanguage, targetName) {
+
+  /* ------------------------------------------------------------------
+   * Tuỳ chọn văn phong dịch trang (page style). Chỉ có tác dụng qua
+   * provider LLM (gemini/openai) — DeepL là engine dịch thuần, bỏ qua.
+   * instruction: chuỗi tiếng Anh chèn thẳng vào system instruction.
+   * ------------------------------------------------------------------ */
+  const PAGE_STYLES = {
+    natural:      { label: 'Tự nhiên',             instruction: '' }, // base đã đủ
+    casual:       { label: 'Trò chuyện thân mật',  instruction: 'Register: casual chat between friends — relaxed, warm, natural contractions and texting shorthand where it fits (idk, rn, tbh, ngl, lol, gonna, wanna...). Never stiff or formal.' },
+    'work-email': { label: 'Email công việc',      instruction: 'Register: professional work email — courteous, polished, concise. Proper greetings/closings if present. No slang, no text-speak, grammatically impeccable.' },
+    'game-chat':  { label: 'Chat game',            instruction: 'Register: in-game / gamer chat — keep game titles, item names, and gaming terms untranslated; match the trash-talk/hype energy; gaming slang welcome (gg, wp, noob, camping, buff, nerf...).' },
+    genz:         { label: 'Văn phong Gen Z',      instruction: 'Register: Gen Z internet voice — current slang where it fits (fr, no cap, lowkey, highkey, bet, slay, sus, vibe...), playful and punchy, never corporate. Do not force slang into every line.' },
+    formal:       { label: 'Lịch sự, trang trọng', instruction: 'Register: formal and respectful — polite, complete sentences, honorific-aware. For Vietnamese output use appropriate kính ngữ (anh/chị/quý/cậu...); no slang.' },
+  };
+
+  // Dialect chỉ áp khi đích là English (dịch ra VI thì vô nghĩa).
+  const PAGE_DIALECTS = {
+    us: { label: 'Tiếng Anh Mỹ',  instruction: 'Use American English spelling, vocabulary and idioms (color, organize, apartment...).' },
+    uk: { label: 'Tiếng Anh Anh', instruction: 'Use British English spelling, vocabulary and idioms (colour, organise, flat, cheers...).' },
+  };
+
+  const PAGE_MODE_LITERAL_INSTRUCTION = 'Stay close to the source wording and sentence structure — prioritize fidelity over flow.';
+  const PAGE_GRAMMAR_FIX_INSTRUCTION = 'The output must be grammatically flawless in the target language — silently fix any grammar, spelling, or punctuation issue. Never output broken grammar.';
+  const PAGE_KEEP_PROPER_NOUNS_INSTRUCTION = 'Keep proper nouns (people, brands, places, products, usernames) unchanged — never translate or transliterate names.';
+
+  const DEFAULT_PAGE_OPTIONS = {
+    style: 'natural',
+    dialect: 'us',
+    mode: 'natural',
+    grammarFix: false,
+    keepProperNouns: true,
+  };
+
+  // Sanitize pageOptions từ caller: giá trị lạ/sai kiểu -> về default.
+  function normalizePageOptions(raw) {
+    return {
+      style: PAGE_STYLES[raw?.style] ? raw.style : DEFAULT_PAGE_OPTIONS.style,
+      dialect: PAGE_DIALECTS[raw?.dialect] ? raw.dialect : DEFAULT_PAGE_OPTIONS.dialect,
+      mode: raw?.mode === 'literal' || raw?.mode === 'natural' ? raw.mode : DEFAULT_PAGE_OPTIONS.mode,
+      grammarFix: typeof raw?.grammarFix === 'boolean' ? raw.grammarFix : DEFAULT_PAGE_OPTIONS.grammarFix,
+      keepProperNouns: typeof raw?.keepProperNouns === 'boolean' ? raw.keepProperNouns : DEFAULT_PAGE_OPTIONS.keepProperNouns,
+    };
+  }
+
+  // Thứ tự lines: 4 base -> style -> dialect (chỉ target English) -> literal
+  // -> grammarFix -> properNouns -> line chốt idiomatic (khi có rule bổ sung).
+  function buildBatchInstructions(sourceLanguage, targetName, pageOptions) {
+    const opts = normalizePageOptions(pageOptions);
     const src = sourceLanguage && sourceLanguage !== 'auto'
       ? sourceLanguage
       : 'the detected source language';
-    return [
+    const lines = [
       `Translate each array element from ${src} to ${targetName}. Return ONLY a JSON array of strings, same order and length. No commentary.`,
       'Translate naturally and fluently, the way a native speaker would actually write — never word-for-word — while keeping the exact meaning of each element.',
       'Preserve formatting, line breaks, placeholders ({name}, %s, $1...), emojis, proper names, URLs, and code exactly as they appear.',
       'If an element is already in the target language or cannot be translated, return it unchanged.',
-    ].join('\n');
+    ];
+
+    const extras = [];
+    if (opts.style !== 'natural') extras.push(PAGE_STYLES[opts.style].instruction);
+    if (targetName === 'English') extras.push(PAGE_DIALECTS[opts.dialect].instruction);
+    if (opts.mode === 'literal') extras.push(PAGE_MODE_LITERAL_INSTRUCTION);
+    if (opts.grammarFix) extras.push(PAGE_GRAMMAR_FIX_INSTRUCTION);
+    if (opts.keepProperNouns) extras.push(PAGE_KEEP_PROPER_NOUNS_INSTRUCTION);
+    if (extras.length) {
+      extras.push(`Apply every style rule above idiomatically in ${targetName} — express the register the way a native ${targetName} speaker would, not literally.`);
+    }
+
+    return [...lines, ...extras].join('\n');
   }
 
-  function buildBatchRequest({ providerId, providerConfig, apiKey, texts, sourceLanguage, targetLanguage }) {
+  function buildBatchRequest({ providerId, providerConfig, apiKey, texts, sourceLanguage, targetLanguage, pageOptions }) {
     // Ngôn ngữ đích chỉ hỗ trợ VI/EN.
     const target = findBatchTarget(targetLanguage);
     if (!target) throw new Error('Ngôn ngữ đích không hỗ trợ');
@@ -487,7 +546,8 @@
       };
     }
 
-    const instructions = buildBatchInstructions(sourceLanguage, target.englishName);
+    // pageOptions chỉ áp cho LLM (gemini/openai); nhánh deepl ở trên đã return sớm.
+    const instructions = buildBatchInstructions(sourceLanguage, target.englishName, pageOptions);
     const prompt = JSON.stringify(texts);
 
     if (providerId === 'gemini') {
@@ -721,7 +781,8 @@
   }
 
   // Dịch batch (dịch cả trang): translations cùng độ dài/thứ tự với texts.
-  async function translateBatchWithRotation({ config, texts, sourceLanguage, targetLanguage, fetchText, keyState, now, sleep }) {
+  // pageOptions (style/dialect/mode...) được truyền tiếp vào buildBatchRequest.
+  async function translateBatchWithRotation({ config, texts, sourceLanguage, targetLanguage, fetchText, keyState, now, sleep, pageOptions }) {
     const list = Array.isArray(texts) ? texts.map(item => String(item ?? '')) : [];
     if (!list.length) throw new Error('Không có nội dung cần dịch');
     if (!findBatchTarget(targetLanguage)) throw new Error('Ngôn ngữ đích không hỗ trợ');
@@ -739,6 +800,7 @@
           texts: list,
           sourceLanguage,
           targetLanguage,
+          pageOptions,
         });
         // LLM thỉnh thoảng trả mảng JSON hỏng: retry TỐI ĐA 1 lần trên cùng key
         // (chỉ với lỗi parse, không phải lỗi HTTP) rồi mới chuyển provider.
@@ -874,6 +936,10 @@
     humanizeCasual,
     buildRequest,
     classifyResponse,
+    PAGE_STYLES,
+    PAGE_DIALECTS,
+    normalizePageOptions,
+    buildBatchInstructions,
     buildBatchRequest,
     classifyBatchResponse,
     translateWithRotation,

@@ -15,8 +15,22 @@ const PREFS_KEYS = {
   fallbackQuick: 'tm-native-en-fallback-quick',
   pageUseProvider: 'tm-page-use-provider',
   selectionTranslate: 'tm-selection-translate',
+  inputHelper: 'tm-input-helper-enabled',
   siteBlacklist: 'tm-site-blacklist',
+  pageDisplayMode: 'tm-page-display-mode',
+  pageStyle: 'tm-page-style',
+  pageDialect: 'tm-page-dialect',
+  pageTranslateMode: 'tm-page-translate-mode',
+  pageGrammarFix: 'tm-page-grammar-fix',
+  pageSkipCode: 'tm-page-skip-code',
+  pageSkipUsernames: 'tm-page-skip-usernames',
+  pageKeepProperNouns: 'tm-page-keep-proper-nouns',
+  pageDynamicTranslate: 'tm-page-dynamic-translate',
+  pageLazyTranslate: 'tm-page-lazy-translate',
 };
+
+// Giá trị hợp lệ của văn phong trang — sai thì về 'natural' theo contract.
+const PAGE_STYLE_VALUES = ['natural', 'casual', 'work-email', 'game-chat', 'genz', 'formal'];
 
 const $ = selector => document.querySelector(selector);
 const statusElement = $('#status');
@@ -283,7 +297,18 @@ async function saveSettings(showSaved = true) {
     [PREFS_KEYS.fallbackQuick]: $('#fallbackQuick').checked,
     [PREFS_KEYS.pageUseProvider]: $('#pageUseProvider').checked,
     [PREFS_KEYS.selectionTranslate]: $('#selectionTranslate').checked,
+    [PREFS_KEYS.inputHelper]: $('#inputHelper').checked,
     [PREFS_KEYS.siteBlacklist]: parseSiteBlacklist($('#siteBlacklist').value),
+    [PREFS_KEYS.pageDisplayMode]: $('#pageDisplayMode').value,
+    [PREFS_KEYS.pageStyle]: $('#pageStyle').value,
+    [PREFS_KEYS.pageDialect]: $('#pageDialect').value,
+    [PREFS_KEYS.pageTranslateMode]: $('#pageTranslateMode').value,
+    [PREFS_KEYS.pageGrammarFix]: $('#pageGrammarFix').checked,
+    [PREFS_KEYS.pageSkipCode]: $('#pageSkipCode').checked,
+    [PREFS_KEYS.pageSkipUsernames]: $('#pageSkipUsernames').checked,
+    [PREFS_KEYS.pageKeepProperNouns]: $('#pageKeepProperNouns').checked,
+    [PREFS_KEYS.pageDynamicTranslate]: $('#pageDynamicTranslate').checked,
+    [PREFS_KEYS.pageLazyTranslate]: $('#pageLazyTranslate').checked,
   });
   if (showSaved) setStatus('Đã lưu cài đặt');
 }
@@ -325,8 +350,20 @@ async function loadPrefs() {
   $('#fallbackQuick').checked = values[PREFS_KEYS.fallbackQuick] !== false;
   $('#pageUseProvider').checked = values[PREFS_KEYS.pageUseProvider] !== false;
   $('#selectionTranslate').checked = values[PREFS_KEYS.selectionTranslate] !== false;
+  $('#inputHelper').checked = values[PREFS_KEYS.inputHelper] !== false;
   const blacklist = values[PREFS_KEYS.siteBlacklist];
   $('#siteBlacklist').value = Array.isArray(blacklist) ? blacklist.join('\n') : '';
+  // Dịch trang nâng cao — default khớp contract khi storage chưa có key (checkbox mặc định true).
+  $('#pageDisplayMode').value = values[PREFS_KEYS.pageDisplayMode] === 'bilingual' ? 'bilingual' : 'replace';
+  $('#pageStyle').value = PAGE_STYLE_VALUES.includes(values[PREFS_KEYS.pageStyle]) ? values[PREFS_KEYS.pageStyle] : 'natural';
+  $('#pageDialect').value = values[PREFS_KEYS.pageDialect] === 'uk' ? 'uk' : 'us';
+  $('#pageTranslateMode').value = values[PREFS_KEYS.pageTranslateMode] === 'literal' ? 'literal' : 'natural';
+  $('#pageGrammarFix').checked = values[PREFS_KEYS.pageGrammarFix] === true;
+  $('#pageSkipCode').checked = values[PREFS_KEYS.pageSkipCode] !== false;
+  $('#pageSkipUsernames').checked = values[PREFS_KEYS.pageSkipUsernames] !== false;
+  $('#pageKeepProperNouns').checked = values[PREFS_KEYS.pageKeepProperNouns] !== false;
+  $('#pageDynamicTranslate').checked = values[PREFS_KEYS.pageDynamicTranslate] !== false;
+  $('#pageLazyTranslate').checked = values[PREFS_KEYS.pageLazyTranslate] !== false;
 }
 
 /* ------------------------- Quota DeepL ------------------------- */

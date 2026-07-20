@@ -131,6 +131,38 @@
     const cache = new Map();
     const providerCooldown = new Map();
 
+    // Tuỳ chọn style trang (contract tm-page-*). Hàm này nằm TRƯỚC page IIFE nên tự đọc
+    // GM_getValue trực tiếp — duplicate nhỏ defaults ở đây là cố ý.
+    const PAGE_OPTION_DEFAULTS = {
+      style: 'natural',
+      dialect: 'us',
+      mode: 'natural',
+      grammarFix: false,
+      keepProperNouns: true,
+    };
+    const PAGE_STYLE_VALUES = new Set(['natural', 'casual', 'work-email', 'game-chat', 'genz', 'formal']);
+    const PAGE_DIALECT_VALUES = new Set(['us', 'uk']);
+    const PAGE_MODE_VALUES = new Set(['natural', 'literal']);
+
+    // Sanitize nhẹ: style/dialect/mode sai → về default; boolean chỉ tắt khi === false.
+    function readPageOptions() {
+      const style = GM_getValue('tm-page-style', PAGE_OPTION_DEFAULTS.style);
+      const dialect = GM_getValue('tm-page-dialect', PAGE_OPTION_DEFAULTS.dialect);
+      const mode = GM_getValue('tm-page-translate-mode', PAGE_OPTION_DEFAULTS.mode);
+      return {
+        style: PAGE_STYLE_VALUES.has(style) ? style : PAGE_OPTION_DEFAULTS.style,
+        dialect: PAGE_DIALECT_VALUES.has(dialect) ? dialect : PAGE_OPTION_DEFAULTS.dialect,
+        mode: PAGE_MODE_VALUES.has(mode) ? mode : PAGE_OPTION_DEFAULTS.mode,
+        grammarFix: GM_getValue('tm-page-grammar-fix', PAGE_OPTION_DEFAULTS.grammarFix) !== false,
+        keepProperNouns: GM_getValue('tm-page-keep-proper-nouns', PAGE_OPTION_DEFAULTS.keepProperNouns) !== false,
+      };
+    }
+
+    // Muối cache theo style signature: đổi style → cache key khác → tự miss, khỏi clear cache.
+    function styleCacheSalt() {
+      return JSON.stringify(readPageOptions());
+    }
+
     function sleep(ms) {
       return new Promise(resolve => setTimeout(resolve, ms));
     }
@@ -268,7 +300,9 @@
 
     // Gọi API riêng của user (DeepL/Gemini) qua background. Trả về mảng bản dịch
     // cùng thứ tự với texts, hoặc null nếu setting tắt/không có key/lỗi bất kỳ — không throw.
-    async function providerTranslateViaBackground(texts, sourceLanguage, targetLanguage) {
+    // usePageOptions=true (CHỈ dịch trang) mới kèm văn phong pageOptions; dịch bôi đen
+    // và Quick EN của input helper truyền false để giữ prompt gốc như v4.1.
+    async function providerTranslateViaBackground(texts, sourceLanguage, targetLanguage, usePageOptions) {
       if (!GM_getValue('tm-page-use-provider', true)) return null;
       if (!Array.isArray(texts) || !texts.length) return null;
 
@@ -277,7 +311,12 @@
           const timer = setTimeout(() => resolve(null), 65000);
           chrome.runtime.sendMessage({
             type: 'providerTranslate',
-            payload: { texts, targetLanguage, sourceLanguage },
+            payload: {
+              texts,
+              targetLanguage,
+              sourceLanguage,
+              ...(usePageOptions ? { pageOptions: readPageOptions() } : {}),
+            },
           }).then(result => {
             clearTimeout(timer);
             resolve(result);
@@ -296,9 +335,9 @@
       }
     }
 
-    async function translateRaw(text, sourceLanguage, targetLanguage) {
+    async function translateRaw(text, sourceLanguage, targetLanguage, usePageOptions) {
       // Ưu tiên API riêng của user; null (không key/lỗi) thì xuống endpoint miễn phí.
-      const providerTranslations = await providerTranslateViaBackground([text], sourceLanguage, targetLanguage);
+      const providerTranslations = await providerTranslateViaBackground([text], sourceLanguage, targetLanguage, usePageOptions);
       if (providerTranslations) return providerTranslations[0].trim();
 
       const errors = [];
@@ -344,21 +383,23 @@
       return chunks;
     }
 
-    async function translate(text, sourceLanguage, targetLanguage) {
+    async function translate(text, sourceLanguage, targetLanguage, usePageOptions) {
       const original = String(text ?? '');
       const trimmed = original.trim();
       if (!trimmed) return original;
 
-      const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${trimmed}`;
+      // Không salt khi không dùng pageOptions → namespace cache tách biệt 2 chế độ.
+      const salt = usePageOptions ? styleCacheSalt() : '';
+      const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${trimmed}\u0000${salt}`;
       if (cache.has(key)) return preserveWhitespace(original, cache.get(key));
 
       const chunks = splitLongText(trimmed);
       const translated = [];
       for (const chunk of chunks) {
-        const chunkKey = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${chunk}`;
+        const chunkKey = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${chunk}\u0000${salt}`;
         let output = cache.get(chunkKey);
         if (!output) {
-          output = await translateRaw(chunk, sourceLanguage || 'auto', targetLanguage);
+          output = await translateRaw(chunk, sourceLanguage || 'auto', targetLanguage, usePageOptions);
           cache.set(chunkKey, output);
         }
         translated.push(output);
@@ -387,9 +428,10 @@
       return batches;
     }
 
-    async function translateBundle(batch, sourceLanguage, targetLanguage) {
+    async function translateBundle(batch, sourceLanguage, targetLanguage, usePageOptions) {
+      const salt = usePageOptions ? styleCacheSalt() : '';
       if (batch.length === 1) {
-        return [{ index: batch[0].index, text: await translate(batch[0].text, sourceLanguage, targetLanguage) }];
+        return [{ index: batch[0].index, text: await translate(batch[0].text, sourceLanguage, targetLanguage, usePageOptions) }];
       }
 
       // Ưu tiên API riêng của user — 1 message cho cả batch, không cần token __NPT.
@@ -397,11 +439,12 @@
         batch.map(item => item.text),
         sourceLanguage || 'auto',
         targetLanguage,
+        usePageOptions,
       );
       if (providerTranslations) {
         return batch.map((item, index) => {
           const translated = providerTranslations[index].trim();
-          const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${item.text.trim()}`;
+          const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${item.text.trim()}\u0000${salt}`;
           cache.set(key, translated);
           return { index: item.index, text: preserveWhitespace(item.text, translated) };
         });
@@ -422,7 +465,7 @@
           const end = index + 1 < batch.length ? positions[index + 1] : output.length;
           const translated = output.slice(start, end).replace(/^\s+|\s+$/g, '');
           if (!translated) throw new Error('Một phân đoạn dịch bị rỗng');
-          const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${item.text.trim()}`;
+          const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${item.text.trim()}\u0000${salt}`;
           cache.set(key, translated);
           return { index: item.index, text: preserveWhitespace(item.text, translated) };
         });
@@ -430,7 +473,7 @@
         const results = [];
         for (const item of batch) {
           try {
-            results.push({ index: item.index, text: await translate(item.text, sourceLanguage, targetLanguage) });
+            results.push({ index: item.index, text: await translate(item.text, sourceLanguage, targetLanguage, usePageOptions) });
           } catch (error) {
             results.push({ index: item.index, error });
           }
@@ -448,7 +491,7 @@
       return 'other';
     }
 
-    async function translateMany(texts, sourceLanguage, targetLanguage) {
+    async function translateMany(texts, sourceLanguage, targetLanguage, usePageOptions) {
       const items = texts.map((text, index) => ({ index, text: String(text ?? '') }));
       const byScript = new Map();
       for (const item of items) {
@@ -466,7 +509,7 @@
           const batch = batches[cursor++];
           let translated;
           try {
-            translated = await translateBundle(batch, sourceLanguage, targetLanguage);
+            translated = await translateBundle(batch, sourceLanguage, targetLanguage, usePageOptions);
           } catch (error) {
             translated = batch.map(item => ({ index: item.index, error }));
           }
@@ -543,16 +586,63 @@
     storageKey: 'tm-page-translator-language',
   };
 
+  // Defaults cho các tuỳ chọn trang (contract tm-page-*) — đọc qua pageSetting.
+  const PAGE_SETTINGS_DEFAULTS = {
+    'tm-page-display-mode': 'replace',
+    'tm-page-style': 'natural',
+    'tm-page-dialect': 'us',
+    'tm-page-translate-mode': 'natural',
+    'tm-page-grammar-fix': false,
+    'tm-page-skip-code': true,
+    'tm-page-skip-usernames': true,
+    'tm-page-keep-proper-nouns': true,
+    'tm-page-dynamic-translate': true,
+    'tm-page-lazy-translate': true,
+  };
+
+  function pageSetting(key) {
+    return GM_getValue(key, PAGE_SETTINGS_DEFAULTS[key]);
+  }
+
+  // Tuỳ chọn style ảnh hưởng kết quả dịch — gửi kèm payload providerTranslate
+  // (TRANSLATION_CORE cũng tự đọc, giữ 2 hàm này đồng bộ với readPageOptions bên core).
+  function currentPageOptions() {
+    return {
+      style: pageSetting('tm-page-style'),
+      dialect: pageSetting('tm-page-dialect'),
+      mode: pageSetting('tm-page-translate-mode'),
+      grammarFix: pageSetting('tm-page-grammar-fix') !== false,
+      keepProperNouns: pageSetting('tm-page-keep-proper-nouns') !== false,
+    };
+  }
+
+  // Chữ ký style: đổi 1 trong 5 tuỳ chọn → bản dịch cache trong records hết hiệu lực
+  // (xét theo record.sig), phải dịch lại.
+  function pageStyleSignature() {
+    return JSON.stringify(currentPageOptions());
+  }
+
   const SKIP_TAGS = new Set([
     'SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'KBD', 'SAMP',
     'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'CANVAS', 'SVG', 'MATH',
   ]);
 
+  // Heuristic bỏ qua khối code theo class phổ biến (hljs, prism, monaco...) —
+  // chỉ áp dụng khi tm-page-skip-code bật; có thể bổ sung selector theo site.
+  const SKIP_CODE_CLASS_SELECTOR = '.hljs, .prettyprint, .prism, .code-block, .codeblock, .highlight-source, .monaco-editor, .CodeMirror';
+  // Heuristic nhận diện username/nickname theo class/id — chỉ áp dụng khi
+  // tm-page-skip-usernames bật; heuristic, có thể bổ sung selector theo site.
+  const SKIP_USERNAME_SELECTOR = '[class*="username" i], [class*="user-name" i], [class*="nickname" i], [class*="screen-name" i], [id*="username" i]';
+  // Handle đứng một mình: @ten_dung (Twitter/Instagram...), u/abc hoặc user/abc (Reddit/Discord).
+  const USERNAME_HANDLE_PATTERNS = [
+    /^@[\w.\-]{1,32}$/u,
+    /^(?:u|user)\/[\w\-]{2,20}$/i,
+  ];
+
   const TRANSLATABLE_ATTRIBUTES = ['title', 'placeholder', 'aria-label', 'alt'];
 
   const textRecords = new Map();
   const attributeRecords = new Map();
-  const translationCache = new Map();
 
   const expectedTextChanges = new WeakMap();
   const expectedAttributeChanges = new WeakMap();
@@ -561,8 +651,15 @@
   let generation = 0;
   let mutationTimer = null;
   const pendingDynamicRoots = new Set();
+  const bilingualPairs = new Map(); // text node -> span bản dịch song ngữ
+  let bilingualStyleInjected = false;
+  let lazyObserver = null;
+  const lazyPending = new Map(); // Element -> Text[] chờ cuộn tới để dịch
   let toolbarHost = null;
   let statusElement = null;
+  let fabElement = null;
+  let fabLangElement = null;
+  let fabMenu = null;
   let buttons = {};
 
   function isToolbarNode(node) {
@@ -575,6 +672,12 @@
     if (SKIP_TAGS.has(element.tagName)) return true;
     if (element.isContentEditable) return true;
     if (element.closest('[contenteditable="true"], [data-tm-no-translate]')) return true;
+    // Fix case text node nằm trong <code><span>: cha là SPAN nên lọt SKIP_TAGS.
+    if (element.closest('code, pre, kbd, samp')) return true;
+    // Chuẩn HTML translate="no" / class notranslate (Google Translate).
+    if (element.closest('[translate="no"], .notranslate')) return true;
+    if (pageSetting('tm-page-skip-code') !== false && element.closest(SKIP_CODE_CLASS_SELECTOR)) return true;
+    if (pageSetting('tm-page-skip-usernames') !== false && element.closest(SKIP_USERNAME_SELECTOR)) return true;
     return false;
   }
 
@@ -583,6 +686,8 @@
     if (text.length < CONFIG.minimumTextLength) return false;
     if (!/\p{L}/u.test(text)) return false;
     if (/^(https?:\/\/|www\.)\S+$/i.test(text)) return false;
+    // Handle đứng một mình (@nick, u/abc) — không phải câu cần dịch.
+    if (pageSetting('tm-page-skip-usernames') !== false && USERNAME_HANDLE_PATTERNS.some(pattern => pattern.test(text))) return false;
     return true;
   }
 
@@ -627,7 +732,8 @@
   }
 
   function requestTranslation(text, targetLanguage) {
-    return TRANSLATION_CORE.translate(text, 'auto', targetLanguage);
+    // Dịch trang: bật pageOptions (văn phong/dialect/grammar...) theo cài đặt hiện hành.
+    return TRANSLATION_CORE.translate(text, 'auto', targetLanguage, true);
   }
 
   async function translateText(text, targetLanguage) {
@@ -702,7 +808,8 @@
   function getTextRecord(node) {
     let record = textRecords.get(node);
     if (!record) {
-      record = { original: node.data, vi: null, en: null };
+      // sig = style signature lúc dịch; lệch sig hiện tại → cache vô hiệu, dịch lại.
+      record = { original: node.data, vi: null, en: null, sig: null };
       textRecords.set(node, record);
     }
     return record;
@@ -721,6 +828,8 @@
         original: element.getAttribute(attribute) ?? '',
         vi: null,
         en: null,
+        // sig giống textRecords: lệch style signature → dịch lại, không xài cache cũ.
+        sig: null,
       };
       elementMap.set(attribute, record);
     }
@@ -744,6 +853,87 @@
 
     expected.set(attribute, value);
     element.setAttribute(attribute, value);
+  }
+
+  // Inject 1 lần CSS cho chế độ song ngữ.
+  function ensureBilingualStyle() {
+    if (bilingualStyleInjected) return;
+    if (document.getElementById('npt-bilingual-style')) {
+      bilingualStyleInjected = true;
+      return;
+    }
+    const style = document.createElement('style');
+    style.id = 'npt-bilingual-style';
+    style.dataset.tmNoTranslate = 'true';
+    style.textContent = '.npt-bilingual-translation{display:block;opacity:.72;font-size:.93em;margin-top:2px}'
+      + '.npt-bilingual-inline{display:inline;margin-left:4px;opacity:.72}';
+    (document.head || document.documentElement).appendChild(style);
+    bilingualStyleInjected = true;
+  }
+
+  // Chèn/cập nhật span bản dịch song ngữ (idempotent qua bilingualPairs).
+  // data-tm-no-translate để MutationObserver không tự dịch bản dịch (loop).
+  function upsertBilingualSpan(node, translated) {
+    if (!node.isConnected) {
+      const stale = bilingualPairs.get(node);
+      if (stale) {
+        stale.remove();
+        bilingualPairs.delete(node);
+      }
+      return;
+    }
+
+    const existing = bilingualPairs.get(node);
+    if (existing && existing.isConnected) {
+      if (existing.textContent !== translated) existing.textContent = translated;
+      return;
+    }
+    if (existing) bilingualPairs.delete(node);
+
+    const parent = node.parentElement;
+    if (!parent) return;
+
+    ensureBilingualStyle();
+    const span = document.createElement('span');
+    span.className = 'npt-bilingual-translation';
+    span.dataset.tmNoTranslate = 'true';
+    span.textContent = translated;
+
+    // Parent inline (a, strong, span...) → chèn SAU cả element để không phá dòng;
+    // ngược lại chèn ngay sau text node (span hiển thị block bên dưới).
+    let display = '';
+    try {
+      display = getComputedStyle(parent).display;
+    } catch (_) {
+      display = '';
+    }
+    if (display.startsWith('inline')) {
+      span.classList.add('npt-bilingual-inline');
+      parent.after(span);
+    } else {
+      node.after(span);
+    }
+    bilingualPairs.set(node, span);
+  }
+
+  // Áp bản dịch cho text node theo display-mode hiện tại:
+  // 'replace' thay node.data như cũ; 'bilingual' giữ nguyên gốc + chèn span.
+  function applyTextTranslation(node, translated, original) {
+    if (!node.isConnected) return;
+
+    if (pageSetting('tm-page-display-mode') !== 'bilingual') {
+      const stale = bilingualPairs.get(node);
+      if (stale) {
+        stale.remove();
+        bilingualPairs.delete(node);
+      }
+      safelySetText(node, translated);
+      return;
+    }
+
+    // Node có thể đang giữ bản replace từ lần dịch trước → trả về bản gốc trước.
+    if (typeof original === 'string' && node.data !== original) safelySetText(node, original);
+    upsertBilingualSpan(node, translated);
   }
 
   async function mapWithConcurrency(items, concurrency, worker) {
@@ -774,9 +964,19 @@
     for (const [language, button] of Object.entries(buttons)) {
       button.dataset.active = String(language === currentLanguage);
     }
+    // Badge nhỏ trên icon nổi: ngôn ngữ đang dịch (rỗng khi ở bản gốc).
+    if (fabLangElement) {
+      fabLangElement.textContent = currentLanguage === 'original' ? '' : currentLanguage.toUpperCase();
+    }
+    if (fabElement) fabElement.dataset.active = String(currentLanguage !== 'original');
   }
 
   function restoreOriginalContent() {
+    // Gỡ toàn bộ span song ngữ (quét dư querySelectorAll cho chắc) rồi restore như cũ.
+    for (const span of bilingualPairs.values()) span.remove();
+    bilingualPairs.clear();
+    for (const span of document.querySelectorAll('.npt-bilingual-translation')) span.remove();
+
     for (const [node, record] of textRecords) {
       if (!node.isConnected) {
         textRecords.delete(node);
@@ -818,10 +1018,19 @@
       setStatus(`Đang dịch ${completed}/${total}${failed ? ` · lỗi ${failed}` : ''}`);
     };
 
+    // Cache trong record chỉ hợp lệ khi cùng style signature hiện tại (cả text lẫn
+    // attribute record đều có field sig; sig cũ/khác → dịch lại).
+    const activeSig = pageStyleSignature();
+    const hasValidCache = record => {
+      if (!record[language]) return false;
+      if (!('sig' in record)) return true;
+      return record.sig === activeSig;
+    };
+
     const uniqueOriginals = [];
     const originalIndex = new Map();
     for (const job of jobs) {
-      if (job.record[language]) continue;
+      if (hasValidCache(job.record)) continue;
       if (!originalIndex.has(job.original)) {
         originalIndex.set(job.original, uniqueOriginals.length);
         uniqueOriginals.push(job.original);
@@ -830,7 +1039,7 @@
 
     let translatedResults = [];
     if (uniqueOriginals.length) {
-      translatedResults = await TRANSLATION_CORE.translateMany(uniqueOriginals, 'auto', language);
+      translatedResults = await TRANSLATION_CORE.translateMany(uniqueOriginals, 'auto', language, true);
     }
 
     const resultByOriginal = new Map();
@@ -841,14 +1050,15 @@
     for (const job of jobs) {
       if (runGeneration !== generation || language !== currentLanguage) break;
       try {
-        if (!job.record[language]) {
+        if (!hasValidCache(job.record)) {
           const result = resultByOriginal.get(job.original);
           if (!result || result.error) throw result?.error || new Error('Không nhận được kết quả dịch');
           job.record[language] = result.text;
+          if ('sig' in job.record) job.record.sig = activeSig;
         }
 
         if (job.kind === 'text') {
-          if (job.node.isConnected) safelySetText(job.node, job.record[language]);
+          if (job.node.isConnected) applyTextTranslation(job.node, job.record[language], job.record.original);
         } else if (job.element.isConnected) {
           safelySetAttribute(job.element, job.attribute, job.record[language]);
         }
@@ -865,8 +1075,7 @@
   }
 
   // Viewport-first: node nằm trong (hoặc sát) khung nhìn được dịch trước.
-  // 2 bucket nối nhau, giữ nguyên thứ tự DOM tương đối — KHÔNG sort toàn phần.
-  function orderViewportFirst(textNodes) {
+  function splitByViewport(textNodes) {
     const inView = [];
     const outView = [];
     for (const node of textNodes) {
@@ -882,7 +1091,64 @@
       }
       (visible ? inView : outView).push(node);
     }
+    return { inView, outView };
+  }
+
+  // 2 bucket nối nhau, giữ nguyên thứ tự DOM tương đối — KHÔNG sort toàn phần.
+  function orderViewportFirst(textNodes) {
+    const { inView, outView } = splitByViewport(textNodes);
     return inView.concat(outView);
+  }
+
+  // Lazy translate: hủy toàn bộ node đang chờ cuộn (đổi ngôn ngữ, về bản gốc, lazy tắt).
+  function disconnectLazyObserver() {
+    if (lazyObserver) lazyObserver.disconnect();
+    lazyObserver = null;
+    lazyPending.clear();
+  }
+
+  // Gắn IntersectionObserver lên parentElement của từng node ngoài viewport;
+  // element vào khung nhìn → dịch nhóm node đó rồi unobserve.
+  function observeLazyNodes(nodes, language, runGeneration) {
+    // Trình duyệt không có IntersectionObserver → dịch thẳng, không lazy.
+    if (typeof IntersectionObserver !== 'function') {
+      translateTargets(nodes, [], language, runGeneration);
+      return;
+    }
+
+    for (const node of nodes) {
+      if (!node.isConnected) continue;
+      const parent = node.parentElement;
+      if (!parent) continue;
+      const group = lazyPending.get(parent);
+      if (group) group.push(node);
+      else lazyPending.set(parent, [node]);
+    }
+    if (!lazyPending.size) return;
+
+    lazyObserver = new IntersectionObserver(entries => {
+      const ready = [];
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        lazyObserver.unobserve(entry.target);
+        const group = lazyPending.get(entry.target);
+        lazyPending.delete(entry.target);
+        if (group) ready.push(...group);
+      }
+      if (!ready.length) return;
+      if (language !== currentLanguage || runGeneration !== generation) return;
+
+      const alive = ready.filter(node => node.isConnected);
+      if (!alive.length) return;
+      translateTargets(alive, [], language, runGeneration).then(() => {
+        if (language !== currentLanguage || runGeneration !== generation) return;
+        if (!lazyPending.size) {
+          setStatus(language === 'vi' ? 'Đã dịch sang tiếng Việt' : 'Translated to English');
+        }
+      });
+    }, { rootMargin: '250px 0px' });
+
+    for (const element of lazyPending.keys()) lazyObserver.observe(element);
   }
 
   async function setLanguage(language, roots = [document.body]) {
@@ -895,6 +1161,7 @@
 
     currentLanguage = language;
     const runGeneration = ++generation;
+    disconnectLazyObserver();
     GM_setValue(`${CONFIG.storageKey}:${location.hostname}`, language);
     updateActiveButton();
 
@@ -919,34 +1186,51 @@
       }
     }
 
-    const textNodes = orderViewportFirst([...uniqueTextNodes]);
+    const allTextNodes = [...uniqueTextNodes];
+    // Lazy bật: chỉ dịch ngay bucket trong viewport, phần ngoài chờ cuộn tới.
+    const lazyEnabled = pageSetting('tm-page-lazy-translate') !== false;
+    let textNodes;
+    let lazyNodes = [];
+    if (lazyEnabled) {
+      const buckets = splitByViewport(allTextNodes);
+      textNodes = buckets.inView;
+      lazyNodes = buckets.outView;
+    } else {
+      textNodes = orderViewportFirst(allTextNodes);
+    }
+
     const attributeTargets = [];
     for (const [element, attributes] of uniqueAttributeTargets) {
       for (const attribute of attributes) attributeTargets.push({ element, attribute });
     }
 
-    for (const node of textNodes) getTextRecord(node);
+    for (const node of allTextNodes) getTextRecord(node);
     for (const { element, attribute } of attributeTargets) getAttributeRecord(element, attribute);
 
-    const total = textNodes.length + attributeTargets.length;
-    if (!total) {
+    if (!allTextNodes.length && !attributeTargets.length) {
       setStatus(language === 'vi' ? 'Không tìm thấy chữ cần dịch' : 'No translatable text found');
       return;
     }
 
-    setStatus(`Đang dịch 0/${total}`);
+    const immediateTotal = textNodes.length + attributeTargets.length;
+    setStatus(`Đang dịch 0/${immediateTotal}`);
     const result = await translateTargets(textNodes, attributeTargets, language, runGeneration);
 
     if (runGeneration !== generation || language !== currentLanguage) return;
+    if (lazyNodes.length) observeLazyNodes(lazyNodes, language, runGeneration);
     setStatus(
       result.failed
         ? `Đã dịch · ${result.failed} mục lỗi`
-        : language === 'vi' ? 'Đã dịch sang tiếng Việt' : 'Translated to English',
+        : lazyPending.size
+          ? 'Đã dịch phần hiển thị · cuộn để dịch tiếp'
+          : language === 'vi' ? 'Đã dịch sang tiếng Việt' : 'Translated to English',
       result.failed > 0,
     );
   }
 
   function queueDynamicTranslation(roots) {
+    // Tắt tự dịch nội dung động (SPA/infinite feed) theo setting.
+    if (pageSetting('tm-page-dynamic-translate') === false) return;
     for (const root of roots) pendingDynamicRoots.add(root);
     clearTimeout(mutationTimer);
 
@@ -999,6 +1283,11 @@
 
       if (mutation.type === 'characterData') {
         const node = mutation.target;
+        // Text trong vùng data-tm-no-translate (toolbar, span song ngữ) → bỏ qua,
+        // tránh tạo record rác / tự dịch chính bản dịch (loop).
+        const parentElement = node.parentElement;
+        if (parentElement && parentElement.closest('[data-tm-no-translate]')) continue;
+
         const expected = expectedTextChanges.get(node);
 
         if (expected === node.data) {
@@ -1048,6 +1337,14 @@
     if (addedRoots.size) queueDynamicTranslation([...addedRoots]);
   }
 
+  /* ===================== ICON NỔI (FAB) LIQUID GLASS =====================
+   * - Click trái: bật/tắt dịch nhanh (bản gốc ↔ ngôn ngữ gần nhất, mặc định VI).
+   * - Chuột phải: mở menu VI/EN/Gốc + trạng thái.
+   * - Kéo thả: di chuyển tự do; vị trí lưu storage 'tm-fab-position'.
+   * Menu/panel dùng chung recipe "liquid glass": nền trắng mờ + blur mạnh,
+   * viền sáng, highlight bóng trên, chữ tối — nổi trên cả nền sáng lẫn tối. */
+  const FAB_POSITION_KEY = 'tm-fab-position';
+
   function createToolbar() {
     toolbarHost = document.createElement('div');
     toolbarHost.id = 'tm-page-translator-host';
@@ -1056,16 +1353,20 @@
 
     const shadow = toolbarHost.attachShadow({ mode: 'closed' });
     const wrapper = document.createElement('div');
-    wrapper.className = 'translator';
+    wrapper.className = 'stage';
     wrapper.innerHTML = `
-      <div class="buttons">
-        <button type="button" data-language="vi" title="Dịch sang tiếng Việt">VI</button>
-        <button type="button" data-language="en" title="Translate to English">EN</button>
-        <button type="button" data-language="original" title="Khôi phục bản gốc">${NPT_ICONS.undo}Gốc</button>
-      </div>
-      <div class="foot">
-        <span class="brand-dot" aria-hidden="true"></span>
-        <div class="status" aria-live="polite">Sẵn sàng</div>
+      <button type="button" class="fab" title="Nhấp: dịch / tắt dịch · Chuột phải: menu · Kéo: di chuyển">${NPT_ICONS.globe}<span class="fab-lang"></span></button>
+      <div class="menu" hidden>
+        <div class="buttons">
+          <button type="button" data-language="vi" title="Dịch sang tiếng Việt">VI</button>
+          <button type="button" data-language="en" title="Translate to English">EN</button>
+          <button type="button" data-language="original" title="Khôi phục bản gốc">${NPT_ICONS.undo}Gốc</button>
+        </div>
+        <div class="foot">
+          <span class="brand-dot" aria-hidden="true"></span>
+          <div class="status" aria-live="polite">Sẵn sàng</div>
+        </div>
+        <div class="hint">Nhấp icon: dịch / tắt dịch · Chuột phải: menu này · Kéo: di chuyển</div>
       </div>
     `;
 
@@ -1074,70 +1375,238 @@
       :host {
         all: initial;
         position: fixed;
-        right: 14px;
-        bottom: 14px;
+        left: 0;
+        top: 0;
         z-index: 2147483647;
         font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
       }
-      .translator {
-        width: 190px;
-        padding: 10px;
-        border: 1px solid rgba(255,255,255,.09);
+      .stage { position: relative; }
+      .fab {
+        all: unset;
+        box-sizing: border-box;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1px;
+        cursor: grab;
         border-radius: 14px;
-        background: rgba(10, 12, 16, .9);
-        box-shadow: 0 18px 45px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
-        color: #fff;
-        backdrop-filter: blur(14px);
+        border: 1px solid rgba(255,255,255,.6);
+        background: linear-gradient(150deg, rgba(255,255,255,.55), rgba(255,255,255,.16));
+        box-shadow: 0 8px 24px rgba(15,17,23,.18), inset 0 1px 0 rgba(255,255,255,.9), inset 0 -8px 14px rgba(255,255,255,.14);
+        backdrop-filter: blur(20px) saturate(1.7) brightness(1.1);
+        color: #17181c;
+        touch-action: none;
+        user-select: none;
+        transition: transform .18s cubic-bezier(.34,1.45,.64,1), box-shadow .22s cubic-bezier(.32,.72,0,1);
+      }
+      .fab:hover {
+        transform: scale(1.07);
+        box-shadow: 0 12px 30px rgba(15,17,23,.22), inset 0 1px 0 rgba(255,255,255,.95), inset 0 -8px 14px rgba(255,255,255,.16);
+      }
+      .fab.dragging { cursor: grabbing; transform: scale(.97); transition: none; }
+      .fab[data-active="true"] {
+        box-shadow: 0 8px 24px rgba(15,17,23,.2), inset 0 1px 0 rgba(255,255,255,.95), 0 0 0 2.5px rgba(255,255,255,.4);
+      }
+      .fab svg { width: 16px; height: 16px; }
+      .fab-lang {
+        min-height: 9px;
+        color: rgba(23,24,28,.78);
+        font: 800 8.5px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        letter-spacing: .07em;
+      }
+      .menu {
+        position: absolute;
+        right: 0;
+        bottom: calc(100% + 10px);
+        width: 202px;
+        padding: 8px;
+        border-radius: 18px;
+        border: 1px solid rgba(255,255,255,.6);
+        background: linear-gradient(160deg, rgba(255,255,255,.66), rgba(244,245,249,.4));
+        box-shadow: 0 18px 44px rgba(15,17,23,.24), inset 0 1px 0 rgba(255,255,255,.95), inset 0 -10px 18px rgba(255,255,255,.12);
+        backdrop-filter: blur(24px) saturate(1.8) brightness(1.1);
+        color: #17181c;
+        transform-origin: bottom right;
+        animation: npt-menu-in .26s cubic-bezier(.34,1.45,.64,1);
+      }
+      .menu[hidden] { display: none; }
+      .stage[data-menu-side="below"] .menu { top: calc(100% + 10px); bottom: auto; transform-origin: top right; }
+      .stage[data-menu-h="left"] .menu { left: 0; right: auto; transform-origin: bottom left; }
+      .stage[data-menu-side="below"][data-menu-h="left"] .menu { transform-origin: top left; }
+      @keyframes npt-menu-in {
+        from { opacity: 0; transform: scale(.86) translateY(6px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
       }
       .buttons {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 6px;
+        gap: 3px;
+        padding: 3px;
+        border: 1px solid rgba(255,255,255,.55);
+        border-radius: 12px;
+        background: rgba(255,255,255,.4);
       }
-      button {
+      .menu button {
         all: unset;
         box-sizing: border-box;
         cursor: pointer;
         text-align: center;
-        padding: 7px 5px;
+        padding: 6px 4px;
         border-radius: 9px;
-        border: 1px solid rgba(255,255,255,.08);
-        background: rgba(255,255,255,.05);
-        color: #fff;
-        font: 680 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-        transition: background .25s cubic-bezier(.32,.72,0,1), transform .18s cubic-bezier(.32,.72,0,1), border-color .25s;
+        background: transparent;
+        color: rgba(23,24,28,.72);
+        font: 650 11.5px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        letter-spacing: .02em;
+        transition: background .18s cubic-bezier(.32,.72,0,1), color .18s, transform .14s cubic-bezier(.32,.72,0,1);
       }
-      button:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.16); }
-      button:active { transform: scale(.96); }
-      button[data-active="true"] {
-        border: 1px solid transparent;
-        background: linear-gradient(135deg, #6366f1, #3b82f6);
-        box-shadow: 0 4px 14px rgba(79,102,241,.35), inset 0 1px 0 rgba(255,255,255,.22);
+      .menu button:hover { background: rgba(255,255,255,.55); color: #17181c; }
+      .menu button:active { transform: scale(.95); }
+      .menu button[data-active="true"] {
+        background: #17181c;
+        color: #f7f7f9;
+        box-shadow: 0 3px 10px rgba(15,17,23,.3);
       }
-      button[data-language="original"] svg { margin-right: 4px; vertical-align: -2px; }
-      .foot { display: flex; align-items: center; gap: 7px; margin-top: 8px; }
+      .menu button[data-language="original"] svg { margin-right: 4px; vertical-align: -2px; }
+      .foot { display: flex; align-items: center; gap: 6px; margin-top: 7px; padding: 0 2px; }
       .brand-dot {
-        width: 14px;
-        height: 14px;
+        width: 5px;
+        height: 5px;
         flex: none;
-        border-radius: 22%;
-        background: linear-gradient(135deg, #6366f1, #3b82f6);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 6px rgba(79,102,241,.4);
+        border-radius: 50%;
+        background: #17181c;
+        opacity: .5;
       }
       .status {
         flex: 1;
         min-width: 0;
         overflow: hidden;
-        color: rgba(255,255,255,.62);
-        font: 500 11px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        color: rgba(23,24,28,.58);
+        font: 500 10.5px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .status[data-error="true"] { color: #fca5a5; }
+      .status[data-error="true"] { color: #b3402f; }
+      .hint {
+        margin-top: 6px;
+        padding: 0 2px;
+        color: rgba(23,24,28,.4);
+        font: 500 9.5px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+      }
     `;
 
     shadow.append(style, wrapper);
+    fabElement = wrapper.querySelector('.fab');
+    fabLangElement = wrapper.querySelector('.fab-lang');
+    fabMenu = wrapper.querySelector('.menu');
     statusElement = wrapper.querySelector('.status');
+
+    /* ----- Vị trí fab: mặc định góc phải-dưới, lưu storage khi user kéo ----- */
+    function clampFabPos(x, y) {
+      const size = fabElement?.offsetWidth || 40;
+      return {
+        x: Math.max(8, Math.min(x, innerWidth - size - 8)),
+        y: Math.max(8, Math.min(y, innerHeight - size - 8)),
+      };
+    }
+
+    function loadFabPos() {
+      const saved = GM_getValue(FAB_POSITION_KEY, null);
+      const x = Number(saved?.x);
+      const y = Number(saved?.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) return clampFabPos(x, y);
+      return { x: innerWidth - 54, y: innerHeight - 54 };
+    }
+
+    let fabPos = loadFabPos();
+
+    // fixed bị bẻ khi html/body có transform/filter/perspective → absolute + bù scroll.
+    function renderFab() {
+      const useAbsolute = hasTransformedRoot();
+      toolbarHost.style.position = useAbsolute ? 'absolute' : 'fixed';
+      toolbarHost.style.left = `${Math.round(fabPos.x + (useAbsolute ? window.scrollX : 0))}px`;
+      toolbarHost.style.top = `${Math.round(fabPos.y + (useAbsolute ? window.scrollY : 0))}px`;
+    }
+
+    renderFab();
+    window.addEventListener('resize', () => {
+      fabPos = clampFabPos(fabPos.x, fabPos.y);
+      renderFab();
+    }, { passive: true });
+
+    /* ----- Menu chuột phải ----- */
+    const isMenuOpen = () => Boolean(fabMenu && !fabMenu.hidden);
+
+    function setMenuOpen(open) {
+      if (!fabMenu) return;
+      if (open) {
+        // Lật hướng menu theo vị trí fab: gần nóc → xổ xuống; sát trái → xổ sang phải.
+        wrapper.dataset.menuSide = fabPos.y < 210 ? 'below' : 'above';
+        wrapper.dataset.menuH = fabPos.x > innerWidth - 240 ? 'right' : 'left';
+        fabMenu.hidden = false;
+      } else {
+        fabMenu.hidden = true;
+      }
+    }
+
+    fabElement.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      setMenuOpen(!isMenuOpen());
+    });
+
+    document.addEventListener('mousedown', event => {
+      if (!isMenuOpen()) return;
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      if (!path.includes(toolbarHost)) setMenuOpen(false);
+    }, true);
+
+    /* ----- Click trái: bật/tắt dịch nhanh ----- */
+    function toggleQuickTranslate() {
+      const saved = GM_getValue(`${CONFIG.storageKey}:${location.hostname}`, 'vi');
+      const target = ['vi', 'en'].includes(saved) ? saved : 'vi';
+      const next = currentLanguage === 'original' ? target : 'original';
+      setLanguage(next);
+      chrome.runtime.sendMessage({ type: 'broadcastPageLanguage', language: next }).catch(() => {});
+    }
+
+    /* ----- Kéo thả (ngưỡng 6px để phân biệt click vs kéo) ----- */
+    let dragState = null;
+
+    fabElement.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      dragState = { startX: event.clientX, startY: event.clientY, baseX: fabPos.x, baseY: fabPos.y, moved: false };
+      try { fabElement.setPointerCapture(event.pointerId); } catch (_) { /* noop */ }
+    });
+
+    fabElement.addEventListener('pointermove', event => {
+      if (!dragState) return;
+      const dx = event.clientX - dragState.startX;
+      const dy = event.clientY - dragState.startY;
+      if (!dragState.moved && Math.hypot(dx, dy) < 6) return;
+      if (!dragState.moved) {
+        dragState.moved = true;
+        fabElement.classList.add('dragging');
+        setMenuOpen(false);
+      }
+      fabPos = clampFabPos(dragState.baseX + dx, dragState.baseY + dy);
+      renderFab();
+    });
+
+    const endDrag = event => {
+      if (!dragState) return;
+      const moved = dragState.moved;
+      dragState = null;
+      fabElement.classList.remove('dragging');
+      if (moved) {
+        GM_setValue(FAB_POSITION_KEY, { x: Math.round(fabPos.x), y: Math.round(fabPos.y) });
+        return;
+      }
+      if (event.type === 'pointerup' && event.button === 0) toggleQuickTranslate();
+    };
+    fabElement.addEventListener('pointerup', endDrag);
+    fabElement.addEventListener('pointercancel', endDrag);
 
     for (const button of wrapper.querySelectorAll('button[data-language]')) {
       const language = button.dataset.language;
@@ -1146,14 +1615,6 @@
         setLanguage(language);
         chrome.runtime.sendMessage({ type: 'broadcastPageLanguage', language }).catch(() => {});
       });
-    }
-
-    // fixed bị bẻ khi html/body có transform/filter/perspective → absolute theo toạ độ document.
-    if (hasTransformedRoot()) {
-      const box = toolbarHost.getBoundingClientRect();
-      toolbarHost.style.position = 'absolute';
-      toolbarHost.style.left = `${Math.round(window.scrollX + innerWidth - box.width - 14)}px`;
-      toolbarHost.style.top = `${Math.round(window.scrollY + innerHeight - box.height - 14)}px`;
     }
 
     updateActiveButton();
@@ -1206,6 +1667,7 @@
           pointer-events: none;
           font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
         }
+        /* Liquid glass: nền trắng mờ + blur mạnh + highlight bóng trên, chữ tối. */
         .panel {
           position: fixed;
           left: 0;
@@ -1216,20 +1678,20 @@
           min-width: 220px;
           max-width: 360px;
           max-height: 70vh;
-          padding: 9px 10px 10px;
-          border: 1px solid rgba(255,255,255,.09);
-          border-radius: 14px;
-          background: rgba(10, 12, 16, .94);
-          box-shadow: 0 18px 45px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
-          color: #fff;
-          backdrop-filter: blur(14px);
+          padding: 10px 11px 11px;
+          border: 1px solid rgba(255,255,255,.6);
+          border-radius: 16px;
+          background: linear-gradient(160deg, rgba(255,255,255,.7), rgba(244,245,249,.46));
+          box-shadow: 0 18px 44px rgba(15,17,23,.24), inset 0 1px 0 rgba(255,255,255,.95), inset 0 -10px 18px rgba(255,255,255,.12);
+          color: #17181c;
+          backdrop-filter: blur(24px) saturate(1.8) brightness(1.1);
           opacity: 0;
           visibility: hidden;
-          transform: translateY(4px);
-          transition: opacity .2s cubic-bezier(.32,.72,0,1), transform .2s cubic-bezier(.32,.72,0,1), visibility .2s;
+          transform: translateY(4px) scale(.97);
+          transition: opacity .22s cubic-bezier(.34,1.3,.64,1), transform .22s cubic-bezier(.34,1.3,.64,1), visibility .22s;
           pointer-events: auto;
         }
-        .panel.visible { opacity: 1; visibility: visible; transform: translateY(0); }
+        .panel.visible { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
         .head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
         .title {
           flex: 1;
@@ -1237,65 +1699,61 @@
           align-items: center;
           gap: 6px;
           letter-spacing: .04em;
-          background: linear-gradient(135deg, #818cf8, #60a5fa);
-          -webkit-background-clip: text;
-          background-clip: text;
-          -webkit-text-fill-color: transparent;
-          color: transparent;
+          color: rgba(23,24,28,.8);
           font: 720 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         }
-        .title svg { flex: none; color: #818cf8; }
+        .title svg { flex: none; color: rgba(23,24,28,.55); }
         button {
           all: unset;
           box-sizing: border-box;
           cursor: pointer;
           padding: 4px 8px;
           border-radius: 8px;
-          border: 1px solid rgba(255,255,255,.08);
-          background: rgba(255,255,255,.05);
-          color: rgba(255,255,255,.85);
-          font: 640 11px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-          transition: background .2s cubic-bezier(.32,.72,0,1);
+          border: 1px solid rgba(15,17,23,.08);
+          background: rgba(255,255,255,.4);
+          color: rgba(23,24,28,.8);
+          font: 620 11px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          transition: background .18s cubic-bezier(.32,.72,0,1);
         }
-        button:hover { background: rgba(255,255,255,.12); }
+        button:hover { background: rgba(255,255,255,.65); }
         button[hidden] { display: none; }
-        .close { padding: 4px 6px; color: rgba(255,255,255,.6); }
+        .close { padding: 4px 6px; color: rgba(23,24,28,.5); }
         .body { overflow-y: auto; overscroll-behavior: contain; }
         .loading {
           display: flex;
           align-items: center;
           gap: 8px;
           padding: 6px 2px;
-          color: rgba(255,255,255,.75);
+          color: rgba(23,24,28,.7);
           font: 560 12px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         }
         .spinner {
           width: 13px;
           height: 13px;
           flex: none;
-          border: 2px solid rgba(255,255,255,.16);
-          border-top-color: #818cf8;
+          border: 2px solid rgba(15,17,23,.14);
+          border-top-color: rgba(23,24,28,.75);
           border-radius: 50%;
           animation: npt-image-spin .8s linear infinite;
         }
         @keyframes npt-image-spin { to { transform: rotate(360deg); } }
-        .line { padding: 5px 0; border-top: 1px solid rgba(255,255,255,.06); }
+        .line { padding: 5px 0; border-top: 1px solid rgba(15,17,23,.07); }
         .line:first-child { border-top: 0; padding-top: 0; }
         .original {
-          color: rgba(255,255,255,.48);
+          color: rgba(23,24,28,.48);
           font: 500 11px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         }
         .translated {
           margin-top: 1px;
-          color: rgba(255,255,255,.95);
+          color: rgba(23,24,28,.94);
           font: 620 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         }
         .empty, .error {
           padding: 6px 2px;
           font: 560 12px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         }
-        .empty { color: rgba(255,255,255,.6); }
-        .error { color: #fca5a5; }
+        .empty { color: rgba(23,24,28,.55); }
+        .error { color: #b3402f; }
       </style>
       <div class="panel" data-tm-no-translate>
         <div class="head">
@@ -1513,6 +1971,7 @@
           font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
         }
         [hidden] { display: none !important; }
+        /* Liquid glass: nền trắng mờ + blur mạnh + highlight bóng trên, chữ tối. */
         .fab {
           all: unset;
           position: fixed;
@@ -1521,20 +1980,21 @@
           align-items: center;
           gap: 5px;
           cursor: pointer;
-          padding: 6px 10px;
-          border: 1px solid rgba(255,255,255,.09);
-          border-radius: 10px;
-          background: rgba(10, 12, 16, .94);
-          box-shadow: 0 12px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
-          color: #fff;
-          backdrop-filter: blur(14px);
-          font: 700 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          padding: 6px 11px;
+          border: 1px solid rgba(255,255,255,.6);
+          border-radius: 11px;
+          background: linear-gradient(150deg, rgba(255,255,255,.6), rgba(255,255,255,.24));
+          box-shadow: 0 8px 22px rgba(15,17,23,.16), inset 0 1px 0 rgba(255,255,255,.9);
+          color: #17181c;
+          backdrop-filter: blur(20px) saturate(1.7) brightness(1.1);
+          font: 650 11.5px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          letter-spacing: .02em;
           pointer-events: auto;
-          transition: background .2s cubic-bezier(.32,.72,0,1), transform .18s cubic-bezier(.32,.72,0,1);
+          transition: transform .16s cubic-bezier(.34,1.45,.64,1), box-shadow .2s cubic-bezier(.32,.72,0,1);
         }
-        .fab:hover { background: rgba(30, 34, 44, .95); }
-        .fab:active { transform: scale(.96); }
-        .fab[data-busy="true"] { cursor: progress; color: rgba(255,255,255,.6); }
+        .fab:hover { transform: scale(1.05); box-shadow: 0 12px 28px rgba(15,17,23,.2), inset 0 1px 0 rgba(255,255,255,.95); }
+        .fab:active { transform: scale(.95); }
+        .fab[data-busy="true"] { cursor: progress; color: rgba(23,24,28,.5); }
         .panel {
           position: fixed;
           box-sizing: border-box;
@@ -1542,22 +2002,22 @@
           max-width: 320px;
           max-height: 40vh;
           overflow-y: auto;
-          padding: 9px 10px 10px;
-          border: 1px solid rgba(255,255,255,.09);
-          border-radius: 10px;
-          background: rgba(10, 12, 16, .94);
-          box-shadow: 0 18px 45px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
-          color: #fff;
-          backdrop-filter: blur(14px);
+          padding: 10px 11px 11px;
+          border: 1px solid rgba(255,255,255,.6);
+          border-radius: 15px;
+          background: linear-gradient(160deg, rgba(255,255,255,.7), rgba(244,245,249,.46));
+          box-shadow: 0 18px 44px rgba(15,17,23,.24), inset 0 1px 0 rgba(255,255,255,.95), inset 0 -10px 18px rgba(255,255,255,.12);
+          color: #17181c;
+          backdrop-filter: blur(24px) saturate(1.8) brightness(1.1);
           pointer-events: auto;
         }
         .result {
           white-space: pre-wrap;
           word-break: break-word;
-          color: rgba(255,255,255,.92);
+          color: rgba(23,24,28,.9);
           font: 500 13px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         }
-        .result[data-error="true"] { color: #fca5a5; }
+        .result[data-error="true"] { color: #b3402f; }
         .actions { display: flex; gap: 6px; margin-top: 8px; }
         .actions button {
           all: unset;
@@ -1566,16 +2026,16 @@
           align-items: center;
           gap: 5px;
           cursor: pointer;
-          padding: 4px 8px;
+          padding: 5px 9px;
           border-radius: 8px;
-          border: 1px solid rgba(255,255,255,.08);
-          background: rgba(255,255,255,.05);
-          color: rgba(255,255,255,.85);
-          font: 640 11px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-          transition: background .2s cubic-bezier(.32,.72,0,1);
+          border: 1px solid rgba(15,17,23,.08);
+          background: rgba(255,255,255,.4);
+          color: rgba(23,24,28,.78);
+          font: 620 11px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          transition: background .18s cubic-bezier(.32,.72,0,1);
         }
-        .actions button:hover { background: rgba(255,255,255,.12); }
-        .actions .close { margin-left: auto; padding: 4px 7px; color: rgba(255,255,255,.6); }
+        .actions button:hover { background: rgba(255,255,255,.65); }
+        .actions .close { margin-left: auto; padding: 5px 7px; color: rgba(23,24,28,.5); }
       </style>
       <button type="button" class="fab" data-tm-no-translate title="Dịch đoạn đã chọn" hidden>${NPT_SELECTION_FAB_LABEL}</button>
       <div class="panel" data-tm-no-translate hidden>
@@ -1822,6 +2282,111 @@
     discoverAndObserveMutationRoots(document.documentElement);
   }
 
+  // Đổi kiểu hiển thị (replace ↔ song ngữ): KHÔNG dịch lại — restore rồi áp lại
+  // bản dịch đã cache trong records theo mode mới.
+  function rerenderDisplayMode() {
+    const language = currentLanguage;
+    if (language === 'original') return;
+
+    restoreOriginalContent();
+    const activeSig = pageStyleSignature();
+    for (const [node, record] of textRecords) {
+      if (!node.isConnected) continue;
+      if (record[language] && record.sig === activeSig) {
+        applyTextTranslation(node, record[language], record.original);
+      }
+    }
+    for (const [element, records] of attributeRecords) {
+      if (!element.isConnected) continue;
+      for (const [attribute, record] of records) {
+        if (record[language]) safelySetAttribute(element, attribute, record[language]);
+      }
+    }
+  }
+
+  // Key thuộc style signature: đổi → dịch lại (sig cũ trong records tự vô hiệu).
+  const STYLE_SIGNATURE_KEYS = new Set([
+    'tm-page-style',
+    'tm-page-dialect',
+    'tm-page-translate-mode',
+    'tm-page-grammar-fix',
+    'tm-page-keep-proper-nouns',
+  ]);
+  // Key ảnh hưởng cách quét/xử lý: đổi → chạy lại setLanguage.
+  const REPROCESS_SETTING_KEYS = new Set([
+    'tm-page-skip-code',
+    'tm-page-skip-usernames',
+    'tm-page-lazy-translate',
+    'tm-page-dynamic-translate',
+  ]);
+
+  // Debounce gom nhiều key đổi cùng lúc (trang Cài đặt lưu từng key một).
+  let settingsChangeTimer = null;
+  let pendingDisplayModeRerender = false;
+  let pendingFullRetranslate = false;
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+    if (currentLanguage === 'original') return;
+
+    let displayModeChanged = false;
+    let retranslate = false;
+    for (const key of Object.keys(changes)) {
+      if (key === 'tm-page-display-mode') displayModeChanged = true;
+      else if (STYLE_SIGNATURE_KEYS.has(key) || REPROCESS_SETTING_KEYS.has(key)) retranslate = true;
+    }
+    if (!displayModeChanged && !retranslate) return;
+
+    pendingDisplayModeRerender = pendingDisplayModeRerender || displayModeChanged;
+    pendingFullRetranslate = pendingFullRetranslate || retranslate;
+    clearTimeout(settingsChangeTimer);
+    settingsChangeTimer = setTimeout(() => {
+      const shouldRetranslate = pendingFullRetranslate;
+      const shouldRerender = pendingDisplayModeRerender;
+      pendingFullRetranslate = false;
+      pendingDisplayModeRerender = false;
+      // Dịch lại đã bao gồm áp theo display-mode hiện tại.
+      if (shouldRetranslate) {
+        setLanguage(currentLanguage).catch(error =>
+          console.warn('[Page Translator] Dịch lại theo cài đặt mới lỗi:', error));
+      } else if (shouldRerender) rerenderDisplayMode();
+    }, 250);
+  });
+
+  // Hook SPA: Discord/Reddit/Facebook đổi route không reload trang → debounce ~900ms
+  // rồi quét dịch phần nội dung mới. Lưu ý isolated world: popstate luôn bắt được;
+  // wrap pushState/replaceState chỉ tác dụng khi page gọi qua cùng history object.
+  let spaHookInstalled = false;
+  function installSpaNavigationHook() {
+    if (spaHookInstalled) return;
+    spaHookInstalled = true;
+
+    let spaTimer = null;
+    const onNavigate = () => {
+      clearTimeout(spaTimer);
+      spaTimer = setTimeout(() => {
+        if (currentLanguage === 'original') return;
+        if (pageSetting('tm-page-dynamic-translate') === false) return;
+        queueDynamicTranslation([document.body]);
+      }, 900);
+    };
+
+    for (const method of ['pushState', 'replaceState']) {
+      const original = history[method];
+      if (typeof original !== 'function') continue;
+      try {
+        history[method] = function (...args) {
+          const result = original.apply(this, args);
+          onNavigate();
+          return result;
+        };
+      } catch (_) {
+        // Trang khoá history → chỉ dựa vào popstate.
+      }
+    }
+    window.addEventListener('popstate', onNavigate);
+  }
+
   function init() {
     if (!document.documentElement) return;
     if (isSiteBlacklisted()) return; // Site bị chặn: không toolbar, không auto-translate.
@@ -1831,6 +2396,7 @@
     }
     initSelectionTranslator();
     startObserver();
+    installSpaNavigationHook();
 
     const savedLanguage = GM_getValue(`${CONFIG.storageKey}:${location.hostname}`, 'original');
     if (['vi', 'en'].includes(savedLanguage)) {
@@ -1875,6 +2441,8 @@
   }
 
   const INPUT_CONFIG = {
+    enabledStorage: 'tm-input-helper-enabled',
+    offsetStorage: 'tm-input-helper-offset',
     fallbackQuickStorage: 'tm-native-en-fallback-quick',
     contextStorage: 'tm-native-en-use-context',
     defaultModeStorage: 'tm-native-en-default-mode',
@@ -1882,6 +2450,19 @@
     maxContextChars: 800,
     repositionDelayMs: 20,
   };
+
+  // Toggle bật/tắt hẳn nút ✨ EN cạnh ô nhập (popup/Cài đặt, mặc định bật).
+  function helperEnabled() {
+    return GM_getValue(INPUT_CONFIG.enabledStorage, true) !== false;
+  }
+
+  // Offset vị trí do user kéo nút ('tm-input-helper-offset' = {dx, dy}).
+  function helperOffset() {
+    const value = GM_getValue(INPUT_CONFIG.offsetStorage, null);
+    const dx = Number(value?.dx);
+    const dy = Number(value?.dy);
+    return Number.isFinite(dx) && Number.isFinite(dy) ? { dx, dy } : { dx: 0, dy: 0 };
+  }
 
   // Icon SVG inline: stroke 1.6-1.8, round cap/join, currentColor — không emoji, không asset ngoài.
   const NPT_INPUT_ICONS = {
@@ -1891,6 +2472,7 @@
     bolt: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2.5 4.5 13.5H11l-1 8L18.5 10.5H12z"/></svg>',
     chat: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>',
     gear: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.4M12 18.6V21M3 12h2.4M18.6 12H21M5.6 5.6l1.7 1.7M16.7 16.7l1.7 1.7M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7"/></svg>',
+    reset: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
   };
   const NPT_MAIN_LABEL = `${NPT_INPUT_ICONS.spark}<span>EN</span>`;
 
@@ -1909,6 +2491,10 @@
   let helperStatus = null;
   let busy = false;
   let savedSnapshot = null;
+  // Trạng thái kéo nút ✨ EN: đang kéo thì heartbeat không auto reposition,
+  // vừa kéo xong thì chặn click ảo lên nút main/arrow.
+  let helperDragging = false;
+  let helperSuppressClick = false;
   // Cache vị trí đã ghi — chỉ ghi lại style khi trôi > 0.5px (chống jitter từ heartbeat).
   let lastHelperLeft = null;
   let lastHelperTop = null;
@@ -2334,6 +2920,7 @@
   }
 
   function repositionHelper() {
+    if (helperDragging) return; // Đang kéo tay — không auto reposition đè lên.
     if (!helperPanel || !activeEditable || !activeEditable.isConnected) {
       helperPanel?.classList.remove('visible');
       lastHelperLeft = null;
@@ -2357,23 +2944,39 @@
     const offsetX = useAbsolute ? window.scrollX : 0;
     const offsetY = useAbsolute ? window.scrollY : 0;
 
-    const panelWidth = 82;
-    const panelHeight = 34;
+    // Đo thật từ DOM (fallback hằng số) vì nút co giãn theo nội dung.
+    const panelWidth = helperPanel.offsetWidth || 76;
+    const panelHeight = helperPanel.offsetHeight || 30;
 
-    // Ưu tiên nằm TRONG ô, góc phải-dưới, inset 8px.
-    let left = rect.right - panelWidth - 8;
-    let top = rect.bottom - panelHeight - 8;
+    // Nằm NGOÀI ô để không che chữ đang gõ: ưu tiên TRÊN ô sát phải, hết chỗ
+    // thì DƯỚI ô; cả hai đều bí mới chui vào TRONG ô (góc phải-trên, ít đè chữ nhất).
+    let left = rect.right - panelWidth;
+    let top = rect.top - panelHeight - 6;
+    let placement = 'above';
 
-    // Ô quá thấp hoặc nút tràn trái → đặt TRÊN ô, sát phải, cách 6px.
-    if (rect.height < 42 || left < rect.left + 4) {
-      left = rect.right - panelWidth;
-      top = rect.top - panelHeight - 6;
-      if (top < 0) top = rect.bottom + 6; // Không có chỗ phía trên → lật xuống dưới ô.
+    if (top < 8) {
+      top = rect.bottom + 6;
+      placement = 'below';
+    }
+    if (placement === 'below' && top + panelHeight > innerHeight - 8) {
+      left = rect.right - panelWidth - 8;
+      top = rect.top + 6;
+      placement = 'inside';
     }
 
     // Clamp trong viewport (toạ độ viewport), margin 8px.
     left = Math.max(8, Math.min(left, innerWidth - panelWidth - 8));
     top = Math.max(8, Math.min(top, innerHeight - panelHeight - 8));
+
+    // Cộng offset do user kéo nút ('tm-input-helper-offset') rồi clamp lại.
+    const dragOffset = helperOffset();
+    left += dragOffset.dx;
+    top += dragOffset.dy;
+    left = Math.max(8, Math.min(left, innerWidth - panelWidth - 8));
+    top = Math.max(8, Math.min(top, innerHeight - panelHeight - 8));
+
+    // Menu/status lật hướng theo vị trí nút (helper trên ô → menu xổ XUỐNG).
+    if (helperPanel.dataset.placement !== placement) helperPanel.dataset.placement = placement;
 
     const finalLeft = left + offsetX;
     const finalTop = top + offsetY;
@@ -2398,6 +3001,7 @@
   }
 
   function createInputHelper() {
+    if (helperHost) return; // Heartbeat có thể gọi lại khi bật/tắt toggle.
     helperHost = document.createElement('div');
     helperHost.id = 'tm-native-en-helper-host';
     helperHost.dataset.tmNoTranslate = 'true';
@@ -2415,112 +3019,125 @@
           pointer-events: none;
           font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
         }
+        /* Liquid glass: nền trắng mờ + blur mạnh + highlight bóng trên, chữ tối. */
         .helper {
           position: fixed;
           display: flex;
-          width: 82px;
-          height: 32px;
+          box-sizing: border-box;
+          height: 30px;
+          border: 1px solid rgba(255,255,255,.6);
+          border-radius: 11px;
+          background: linear-gradient(150deg, rgba(255,255,255,.58), rgba(255,255,255,.2));
+          box-shadow: 0 8px 22px rgba(15,17,23,.16), inset 0 1px 0 rgba(255,255,255,.9);
+          color: #17181c;
+          backdrop-filter: blur(20px) saturate(1.7) brightness(1.1);
           opacity: 0;
           visibility: hidden;
-          transform: translateY(4px);
-          transition: opacity .22s cubic-bezier(.32,.72,0,1), transform .22s cubic-bezier(.32,.72,0,1), visibility .22s;
+          transform: translateY(3px);
+          transition: opacity .2s cubic-bezier(.32,.72,0,1), transform .2s cubic-bezier(.32,.72,0,1), visibility .2s;
           pointer-events: auto;
-          filter: drop-shadow(0 8px 20px rgba(79,102,241,.35));
+          touch-action: none;
+          user-select: none;
         }
         .helper.visible {
           opacity: 1;
           visibility: visible;
           transform: translateY(0);
         }
+        .helper.dragging { cursor: grabbing; transition: none; }
         button {
           all: unset;
           box-sizing: border-box;
           cursor: pointer;
           user-select: none;
-          background: linear-gradient(135deg, #6366f1, #3b82f6);
-          box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
-          color: white;
-          border: 1px solid rgba(255,255,255,.18);
-          font: 720 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-          transition: filter .2s cubic-bezier(.32,.72,0,1), transform .18s cubic-bezier(.32,.72,0,1);
+          color: rgba(23,24,28,.8);
+          font: 650 11.5px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          letter-spacing: .02em;
+          transition: background .18s cubic-bezier(.32,.72,0,1), color .18s, transform .14s cubic-bezier(.32,.72,0,1);
         }
-        button:disabled { cursor: progress; opacity: .75; }
+        button:disabled { cursor: progress; opacity: .55; }
         .main {
-          flex: 1;
           display: flex;
           align-items: center;
           justify-content: center;
-          gap: 4px;
+          gap: 5px;
+          padding: 0 10px 0 9px;
           border-radius: 10px 0 0 10px;
         }
+        .main > svg { color: rgba(23,24,28,.55); }
         .arrow {
-          width: 25px;
+          width: 22px;
           display: grid;
           place-items: center;
-          border-left: 1px solid rgba(255,255,255,.22);
+          border-left: 1px solid rgba(15,17,23,.1);
           border-radius: 0 10px 10px 0;
+          color: rgba(23,24,28,.5);
         }
-        button:hover:not(:disabled) { filter: brightness(1.12); }
-        button:active:not(:disabled) { transform: scale(.96); }
+        button:hover:not(:disabled) { background: rgba(255,255,255,.5); color: #17181c; }
+        button:hover:not(:disabled) > svg { color: #17181c; }
+        button:active:not(:disabled) { transform: scale(.94); }
         .menu {
           position: absolute;
           right: 0;
-          bottom: 38px;
-          width: 236px;
-          padding: 6px;
-          border: 1px solid rgba(255,255,255,.09);
-          border-radius: 14px;
-          background: rgba(10, 12, 16, .97);
-          color: white;
-          box-shadow: 0 18px 45px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05);
-          backdrop-filter: blur(16px);
+          bottom: 36px;
+          width: 232px;
+          padding: 5px;
+          border: 1px solid rgba(255,255,255,.6);
+          border-radius: 15px;
+          background: linear-gradient(160deg, rgba(255,255,255,.68), rgba(244,245,249,.42));
+          color: #17181c;
+          box-shadow: 0 18px 44px rgba(15,17,23,.24), inset 0 1px 0 rgba(255,255,255,.95), inset 0 -10px 18px rgba(255,255,255,.12);
+          backdrop-filter: blur(24px) saturate(1.8) brightness(1.1);
         }
+        .helper[data-placement="above"] .menu { top: 36px; bottom: auto; }
         .menu[hidden] { display: none; }
         .item {
           display: flex;
           align-items: flex-start;
           gap: 8px;
           width: 100%;
-          padding: 9px 10px;
+          padding: 8px 9px;
           border: 0;
           border-radius: 9px;
           background: transparent;
-          color: white;
+          color: rgba(23,24,28,.86);
           text-align: left;
-          font: 620 12px/1.25 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-          transition: background .2s cubic-bezier(.32,.72,0,1);
+          font: 600 12px/1.3 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          transition: background .18s cubic-bezier(.32,.72,0,1);
         }
-        .item > svg { flex: none; margin-top: 1px; }
+        .item > svg { flex: none; margin-top: 1px; color: rgba(23,24,28,.5); }
         .item-text { flex: 1; }
-        .item:hover { background: rgba(255,255,255,.08); }
+        .item:hover { background: rgba(255,255,255,.5); }
         .hint {
           display: block;
-          margin-top: 3px;
-          color: rgba(255,255,255,.5);
-          font: 500 10px/1.3 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          margin-top: 2px;
+          color: rgba(23,24,28,.45);
+          font: 500 10.5px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         }
-        .divider { height: 1px; margin: 5px 4px; background: rgba(255,255,255,.08); }
+        .divider { height: 1px; margin: 4px 3px; background: rgba(15,17,23,.08); }
         .status {
           position: absolute;
           right: 0;
-          bottom: 38px;
+          bottom: 36px;
           width: max-content;
           max-width: 300px;
-          padding: 8px 10px;
-          border: 1px solid rgba(255,255,255,.09);
-          border-radius: 10px;
+          padding: 7px 10px;
+          border: 1px solid rgba(255,255,255,.6);
+          border-radius: 12px;
           opacity: 0;
           visibility: hidden;
-          background: rgba(10,12,16,.96);
-          color: rgba(255,255,255,.9);
-          box-shadow: 0 12px 30px rgba(0,0,0,.4);
+          background: linear-gradient(160deg, rgba(255,255,255,.72), rgba(244,245,249,.48));
+          color: rgba(23,24,28,.88);
+          box-shadow: 0 12px 30px rgba(15,17,23,.2), inset 0 1px 0 rgba(255,255,255,.95);
+          backdrop-filter: blur(22px) saturate(1.7) brightness(1.1);
           font: 600 11px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
           pointer-events: none;
           white-space: normal;
-          transition: opacity .2s cubic-bezier(.32,.72,0,1), visibility .2s;
+          transition: opacity .18s cubic-bezier(.32,.72,0,1), visibility .18s;
         }
+        .helper[data-placement="above"] .status { top: 36px; bottom: auto; }
         .helper.show-status .status { opacity: 1; visibility: visible; }
-        .status[data-error="true"] { color: #fca5a5; }
+        .status[data-error="true"] { color: #b3402f; }
       </style>
       <div class="helper" data-tm-no-translate>
         <button type="button" class="main" title="Dịch sang tiếng Anh tự nhiên · Alt+Shift+E">${NPT_MAIN_LABEL}</button>
@@ -2541,6 +3158,7 @@
           <div class="divider"></div>
           <button type="button" class="item" data-action="context">${NPT_INPUT_ICONS.chat}<span class="item-text">✓ Dùng ngữ cảnh xung quanh</span></button>
           <button type="button" class="item" data-action="settings">${NPT_INPUT_ICONS.gear}<span class="item-text">Cài đặt API</span></button>
+          <button type="button" class="item" data-action="reset-pos">${NPT_INPUT_ICONS.reset}<span class="item-text">Về vị trí mặc định<span class="hint">Nút này kéo thả được — đặt lại vị trí tự động</span></span></button>
         </div>
         <div class="status" aria-live="polite"></div>
       </div>
@@ -2578,10 +3196,82 @@
       else if (action === 'quick') runInputTranslation('quick');
       else if (action === 'settings') configureOpenAI();
       else if (action === 'context') toggleContextSetting();
+      else if (action === 'reset-pos') {
+        GM_setValue(INPUT_CONFIG.offsetStorage, null);
+        closeMenu();
+        repositionHelper();
+        showToast('Đã đưa nút về vị trí mặc định');
+      }
     });
+
+    /* ----- Kéo nút tới vị trí mong muốn (offset lưu ở INPUT_CONFIG.offsetStorage).
+     * Chỉ setPointerCapture SAU khi quá ngưỡng 6px — nếu capture ngay pointerdown
+     * thì click thường bị retarget khỏi nút main/arrow. ----- */
+    let drag = null;
+
+    helperPanel.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      if (event.target.closest('.menu')) return; // Kéo từ trong menu thì bỏ qua.
+      drag = {
+        startX: event.clientX,
+        startY: event.clientY,
+        baseLeft: parseFloat(helperPanel.style.left) || 0,
+        baseTop: parseFloat(helperPanel.style.top) || 0,
+        moved: false,
+      };
+    });
+
+    helperPanel.addEventListener('pointermove', event => {
+      if (!drag) return;
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        helperDragging = true;
+        helperPanel.classList.add('dragging');
+        closeMenu();
+        try { helperPanel.setPointerCapture(event.pointerId); } catch (_) { /* noop */ }
+      }
+      helperPanel.style.left = `${Math.round(drag.baseLeft + dx)}px`;
+      helperPanel.style.top = `${Math.round(drag.baseTop + dy)}px`;
+      // Reset cache vị trí để repositionHelper không bỏ qua lần ghi tiếp theo.
+      lastHelperLeft = null;
+      lastHelperTop = null;
+    });
+
+    const endDrag = event => {
+      if (!drag) return;
+      const moved = drag.moved;
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      drag = null;
+      if (!moved) return; // Click thường: để nút main/arrow tự xử lý.
+      helperDragging = false;
+      helperSuppressClick = true;
+      helperPanel.classList.remove('dragging');
+      // Offset mới = offset cũ + quãng kéo (vị trí auto luôn tính lại mỗi heartbeat).
+      const prev = helperOffset();
+      GM_setValue(INPUT_CONFIG.offsetStorage, {
+        dx: Math.round(prev.dx + dx),
+        dy: Math.round(prev.dy + dy),
+      });
+      repositionHelper();
+    };
+    helperPanel.addEventListener('pointerup', endDrag);
+    helperPanel.addEventListener('pointercancel', endDrag);
+
+    // Vừa kéo xong thì nuốt click ảo (không kích hoạt nút main/arrow).
+    helperPanel.addEventListener('click', event => {
+      if (!helperSuppressClick) return;
+      event.stopPropagation();
+      event.preventDefault();
+      helperSuppressClick = false;
+    }, true);
   }
 
   function activateEditable(editable) {
+    if (!helperEnabled()) return; // Toggle tắt → không bám nút lên ô nhập/thanh tìm kiếm.
     if (!editable || !editable.isConnected) return;
     activeEditable = editable;
     savedSnapshot = null;
@@ -2625,6 +3315,7 @@
 
     document.addEventListener('keydown', event => {
       if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
+      if (!helperEnabled()) return; // Tắt nút → tắt luôn phím tắt cho gọn.
       const editable = findEditableFromEvent(event) || getDeepActiveEditable();
       if (!editable) return;
 
@@ -2653,6 +3344,24 @@
 
     // Heartbeat fixes editors that swallow focus events, replace their DOM, or live in closed Shadow DOM.
     setInterval(() => {
+      // Toggle bật/tắt lúc đang chạy (không cần reload): tắt → gỡ hẳn UI, bật → tạo lại.
+      if (!helperEnabled()) {
+        if (helperHost) {
+          helperHost.remove();
+          helperHost = null;
+          helperRoot = null;
+          helperPanel = null;
+          menuElement = null;
+          mainButton = null;
+          arrowButton = null;
+          helperStatus = null;
+          activeEditable = null;
+          savedSnapshot = null;
+        }
+        return;
+      }
+      if (!helperHost) createInputHelper();
+
       if (helperHost && !helperHost.isConnected && document.documentElement) {
         document.documentElement.appendChild(helperHost);
       }
@@ -2673,7 +3382,7 @@
   function initInputTranslator() {
     if (!document.documentElement || document.getElementById('tm-native-en-helper-host')) return;
     if (isSiteBlacklisted()) return; // Site bị chặn: không tạo nút ✨ EN.
-    createInputHelper();
+    if (helperEnabled()) createInputHelper(); // Tắt toggle → heartbeat tạo lại khi bật lại.
     installInputListeners();
   }
 

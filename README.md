@@ -1,6 +1,7 @@
-# Native Page Translator VI / EN — Extension v4.1
+# Native Page Translator VI / EN — Extension v4.2
 
 Dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh tự nhiên.
+Bản 4.2 thêm bộ tuỳ chọn **dịch trang nâng cao**: chế độ song ngữ, văn phong dịch, dịch lướt theo khung nhìn, nội dung động & SPA...
 Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini · OpenAI-compatible) với xoay vòng key tự động.
 
 ## Cài đặt / nâng cấp
@@ -47,6 +48,21 @@ Khi API riêng lỗi hoặc đã tắt toggle, chuỗi **fallback miễn phí kh
 
 Chặn dịch trên từng site tại mục **"Không dịch trên các site"** trong Cài đặt — mỗi dòng 1 domain, khớp cả sub-domain (ví dụ `reddit.com` chặn luôn `old.reddit.com`).
 
+## Dịch trang nâng cao (v4.2)
+
+Bộ tuỳ chọn tinh chỉnh cách dịch cả trang — chỉnh nhanh trong popup (5 control) hoặc đầy đủ trong trang **Cài đặt** (5 mục chọn + 5 toggle). Mọi thay đổi áp dụng cho lần dịch sau, không cần cài lại.
+
+- **Chế độ hiển thị** — chỉ bản dịch (thay thế, mặc định) hoặc **song ngữ**: bản dịch chèn ngay dưới đoạn gốc, làm mờ nhẹ để phân biệt, tự gỡ khi về bản gốc. Đổi qua lại giữa hai chế độ không tốn dịch lại.
+- **Văn phong dịch** — Tự nhiên / Trò chuyện thân mật / Email công việc / Chat game / Văn phong Gen Z / Lịch sự, trang trọng. Chỉ áp dụng với provider LLM (Gemini, OpenAI-compatible); DeepL và fallback miễn phí (Google/MyMemory) không đọc instruction nên **bỏ qua** các tuỳ chọn này.
+- **Tiếng Anh Mỹ / Anh** — chọn spelling, từ vựng và thành ngữ Mỹ hay Anh; chỉ ảnh hưởng khi đích dịch là tiếng Anh.
+- **Dịch tự nhiên vs sát chữ** — Tự nhiên giữ văn phong bản địa (mặc định); Sát chữ bám cấu trúc câu gốc, ưu tiên độ trung thực hơn độ mượt.
+- **Sửa ngữ pháp sau khi dịch** — ép kết quả hoàn chỉnh về ngữ pháp/chính tả, tự lặng sửa cả lỗi có sẵn trong câu gốc.
+- **Giữ nguyên tên riêng** — tên người, thương hiệu, địa danh, username không bị dịch hay dịch âm (mặc định bật).
+- **Không dịch code** — bỏ qua `code`/`pre`/`kbd`/`samp`, editor (Monaco, CodeMirror), block có class `hljs`/`prettyprint`/`prism`/`code-block`...; tôn trọng `translate="no"` và `.notranslate` (mặc định bật).
+- **Không dịch username** — nhận diện heuristic: class chứa username/nickname/screen-name, handle `@abc`, `u/abc` (mặc định bật; có thể bổ sung selector theo site).
+- **Nội dung động & SPA** — MutationObserver dịch nội dung tải động, kèm hook history (`pushState`/`replaceState`/`popstate`) cho SPA như Discord/Reddit/Facebook; bài mới tự dịch khi cuộn (mặc định bật).
+- **Dịch lướt theo khung nhìn (lazy)** — trang dài chỉ dịch phần sắp hiển thị (IntersectionObserver, rootMargin 250px), cuộn tới đâu dịch tới đó — tiết kiệm quota. Tắt được trong Cài đặt (mặc định bật).
+
 ## Dịch đoạn bôi đen
 
 Bôi đen một đoạn chữ trên trang → hiện **nút nổi** cạnh vùng chọn → bấm để dịch đoạn đó qua **provider riêng** (DeepL/Gemini/OpenAI, theo thứ tự ưu tiên). Kết quả hiện trong panel nhỏ kèm **nút sao chép**. Tắt được bằng toggle **"Dịch đoạn bôi đen"** trong Cài đặt (mặc định bật).
@@ -55,6 +71,8 @@ Bôi đen một đoạn chữ trên trang → hiện **nút nổi** cạnh vùng
 
 - `✨ EN` / `Alt+Shift+E`: dùng API riêng (DeepL/Gemini/OpenAI), có fallback miễn phí nếu bật.
 - `Alt+Shift+G`: dịch miễn phí trực tiếp.
+- Nút nằm **ngoài ô nhập** (trên/dưới góc phải ô) nên không che chữ đang gõ; chỉ chui vào trong ô khi cả hai phía ngoài đều không có chỗ. Nút **kéo thả được** để đổi vị trí.
+- Không muốn nút bám cạnh ô nhập/thanh tìm kiếm: tắt toggle **"Hiện nút ✨ EN cạnh ô nhập liệu"** trong popup hoặc Cài đặt — áp dụng ngay, không cần tải lại trang.
 
 ### Phong cách dịch bản địa (v4.1)
 
@@ -79,6 +97,13 @@ Giới hạn hiện tại:
 - Chưa vẽ chữ đè lên ảnh (không inpainting) — kết quả chỉ hiện dạng text trong panel.
 - Ảnh quá lớn hoặc chữ quá nhỏ/nét kém có thể đọc sai.
 
+## Icon nổi trên trang (FAB)
+
+- Icon kính trong suốt (liquid glass) ở góc màn hình — **kéo thả** tới vị trí bất kỳ, extension tự nhớ vị trí (storage key `tm-fab-position`).
+- **Click trái**: bật/tắt dịch nhanh (bản gốc ↔ ngôn ngữ gần nhất dùng, mặc định VI).
+- **Chuột phải**: mở menu chọn VI / EN / Gốc kèm trạng thái dịch.
+- Nút ✨ EN cạnh ô nhập cũng **kéo thả được** (offset lưu ở `tm-input-helper-offset`); menu mũi tên → **"Về vị trí mặc định"** để reset.
+
 ## Phím tắt dịch trang
 
 - `Alt+V`: dịch trang sang tiếng Việt.
@@ -98,6 +123,23 @@ Cấu trúc:
 - `content.js` — dịch trang + nút ✨ EN trên ô nhập.
 - `options.html` / `options.js` — trang Cài đặt (quản lý key, quota DeepL, blacklist site).
 - `popup.html` / `popup.js` — tác vụ nhanh.
+
+Từ v4.2, cấu trúc file giữ nguyên — chỉ mở rộng contract message: `content.js` gửi `providerTranslate` kèm `pageOptions` `{ style, dialect, mode, grammarFix, keepProperNouns }`; `background.js` sanitize (giá trị sai về mặc định) rồi truyền vào `providers.js`, nơi `buildBatchInstructions` ghép các rule thành system instruction. DeepL là engine dịch thuần nên bỏ qua `pageOptions`.
+
+Storage keys mới trên `chrome.storage.local`:
+
+| Key | Giá trị | Mặc định |
+|---|---|---|
+| `tm-page-display-mode` | `'replace'` \| `'bilingual'` | `'replace'` |
+| `tm-page-style` | `'natural'` \| `'casual'` \| `'work-email'` \| `'game-chat'` \| `'genz'` \| `'formal'` | `'natural'` |
+| `tm-page-dialect` | `'us'` \| `'uk'` | `'us'` |
+| `tm-page-translate-mode` | `'natural'` \| `'literal'` | `'natural'` |
+| `tm-page-grammar-fix` | boolean | `false` |
+| `tm-page-skip-code` | boolean | `true` |
+| `tm-page-skip-usernames` | boolean | `true` |
+| `tm-page-keep-proper-nouns` | boolean | `true` |
+| `tm-page-dynamic-translate` | boolean | `true` |
+| `tm-page-lazy-translate` | boolean | `true` |
 
 ## Khắc phục sự cố
 
