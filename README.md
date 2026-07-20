@@ -40,6 +40,9 @@ Mỗi provider thêm được **nhiều key**. Khi dịch:
 
 - **Content script không bao giờ giữ API key**: script tiêm vào trang chỉ đọc đúng whitelist các key cài đặt; toàn bộ request ký key do service worker (background) thực hiện và chỉ gửi tới đúng host của provider (`isRemoteAllowed` chặn mọi origin lạ, luôn `credentials: 'omit'`).
 - **UI của extension dùng closed Shadow DOM** — JS của trang web không đọc/sửa được panel, nút bấm; các handler kích hoạt dịch đều kiểm tra `event.isTrusted` (chặn sự kiện giả do trang tự phát).
+- **Message bridge có kiểm soát**: background chỉ phục vụ sender nội bộ, lệnh quản trị (quota, mở cài đặt) chỉ extension page gọi được; lỗi provider trả về content không chứa mảnh credential; OCR ảnh chỉ gửi kết quả về đúng frame đã khởi tạo.
+- **Chống lạm dụng quota**: dịch động có budget ký tự/phút/tab; timeout phía content sẽ hủy luôn request đang chạy ở background; key rotation reserve nguyên tử tránh dồn request vào một key; cache dịch có giới hạn entry; tab ẩn không polling.
+- **Custom endpoint chỉ chấp nhận HTTPS** (trừ localhost) — không gửi Bearer key/nội dung qua HTTP plaintext.
 - **Khi dùng fallback miễn phí** (không có API key riêng): nội dung trang được gửi tới endpoint không chính thức của Google (`translate.googleapis.com` / `translate.google.com`) và MyMemory — đây là bản chất của mọi dịch vụ dịch miễn phí. Muốn kiểm soát dữ liệu hoàn toàn, hãy thêm API key riêng (DeepL/Gemini/OpenAI) trong Cài đặt.
 - **Dịch ảnh**: ảnh được tải về background và gửi tới Gemini API (kèm base64) để OCR — không qua bên thứ tư nào khác.
 - **Key DeepL Free seed sẵn là key DÙNG CHUNG** cho mọi ngưởi cài extension (nằm trong mã nguồn public): đủ để dùng thử, nhưng quota chia sẻ và ai cũng lấy được — khuyến nghị thêm key riêng trong Cài đặt cho ổn định và riêng tư.

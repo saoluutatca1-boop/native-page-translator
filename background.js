@@ -31,6 +31,22 @@ const DEFAULT_DEEPL_KEY = '16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx';
 // Trạng thái cooldown/con trỏ xoay vòng key, sống trong bộ nhớ service worker.
 const keyState = createKeyState();
 
+// Registry các providerTranslate đang chạy: requestId -> AbortController (NPT-007).
+const inflightRequests = new Map();
+
+// Không đưa bất kỳ mảnh credential nào (kể cả dạng mask [abc…wxyz]) về content script.
+function sanitizeProviderError(error) {
+  return String(error?.message || error || 'Provider lỗi')
+    .replace(/\[[^\]]*…[^\]]*\]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// Chỉ extension page (popup/options) mới được gọi một số lệnh quản trị (NPT-017).
+function isExtensionPageSender(sender) {
+  return typeof sender?.url === 'string' && sender.url.startsWith(chrome.runtime.getURL(''));
+}
+
 const LEGACY_KEYS = {
   apiUrl: 'tm-native-en-api-url',
   apiKey: 'tm-native-en-openai-key',
@@ -44,6 +60,12 @@ function normalizeEndpoint(value) {
   const url = new URL(raw);
   if (!['http:', 'https:'].includes(url.protocol)) {
     throw new Error('API URL phải dùng http hoặc https');
+  }
+  // Custom endpoint chỉ cho HTTPS: HTTP làm lộ Bearer key + nội dung dạng plaintext.
+  // Ngoại lệ loopback (self-host/dev nội bộ).
+  const isLoopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.hostname.endsWith('.localhost');
+  if (url.protocol === 'http:' && !isLoopback) {
+    throw new Error('Custom endpoint chỉ chấp nhận HTTPS (trừ localhost)');
   }
   return url;
 }
@@ -115,6 +137,14 @@ async function rawFetch(payload) {
   const timeout = Math.max(1000, Math.min(Number(payload?.timeout) || 30000, 70000));
   const timer = setTimeout(() => controller.abort(), timeout);
 
+  // Abort từ bên ngoài (content timeout/navigation gửi cancelProviderTranslate) —
+  // chỉ dùng nội bộ, message từ content không chèn được signal (JSON clone).
+  const externalSignal = payload?.signal;
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
   try {
     const response = await fetch(url.href, {
       method,
@@ -126,7 +156,27 @@ async function rawFetch(payload) {
       redirect: 'follow',
     });
 
-    const responseText = await response.text();
+    // Đọc response theo chunk có cap — endpoint lạ có thể stream payload khổng lồ
+    // nhằm DoS service worker nếu buffer toàn bộ bằng response.text().
+    let responseText = '';
+    const reader = response.body?.getReader?.();
+    if (reader) {
+      const decoder = new TextDecoder();
+      let received = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        if (received > MAX_RESPONSE_TEXT_BYTES) {
+          await reader.cancel().catch(() => {});
+          throw new Error(`Phản hồi quá lớn (>${Math.round(MAX_RESPONSE_TEXT_BYTES / 1048576)}MB)`);
+        }
+        responseText += decoder.decode(value, { stream: true });
+      }
+      responseText += decoder.decode();
+    } else {
+      responseText = await response.text();
+    }
     return {
       ok: true,
       status: response.status,
@@ -146,13 +196,15 @@ async function rawFetch(payload) {
 }
 
 // Adapter fetchText dùng chung cho translateWithRotation/translateBatchWithRotation.
-async function providerFetchText(request) {
+// signal: AbortSignal nội bộ để hủy request khi content timeout (NPT-007).
+async function providerFetchText(request, signal) {
   const response = await rawFetch({
     method: request.method || 'POST',
     url: request.url,
     headers: request.headers,
     data: request.body,
     timeout: 60000,
+    signal,
   });
   if (!response.ok && response.networkError) {
     return { status: 0, bodyText: '', networkError: response.networkError };
@@ -177,6 +229,8 @@ async function nativeTranslate(payload) {
 // Giới hạn an toàn cho dịch batch (dịch cả trang).
 const MAX_BATCH_ITEMS = 64;
 const MAX_BATCH_CHARS = 20000;
+// Cap đọc response text (providers) — chống stream payload khổng lồ DoS worker.
+const MAX_RESPONSE_TEXT_BYTES = 4 * 1024 * 1024;
 
 async function providerTranslate(payload) {
   const texts = payload?.texts;
@@ -198,24 +252,35 @@ async function providerTranslate(payload) {
   }
 
   const config = await ensureConfig();
-  const result = await translateBatchWithRotation({
-    config,
-    texts: list,
-    sourceLanguage: payload?.sourceLanguage,
-    targetLanguage,
-    // Văn phong dịch trang (v4.2): style/dialect/mode/grammar/proper-nouns.
-    // normalizePageOptions ép giá trị rác về default; DeepL tự bỏ qua ở tầng providers.
-    pageOptions: normalizePageOptions(payload?.pageOptions),
-    keyState,
-    fetchText: providerFetchText,
-  });
 
-  return {
-    ok: true,
-    translations: result.translations,
-    provider: result.provider,
-    providerLabel: result.providerLabel,
-  };
+  // Đăng ký AbortController theo requestId: content gửi 'cancelProviderTranslate'
+  // khi timeout phía nó hết hạn → request trả phí không chạy tiếp ngầm (NPT-007).
+  const requestId = String(payload?.requestId || '');
+  const controller = new AbortController();
+  if (requestId) inflightRequests.set(requestId, controller);
+
+  try {
+    const result = await translateBatchWithRotation({
+      config,
+      texts: list,
+      sourceLanguage: payload?.sourceLanguage,
+      targetLanguage,
+      // Văn phong dịch trang (v4.2): style/dialect/mode/grammar/proper-nouns.
+      // normalizePageOptions ép giá trị rác về default; DeepL tự bỏ qua ở tầng providers.
+      pageOptions: normalizePageOptions(payload?.pageOptions),
+      keyState,
+      fetchText: (request) => providerFetchText(request, controller.signal),
+    });
+
+    return {
+      ok: true,
+      translations: result.translations,
+      provider: result.provider,
+      providerLabel: result.providerLabel,
+    };
+  } finally {
+    if (requestId) inflightRequests.delete(requestId);
+  }
 }
 
 async function providerStatus() {
@@ -328,9 +393,33 @@ async function fetchImageAsBase64(srcUrl) {
     });
     if (!response.ok) throw new Error(`Không tải được ảnh (HTTP ${response.status})`);
     const mimeType = (response.headers.get('content-type') || '').split(';')[0].trim() || 'image/png';
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > IMAGE_MAX_BYTES) throw new Error('Ảnh quá lớn (tối đa 8MB)');
-    return { mimeType, imageBase64: arrayBufferToBase64(buffer) };
+
+    // Đọc theo chunk và abort NGAY khi vượt 8MB — không buffer toàn bộ rồi mới kiểm tra.
+    const reader = response.body?.getReader?.();
+    if (!reader) {
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > IMAGE_MAX_BYTES) throw new Error('Ảnh quá lớn (tối đa 8MB)');
+      return { mimeType, imageBase64: arrayBufferToBase64(buffer) };
+    }
+    const chunks = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > IMAGE_MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error('Ảnh quá lớn (tối đa 8MB)');
+      }
+      chunks.push(value);
+    }
+    const merged = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { mimeType, imageBase64: arrayBufferToBase64(merged.buffer) };
   } catch (error) {
     if (error?.name === 'AbortError') throw new Error('Tải ảnh quá chậm (timeout 30s)');
     throw error;
@@ -356,7 +445,10 @@ async function handleImageTranslate(info, tab) {
   if (!srcUrl || !Number.isInteger(tabId)) return;
 
   // Content script có thể không có trên trang (chrome://...) -> nuốt lỗi gửi.
-  const send = (message) => chrome.tabs.sendMessage(tabId, message).catch(() => {});
+  // Gửi kèm frameId: kết quả OCR (kể cả ảnh base64) chỉ về đúng frame đã khởi tạo,
+  // không lọt sang top frame/cross-origin iframe khác.
+  const frameOptions = Number.isInteger(info?.frameId) ? { frameId: info.frameId } : undefined;
+  const send = (message) => chrome.tabs.sendMessage(tabId, message, frameOptions).catch(() => {});
 
   // permissions.request CHỈ chạy được trong user gesture: phải là await ĐẦU TIÊN
   // của handler (contextMenus.onClicked là gesture). Bất kỳ await nào đứng trước
@@ -435,15 +527,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'nativeTranslate') {
     nativeTranslate(message.payload).then(sendResponse).catch(error => {
-      sendResponse({ ok: false, error: error?.message || String(error) });
+      sendResponse({ ok: false, error: sanitizeProviderError(error) });
     });
     return true;
   }
 
   if (message?.type === 'providerTranslate') {
     providerTranslate(message.payload).then(sendResponse).catch(error => {
-      sendResponse({ ok: false, error: error?.message || String(error) });
+      sendResponse({ ok: false, error: sanitizeProviderError(error) });
     });
+    return true;
+  }
+
+  // Content timeout → hủy request trả phí đang chạy ngầm (NPT-007).
+  if (message?.type === 'cancelProviderTranslate') {
+    const requestId = String(message.requestId || '');
+    inflightRequests.get(requestId)?.abort();
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -455,13 +555,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'deeplUsage') {
+    // Quota/key metadata: chỉ extension page mới được đọc (NPT-017).
+    if (!isExtensionPageSender(sender)) {
+      sendResponse({ ok: false, error: 'Chỉ trang extension mới dùng lệnh này' });
+      return false;
+    }
     deeplUsage().then(sendResponse).catch(error => {
-      sendResponse({ ok: false, error: error?.message || String(error) });
+      sendResponse({ ok: false, error: sanitizeProviderError(error) });
     });
     return true;
   }
 
   if (message?.type === 'openOptions') {
+    // Mở trang cài đặt: chỉ extension page được gọi (NPT-017).
+    if (!isExtensionPageSender(sender)) {
+      sendResponse({ ok: false, error: 'Chỉ trang extension mới dùng lệnh này' });
+      return false;
+    }
     chrome.runtime.openOptionsPage().then(() => sendResponse({ ok: true })).catch(error => {
       sendResponse({ ok: false, error: error?.message || String(error) });
     });

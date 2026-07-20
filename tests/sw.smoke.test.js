@@ -46,6 +46,7 @@ const chromeStub = {
     onMessage: { addListener(fn) { messageListeners.push(fn); } },
     onInstalled: { addListener(fn) { installedListeners.push(fn); } },
     onStartup: { addListener() {} },
+    getURL: (p = '') => `chrome-extension://npt-smoke/${p}`,
     async openOptionsPage() {},
   },
   contextMenus: {
@@ -154,11 +155,11 @@ async function main() {
   assert.equal(cfg.providers.deepl.keys[0].key, '16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx');
   assert.equal(cfg.tone, 'natural');
 
-  // Helper bắn message như content/popup
-  function sendMessage(message) {
+  // Helper bắn message như content/popup — sender mặc định kiểu content script.
+  function sendMessage(message, sender = { tab: { id: 1 } }) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('message timeout')), 3000);
-      messageListeners[0](message, { tab: { id: 1 } }, (response) => {
+      messageListeners[0](message, sender, (response) => {
         clearTimeout(timer);
         resolve(response);
       });
@@ -282,9 +283,13 @@ async function main() {
     assert.match(visionBody.systemInstruction.parts[0].text, /Vietnamese/);
   }
 
-  // 9. deeplUsage -> quota của key DeepL seed sẵn
+  // 9. deeplUsage -> quota của key DeepL seed sẵn (chỉ extension page mới gọi được, NPT-017)
   {
-    const usage = await sendMessage({ type: 'deeplUsage' });
+    // Negative: sender kiểu content script (không có url extension page) phải bị chặn.
+    const rejected = await sendMessage({ type: 'deeplUsage' });
+    assert.equal(rejected.ok, false);
+
+    const usage = await sendMessage({ type: 'deeplUsage' }, { url: 'chrome-extension://npt-smoke/options.html' });
     assert.equal(usage.ok, true, JSON.stringify(usage));
     assert.equal(usage.usages.length, 1);
     assert.equal(usage.usages[0].count, 12345);
@@ -297,6 +302,12 @@ async function main() {
     assert.ok(usageCall.url.startsWith('https://api-free.deepl.com/'));
     assert.equal(usageCall.options.method, 'GET');
     assert.equal(usageCall.options.headers.Authorization, 'DeepL-Auth-Key 16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx');
+  }
+
+  // 10. cancelProviderTranslate (NPT-007): content gửi requestId → background abort, trả ok
+  {
+    const cancel = await sendMessage({ type: 'cancelProviderTranslate', requestId: 'smoke-req-1' });
+    assert.equal(cancel.ok, true, JSON.stringify(cancel));
   }
 
   console.log('SW smoke test PASS ✔ (background khởi động OK, seed key OK, nativeTranslate OK, providerTranslate OK, proxyFetch OK, dịch ảnh OK, deeplUsage OK)');

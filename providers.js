@@ -704,6 +704,10 @@
         const cooldownUntil = state.cooldowns.get(cdKey) || 0;
         if (cooldownUntil > currentTime()) continue;
 
+        // Reserve NGAY khi chọn key (trước await): các caller song song đọc pointer
+        // sau thởi điểm này sẽ lấy key kế tiếp — tránh dồn request vào 1 key.
+        if (keyPool.length > 1) state.pointers.set(providerId, (index + 1) % keyPool.length);
+
         let verdict;
         try {
           ({ verdict } = await attempt({ providerId, providerConfig, apiKey: entry.key }));

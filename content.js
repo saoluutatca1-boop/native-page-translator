@@ -22,6 +22,7 @@
   const STORAGE_WHITELIST = [
     'tm-site-blacklist',
     'tm-page-use-provider',
+    'tm-page-free-fallback',
     'tm-page-display-mode',
     'tm-page-style',
     'tm-page-dialect',
@@ -69,12 +70,23 @@
     }
   });
 
+  // about:blank/srcdoc có hostname rỗng → kế thừa origin của chuỗi ancestor (NPT-008):
+  // blacklist của parent áp luôn cho frame special URL.
+  function effectiveHostname() {
+    if (location.hostname) return location.hostname;
+    try {
+      const ancestors = location.ancestorOrigins;
+      if (ancestors?.length) return new URL(ancestors[ancestors.length - 1]).hostname;
+    } catch (_) { /* bỏ qua */ }
+    return '';
+  }
+
   // Site trong blacklist ('tm-site-blacklist' = mảng domain) → tắt mọi tính năng.
   // Khớp khi hostname === domain hoặc hostname kết thúc bằng '.domain'.
   function isSiteBlacklisted() {
     const list = GM_getValue('tm-site-blacklist', []);
     if (!Array.isArray(list)) return false;
-    const hostname = String(location.hostname || '').toLowerCase();
+    const hostname = effectiveHostname().toLowerCase();
     if (!hostname) return false;
     return list.some(entry => {
       const domain = String(entry || '').trim().toLowerCase();
@@ -164,6 +176,14 @@
     const providerCooldown = new Map();
     // Module font đặc biệt (fancy-text.js nạp trước content.js trong manifest).
     const FANCY = globalThis.NPT_FANCY || null;
+
+    // LRU đơn giản theo số entry (NPT-018): Map giữ thứ tự chèn, đầy thì xoá cũ nhất —
+    // SPA sống lâu không bị phình bộ nhớ vô hạn.
+    const CACHE_MAX_ENTRIES = 5000;
+    function cacheSet(key, value) {
+      if (cache.size >= CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value);
+      cache.set(key, value);
+    }
 
     // Tuỳ chọn style trang (contract tm-page-*). Hàm này nằm TRƯỚC page IIFE nên tự đọc
     // GM_getValue trực tiếp — duplicate nhỏ defaults ở đây là cố ý.
@@ -332,23 +352,34 @@
       return decodeEntities(output);
     }
 
-    // Gọi API riêng của user (DeepL/Gemini) qua background. Trả về mảng bản dịch
-    // cùng thứ tự với texts, hoặc null nếu setting tắt/không có key/lỗi bất kỳ — không throw.
+    // Gọi API riêng của user (DeepL/Gemini) qua background. Trả về:
+    //   - mảng bản dịch cùng thứ tự texts: THÀNH CÔNG
+    //   - null: đã gọi nhưng THẤT BẠI (caller quyết định fallback theo consent NPT-006)
+    //   - undefined: không gọi (setting tắt/skipProvider) — fallback free là đường chính
     // usePageOptions=true (CHỈ dịch trang) mới kèm văn phong pageOptions; dịch bôi đen
     // và Quick EN của input helper truyền false để giữ prompt gốc như v4.1.
-    async function providerTranslateViaBackground(texts, sourceLanguage, targetLanguage, usePageOptions) {
-      if (!GM_getValue('tm-page-use-provider', true)) return null;
-      if (!Array.isArray(texts) || !texts.length) return null;
+    let providerRequestSeq = 0;
+    async function providerTranslateViaBackground(texts, sourceLanguage, targetLanguage, usePageOptions, skipProvider) {
+      if (skipProvider) return undefined;
+      if (!GM_getValue('tm-page-use-provider', true)) return undefined;
+      if (!Array.isArray(texts) || !texts.length) return undefined;
 
+      // requestId để hủy request phía background khi timeout (NPT-007) — timeout
+      // phía content mà không hủy thì request trả phí vẫn chạy ngầm + fallback chồng lên.
+      const requestId = `${Date.now()}-${++providerRequestSeq}-${Math.random().toString(36).slice(2, 8)}`;
       try {
         const response = await new Promise(resolve => {
-          const timer = setTimeout(() => resolve(null), 65000);
+          const timer = setTimeout(() => {
+            chrome.runtime.sendMessage({ type: 'cancelProviderTranslate', requestId }).catch(() => {});
+            resolve(null);
+          }, 65000);
           chrome.runtime.sendMessage({
             type: 'providerTranslate',
             payload: {
               texts,
               targetLanguage,
               sourceLanguage,
+              requestId,
               ...(usePageOptions ? { pageOptions: readPageOptions() } : {}),
             },
           }).then(result => {
@@ -369,10 +400,19 @@
       }
     }
 
-    async function translateRaw(text, sourceLanguage, targetLanguage, usePageOptions) {
-      // Ưu tiên API riêng của user; null (không key/lỗi) thì xuống endpoint miễn phí.
-      const providerTranslations = await providerTranslateViaBackground([text], sourceLanguage, targetLanguage, usePageOptions);
+    // NPT-006: provider riêng THẤT BẠI (null) mà user tắt fallback miễn phí → dừng,
+    // không âm thầm đổi bên nhận dữ liệu sang Google/MyMemory.
+    function assertFreeFallbackAllowed(providerResult) {
+      if (providerResult === null && GM_getValue('tm-page-free-fallback', true) === false) {
+        throw new Error('Provider riêng lỗi và bạn đã tắt fallback miễn phí (bật lại trong Cài đặt)');
+      }
+    }
+
+    async function translateRaw(text, sourceLanguage, targetLanguage, usePageOptions, skipProvider) {
+      // Ưu tiên API riêng của user; undefined (không gọi) thì xuống endpoint miễn phí.
+      const providerTranslations = await providerTranslateViaBackground([text], sourceLanguage, targetLanguage, usePageOptions, skipProvider);
       if (providerTranslations) return providerTranslations[0].trim();
+      assertFreeFallbackAllowed(providerTranslations);
 
       const errors = [];
       const providers = [
@@ -417,7 +457,7 @@
       return chunks;
     }
 
-    async function translate(text, sourceLanguage, targetLanguage, usePageOptions) {
+    async function translate(text, sourceLanguage, targetLanguage, usePageOptions, skipProvider) {
       const original = String(text ?? '');
       const trimmed = original.trim();
       if (!trimmed) return original;
@@ -441,14 +481,14 @@
         const chunkKey = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${chunk}\u0000${salt}`;
         let output = cache.get(chunkKey);
         if (!output) {
-          output = await translateRaw(chunk, sourceLanguage || 'auto', targetLanguage, usePageOptions);
-          cache.set(chunkKey, output);
+          output = await translateRaw(chunk, sourceLanguage || 'auto', targetLanguage, usePageOptions, skipProvider);
+          cacheSet(chunkKey, output);
         }
         translated.push(output);
       }
 
       const output = translated.join('');
-      cache.set(key, output);
+      cacheSet(key, output);
       return preserveWhitespace(original, styledFancy ? FANCY.applyStyleToText(output, styledFancy.style) : output);
     }
 
@@ -487,17 +527,21 @@
         return batch.map((item, index) => {
           const translated = providerTranslations[index].trim();
           const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${item.text.trim()}\u0000${salt}`;
-          cache.set(key, translated);
+          cacheSet(key, translated);
           return { index: item.index, text: preserveWhitespace(item.text, translated) };
         });
       }
+
+      assertFreeFallbackAllowed(providerTranslations);
 
       const seed = Math.random().toString(36).slice(2, 8).toUpperCase();
       const tokens = batch.map((_, index) => `__NPT_${seed}_${index}__`);
       const bundled = batch.map((item, index) => `${tokens[index]}\n${item.text}`).join('\n');
 
       try {
-        const output = await translateRaw(bundled, sourceLanguage || 'auto', targetLanguage);
+        // Provider riêng vừa thất bại cho batch này → skipProvider (không re-enter
+        // nhiều lần tốn request trả phí, NPT-007); chỉ xuống chuỗi miễn phí.
+        const output = await translateRaw(bundled, sourceLanguage || 'auto', targetLanguage, usePageOptions, true);
         const positions = tokens.map(token => output.indexOf(token));
         const valid = positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1]));
         if (!valid) throw new Error('API làm mất dấu phân đoạn');
@@ -508,14 +552,14 @@
           const translated = output.slice(start, end).replace(/^\s+|\s+$/g, '');
           if (!translated) throw new Error('Một phân đoạn dịch bị rỗng');
           const key = `${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${item.text.trim()}\u0000${salt}`;
-          cache.set(key, translated);
+          cacheSet(key, translated);
           return { index: item.index, text: preserveWhitespace(item.text, translated) };
         });
       } catch (_) {
         const results = [];
         for (const item of batch) {
           try {
-            results.push({ index: item.index, text: await translate(item.text, sourceLanguage, targetLanguage, usePageOptions) });
+            results.push({ index: item.index, text: await translate(item.text, sourceLanguage, targetLanguage, usePageOptions, true) });
           } catch (error) {
             results.push({ index: item.index, error });
           }
@@ -1035,7 +1079,7 @@
     // Gỡ toàn bộ span song ngữ (quét dư querySelectorAll cho chắc) rồi restore như cũ.
     for (const span of bilingualPairs.values()) span.remove();
     bilingualPairs.clear();
-    for (const span of document.querySelectorAll('.npt-bilingual-translation')) span.remove();
+    for (const span of document.querySelectorAll('.npt-bilingual-translation[data-tm-no-translate="true"]')) span.remove();
 
     for (const [node, record] of textRecords) {
       if (!node.isConnected) {
@@ -1116,6 +1160,10 @@
           job.record[language] = result.text;
           if ('sig' in job.record) job.record.sig = activeSig;
         }
+
+        // NPT-009: SPA đã đổi nội dung node trong lúc chờ dịch → bỏ kết quả cũ,
+        // không ghi đè text mới; mutation observer sẽ xếp hàng dịch lại bản mới.
+        if (job.record.original !== job.original) continue;
 
         if (job.kind === 'text') {
           if (job.node.isConnected) applyTextTranslation(job.node, job.record[language], job.record.original);
@@ -1219,10 +1267,18 @@
       return;
     }
 
+    // NPT-015: site nằm trong blacklist thì không cho bật dịch (kể cả bật sẵn trước đó).
+    if (language !== 'original' && isSiteBlacklisted()) {
+      setStatus('Site này đang nằm trong danh sách chặn dịch', true);
+      return;
+    }
+
     currentLanguage = language;
     const runGeneration = ++generation;
     disconnectLazyObserver();
-    GM_setValue(`${CONFIG.storageKey}:${location.hostname}`, language);
+    // Chỉ top frame persist ngôn ngữ (NPT-008): subframe không ghi preference độc
+    // lập — tránh poisoning khi origin đó được truy cập trực tiếp sau này.
+    if (IS_TOP_FRAME) GM_setValue(`${CONFIG.storageKey}:${location.hostname}`, language);
     updateActiveButton();
 
     if (language === 'original') {
@@ -1288,7 +1344,26 @@
     );
   }
 
+  // NPT-010: budget dịch động theo cửa sổ trượt 60s — site bơm nội dung mới liên
+  // tục (chuỗi duy nhất né cache) không thể cạn quota/tài nguyên của user.
+  const DYNAMIC_BUDGET_CHARS = 150000;
+  const DYNAMIC_WINDOW_MS = 60000;
+  let dynamicWindowStart = 0;
+  let dynamicWindowChars = 0;
+
+  function dynamicBudgetAllow(chars) {
+    const now = Date.now();
+    if (now - dynamicWindowStart > DYNAMIC_WINDOW_MS) {
+      dynamicWindowStart = now;
+      dynamicWindowChars = 0;
+    }
+    if (dynamicWindowChars + chars > DYNAMIC_BUDGET_CHARS) return false;
+    dynamicWindowChars += chars;
+    return true;
+  }
+
   function queueDynamicTranslation(roots) {
+    if (isSiteBlacklisted()) return; // NPT-015: site vừa bị chặn → không queue mới.
     // Tắt tự dịch nội dung động (SPA/infinite feed) theo setting.
     if (pageSetting('tm-page-dynamic-translate') === false) return;
     for (const root of roots) pendingDynamicRoots.add(root);
@@ -1325,6 +1400,13 @@
 
       for (const node of textNodes) getTextRecord(node);
       for (const { element, attribute } of attributeTargets) getAttributeRecord(element, attribute);
+
+      // NPT-010: vượt budget cửa sổ 60s thì dừng dịch động — không bơm request nền.
+      const dynamicChars = textNodes.reduce((sum, node) => sum + String(node.data || '').length, 0);
+      if ((textNodes.length || attributeTargets.length) && !dynamicBudgetAllow(dynamicChars)) {
+        setStatus('Tạm dừng dịch động — quá nhiều nội dung mới, tự tiếp tục sau ít phút', true);
+        return;
+      }
 
       if (textNodes.length || attributeTargets.length) {
         await translateTargets(textNodes, attributeTargets, language, runGeneration);
@@ -2670,6 +2752,12 @@
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
+    // NPT-015: vừa thêm site hiện tại vào blacklist → dừng phiên dịch đang chạy NGAY,
+    // không chờ reload; request mới cũng bị queueDynamicTranslation/setLanguage chặn.
+    if (Object.hasOwn(changes, 'tm-site-blacklist') && currentLanguage !== 'original' && isSiteBlacklisted()) {
+      setLanguage('original').catch(() => {});
+      return;
+    }
     if (currentLanguage === 'original') return;
 
     let displayModeChanged = false;
@@ -3124,12 +3212,14 @@
       throw Object.assign(new Error('NO_API_KEY'), { code: 'NO_API_KEY' });
     }
 
-    const contextParts = [
+    // NPT-014: tắt "ngữ cảnh" = KHÔNG gửi hostname/page title/field label/nearby,
+    // chỉ gửi đúng source text — consent khớp với hành vi thực tế.
+    const contextParts = GM_getValue(INPUT_CONFIG.contextStorage, true) ? [
       `Website: ${snapshot.hostname}`,
       snapshot.pageTitle ? `Page title: ${snapshot.pageTitle}` : '',
       snapshot.fieldLabel ? `Field information:\n${snapshot.fieldLabel}` : '',
       snapshot.nearbyContext ? `Nearby context (for tone only):\n${snapshot.nearbyContext}` : '',
-    ].filter(Boolean);
+    ].filter(Boolean) : [];
 
     const response = await chrome.runtime.sendMessage({
       type: 'nativeTranslate',
@@ -3711,8 +3801,9 @@
 
     // Heartbeat fixes editors that swallow focus events, replace their DOM, or live in closed Shadow DOM.
     setInterval(() => {
+      if (document.hidden) return; // NPT-018: tab ẩn không polling tốn CPU/pin.
       // Toggle bật/tắt lúc đang chạy (không cần reload): tắt → gỡ hẳn UI, bật → tạo lại.
-      if (!helperEnabled()) {
+      if (!helperEnabled() || isSiteBlacklisted()) {
         if (helperHost) {
           helperHost.remove();
           helperHost = null;

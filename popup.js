@@ -37,11 +37,22 @@ async function ensureInjected(tabId) {
     return true;
   } catch (_) {
     try {
-      await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['content.js'] });
-      return true;
+      // Inject đủ dependency theo đúng thứ tự manifest (NPT-016): thiếu fancy-text.js
+      // thì tính năng font đặc biệt chết sau reinjection.
+      await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['fancy-text.js', 'content.js'] });
     } catch (_) {
       return false;
     }
+    // executeScript xong ≠ content script sẵn sàng (listener đăng ký sau await storage)
+    // → ping chờ readiness có retry hữu hạn trước khi broadcast lệnh.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: 'ping' });
+        return true;
+      } catch (_) { /* chưa sẵn sàng, thử lại */ }
+    }
+    return false;
   }
 }
 

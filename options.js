@@ -14,6 +14,7 @@ const PREFS_KEYS = {
   defaultMode: 'tm-native-en-default-mode',
   fallbackQuick: 'tm-native-en-fallback-quick',
   pageUseProvider: 'tm-page-use-provider',
+  pageFreeFallback: 'tm-page-free-fallback',
   selectionTranslate: 'tm-selection-translate',
   inputHelper: 'tm-input-helper-enabled',
   siteBlacklist: 'tm-site-blacklist',
@@ -296,6 +297,7 @@ async function saveSettings(showSaved = true) {
     [PREFS_KEYS.defaultMode]: $('#defaultMode').value,
     [PREFS_KEYS.fallbackQuick]: $('#fallbackQuick').checked,
     [PREFS_KEYS.pageUseProvider]: $('#pageUseProvider').checked,
+    [PREFS_KEYS.pageFreeFallback]: $('#pageFreeFallback').checked,
     [PREFS_KEYS.selectionTranslate]: $('#selectionTranslate').checked,
     [PREFS_KEYS.inputHelper]: $('#inputHelper').checked,
     [PREFS_KEYS.siteBlacklist]: parseSiteBlacklist($('#siteBlacklist').value),
@@ -349,6 +351,7 @@ async function loadPrefs() {
   $('#defaultMode').value = values[PREFS_KEYS.defaultMode] === 'quick' ? 'quick' : 'native';
   $('#fallbackQuick').checked = values[PREFS_KEYS.fallbackQuick] !== false;
   $('#pageUseProvider').checked = values[PREFS_KEYS.pageUseProvider] !== false;
+  $('#pageFreeFallback').checked = values[PREFS_KEYS.pageFreeFallback] !== false;
   $('#selectionTranslate').checked = values[PREFS_KEYS.selectionTranslate] !== false;
   $('#inputHelper').checked = values[PREFS_KEYS.inputHelper] !== false;
   const blacklist = values[PREFS_KEYS.siteBlacklist];
