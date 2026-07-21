@@ -76,6 +76,59 @@
     </section>
 
     <section>
+      <div class="section-title">
+        <label><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>Prompt Templates</label>
+      </div>
+      <div id="templateList" class="key-list"></div>
+      <label class="small-label" for="tplName">Tên template</label>
+      <input id="tplName" type="text" spellcheck="false" placeholder="Ví dụ: Văn học">
+      <label class="small-label" for="tplPrompt">Prompt hướng dẫn dịch</label>
+      <textarea id="tplPrompt" rows="3" spellcheck="false" placeholder="Ví dụ: Dịch theo phong cách văn học, giàu hình ảnh…"></textarea>
+      <div class="row two action-row">
+        <button id="tplSave" class="primary" type="button">Lưu template</button>
+        <button id="tplCancel" type="button" hidden>Huỷ sửa</button>
+      </div>
+      <p class="note">Chọn radio <strong>Đang dùng</strong> để áp dụng template khi dịch. Chọn nhanh ngay trong popup.</p>
+    </section>
+
+    <section>
+      <div class="section-title">
+        <label><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h10"/><path d="M8 5v14"/></svg>Glossary thuật ngữ</label>
+        <span id="glossaryCount" class="badge">0 từ</span>
+      </div>
+      <div id="glossaryList" class="key-list"></div>
+      <div class="glossary-add-row">
+        <input id="glossarySource" type="text" spellcheck="false" placeholder="Thuật ngữ gốc (source)">
+        <input id="glossaryTarget" type="text" spellcheck="false" placeholder="Bản dịch cố định (target)">
+        <button id="glossaryAdd" type="button">Thêm</button>
+      </div>
+      <div class="row three action-row">
+        <button id="glossaryImport" type="button">Import file…</button>
+        <button id="glossaryExportJson" type="button">Xuất JSON</button>
+        <button id="glossaryExportCsv" type="button">Xuất CSV</button>
+      </div>
+      <input id="glossaryFile" type="file" accept=".json,.csv,.tsv,.txt" hidden>
+      <p class="note">Import hỗ trợ .json / .csv / .tsv / .txt (định dạng "gốc =&gt; dịch"). Trùng source sẽ tự gộp, không nhân đôi.</p>
+    </section>
+
+    <section>
+      <label for="docMode"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 6-5 6 5 6M16 6l5 6-5 6"/></svg>Trang tài liệu kỹ thuật</label>
+      <select id="docMode">
+        <option value="auto">Tự động nhận diện</option>
+        <option value="on">Luôn bật</option>
+        <option value="off">Tắt</option>
+      </select>
+      <p class="note">Chế độ trang docs: giữ nguyên code block khi dịch trang tài liệu kỹ thuật.</p>
+    </section>
+
+    <section>
+      <label><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10v4h4l5 4V6l-5 4H4Z"/><path d="M16.5 9.5a4 4 0 0 1 0 5"/></svg>Đọc bản dịch (TTS)</label>
+      <label class="check"><input id="ttsEnabled" type="checkbox"> Bật nút đọc bản dịch bằng giọng nói</label>
+      <label class="small-label" for="ttsRate">Tốc độ đọc: <span id="ttsRateValue">1</span>x</label>
+      <input id="ttsRate" type="range" min="0.5" max="2" step="0.25" value="1">
+    </section>
+
+    <section>
       <label for="defaultMode"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3c.7 4.5 2.3 6.1 6.8 6.8-4.5.7-6.1 2.3-6.8 6.8-.7-4.5-2.3-6.1-6.8-6.8C9.7 9.1 11.3 7.5 12 3Z"/><path d="M18.5 15.5c.35 2.2 1.1 3 3.3 3.35-2.2.35-2.95 1.15-3.3 3.35-.35-2.2-1.1-3-3.3-3.35 2.2-.35 2.95-1.15 3.3-3.35Z"/></svg>Nút EN mặc định</label>
       <select id="defaultMode">
         <option value="native">API riêng — tự nhiên (DeepL/Gemini/OpenAI)</option>
@@ -113,6 +166,7 @@
     <p class="note">API key chỉ lưu trong <b>chrome.storage.local</b> của extension — gỡ extension là xoá sạch toàn bộ dữ liệu. Key không gửi đi đâu khác ngoài chính API của provider.</p>
   </main>
   <script src="providers.js"></script>
+  <script src="glossary.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

@@ -40,6 +40,12 @@
     'tm-native-en-use-context',
     'tm-native-en-default-mode',
     'tm-fab-position',
+    'tm-prompt-templates',
+    'tm-active-template',
+    'tm-glossary',
+    'tm-doc-mode',
+    'tm-tts-enabled',
+    'tm-tts-rate',
     `tm-page-translator-language:${location.hostname}`,
   ];
   const storageCache = await chrome.storage.local.get(STORAGE_WHITELIST);
@@ -69,6 +75,46 @@
       else delete storageCache[key];
     }
   });
+
+  /* Tuỳ chọn mở rộng (prompt template / glossary / doc mode) — dùng chung cho
+   * readPageOptions (core, gửi lên background) và currentPageOptions (trang,
+   * làm style signature) để 2 nơi luôn đồng bộ. Kết quả detect doc mode ở
+   * 'auto' được memo theo URL để khỏi quét DOM mỗi lần đọc options. */
+  let docDetectCacheUrl = null;
+  let docDetectCacheResult = false;
+  function isDocModePage() {
+    if (docDetectCacheUrl !== location.href) {
+      docDetectCacheUrl = location.href;
+      docDetectCacheResult = Boolean(
+        globalThis.NPT_DOC_DETECT?.isDocumentationPage(location.href, document).isDoc,
+      );
+    }
+    return docDetectCacheResult;
+  }
+
+  function readExtendedPageOptions() {
+    let customPrompt = '';
+    const activeTemplateId = GM_getValue('tm-active-template', '');
+    if (activeTemplateId) {
+      const templates = GM_getValue('tm-prompt-templates', []);
+      if (Array.isArray(templates)) {
+        const template = templates.find(item => item && item.id === activeTemplateId);
+        if (template && typeof template.prompt === 'string') customPrompt = template.prompt;
+      }
+    }
+
+    const glossary = GM_getValue('tm-glossary', []);
+    const glossaryText = globalThis.NPT_GLOSSARY
+      ? globalThis.NPT_GLOSSARY.toPromptText(Array.isArray(glossary) ? glossary : [])
+      : '';
+
+    const docModeSetting = GM_getValue('tm-doc-mode', 'auto');
+    let docMode = false;
+    if (docModeSetting === 'on') docMode = true;
+    else if (docModeSetting !== 'off') docMode = isDocModePage();
+
+    return { customPrompt, glossaryText, docMode };
+  }
 
   // about:blank/srcdoc có hostname rỗng → kế thừa origin của chuỗi ancestor (NPT-008):
   // blacklist của parent áp luôn cho frame special URL.
@@ -209,6 +255,7 @@
         mode: PAGE_MODE_VALUES.has(mode) ? mode : PAGE_OPTION_DEFAULTS.mode,
         grammarFix: GM_getValue('tm-page-grammar-fix', PAGE_OPTION_DEFAULTS.grammarFix) !== false,
         keepProperNouns: GM_getValue('tm-page-keep-proper-nouns', PAGE_OPTION_DEFAULTS.keepProperNouns) !== false,
+        ...readExtendedPageOptions(),
       };
     }
 
@@ -717,6 +764,7 @@
       mode: pageSetting('tm-page-translate-mode'),
       grammarFix: pageSetting('tm-page-grammar-fix') !== false,
       keepProperNouns: pageSetting('tm-page-keep-proper-nouns') !== false,
+      ...readExtendedPageOptions(),
     };
   }
 
@@ -1259,6 +1307,57 @@
     for (const element of lazyPending.keys()) lazyObserver.observe(element);
   }
 
+  /* Toast nổi tối giản trong page IIFE (showToast ở input-helper IIFE không
+   * reachable từ đây): shadow DOM, glass style giống selection panel, tự ẩn sau 3s. */
+  let pageToastHost = null;
+  let pageToastShadow = null;
+  let pageToastTimer = null;
+  function showPageToast(message) {
+    if (!pageToastHost) {
+      pageToastHost = document.createElement('div');
+      pageToastHost.id = 'tm-page-toast-host';
+      pageToastHost.dataset.tmNoTranslate = 'true';
+      pageToastShadow = pageToastHost.attachShadow({ mode: 'closed' });
+      pageToastShadow.innerHTML = `
+        <style>
+          :host {
+            all: initial;
+            position: fixed;
+            left: 50%;
+            bottom: 24px;
+            transform: translateX(-50%);
+            z-index: 2147483647;
+            pointer-events: none;
+            font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+          }
+          .toast {
+            box-sizing: border-box;
+            max-width: 70vw;
+            padding: 8px 14px;
+            border: 1px solid rgba(255,255,255,.6);
+            border-radius: 12px;
+            background: linear-gradient(150deg, rgba(255,255,255,.72), rgba(244,245,249,.5));
+            box-shadow: 0 12px 30px rgba(15,17,23,.22), inset 0 1px 0 rgba(255,255,255,.95);
+            color: rgba(23,24,28,.88);
+            backdrop-filter: blur(20px) saturate(1.7) brightness(1.1);
+            font: 600 12.5px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+            text-align: center;
+          }
+          [hidden] { display: none !important; }
+        </style>
+        <div class="toast" data-tm-no-translate hidden></div>
+      `;
+    }
+    if (!pageToastHost.isConnected) document.documentElement.appendChild(pageToastHost);
+    const toast = pageToastShadow.querySelector('.toast');
+    toast.textContent = message;
+    toast.hidden = false;
+    clearTimeout(pageToastTimer);
+    pageToastTimer = setTimeout(() => {
+      toast.hidden = true;
+    }, 3000);
+  }
+
   async function setLanguage(language, roots = [document.body]) {
     if (!['original', 'vi', 'en'].includes(language)) return;
 
@@ -1285,6 +1384,12 @@
       restoreOriginalContent();
       setStatus('Đang hiển thị bản gốc');
       return;
+    }
+
+    // Chế độ tài liệu đang áp dụng (tm-doc-mode 'on' hoặc 'auto' detect trúng) →
+    // báo nhẹ để user biết code block được giữ nguyên.
+    if (readExtendedPageOptions().docMode) {
+      showPageToast('📄 Chế độ tài liệu: giữ nguyên code block');
     }
 
     const uniqueTextNodes = new Set();
@@ -2363,11 +2468,40 @@
   let selectionPanel = null;
   let selectionResult = null;
   let selectionCopyButton = null;
+  let selectionSpeakButton = null;
   let selectionText = '';
   let selectionRect = null;
   let selectionScrollY = 0;
   let selectionBusy = false;
   let selectionCopyTimer = null;
+  let selectionSpeakTimer = null;
+  let selectionTargetLanguage = 'vi';
+
+  // Reset nút 🔊 về trạng thái nghỉ khi TTS đọc xong / bị dừng.
+  function pollSelectionSpeakState() {
+    clearInterval(selectionSpeakTimer);
+    selectionSpeakTimer = setInterval(() => {
+      if (globalThis.NPT_TTS?.isSpeaking()) return;
+      clearInterval(selectionSpeakTimer);
+      if (selectionSpeakButton) selectionSpeakButton.textContent = '🔊';
+    }, 400);
+  }
+
+  function toggleSelectionSpeak() {
+    const tts = globalThis.NPT_TTS;
+    if (!tts || !selectionSpeakButton) return;
+    if (tts.isSpeaking()) {
+      tts.stop();
+      selectionSpeakButton.textContent = '🔊';
+      return;
+    }
+    const text = selectionResult?.textContent || '';
+    if (!text || selectionResult.dataset.error === 'true') return;
+    const rate = Number(GM_getValue('tm-tts-rate', 1)) || 1;
+    tts.speak(text, selectionTargetLanguage, rate);
+    selectionSpeakButton.textContent = '⏹';
+    pollSelectionSpeakState();
+  }
 
   function ensureSelectionUI() {
     if (selectionHost) {
@@ -2463,6 +2597,7 @@
       <div class="panel" data-tm-no-translate hidden>
         <div class="result"></div>
         <div class="actions">
+          <button type="button" class="speak" title="Đọc bản dịch" hidden>🔊</button>
           <button type="button" class="copy">${NPT_SELECTION_COPY_LABEL}</button>
           <button type="button" class="close" title="Đóng">${NPT_ICONS.close}</button>
         </div>
@@ -2473,6 +2608,7 @@
     selectionPanel = shadow.querySelector('.panel');
     selectionResult = shadow.querySelector('.result');
     selectionCopyButton = shadow.querySelector('.copy');
+    selectionSpeakButton = shadow.querySelector('.speak');
 
     // Giữ nguyên vùng bôi đen khi bấm vào nút/panel.
     shadow.addEventListener('mousedown', event => event.preventDefault());
@@ -2483,6 +2619,7 @@
     });
     shadow.querySelector('.close').addEventListener('click', () => hideSelectionUI());
     selectionCopyButton.addEventListener('click', () => copySelectionResult());
+    selectionSpeakButton.addEventListener('click', () => toggleSelectionSpeak());
   }
 
   // Neo element theo góc dưới-phải vùng chọn, clamp trong viewport 8px.
@@ -2511,6 +2648,9 @@
       selectionButton.innerHTML = NPT_SELECTION_FAB_LABEL;
     }
     if (selectionPanel) selectionPanel.hidden = true;
+    if (selectionSpeakButton) selectionSpeakButton.textContent = '🔊';
+    clearInterval(selectionSpeakTimer);
+    globalThis.NPT_TTS?.stop();
     selectionText = '';
     selectionRect = null;
     selectionBusy = false;
@@ -2594,6 +2734,7 @@
 
     // Trang đang ở chế độ vi/en thì dịch theo ngôn ngữ đó, ngược lại mặc định VI.
     const target = ['vi', 'en'].includes(currentLanguage) ? currentLanguage : 'vi';
+    selectionTargetLanguage = target;
 
     selectionBusy = true;
     selectionButton.dataset.busy = 'true';
@@ -2620,6 +2761,8 @@
     selectionResult.textContent = message;
     selectionResult.dataset.error = String(isError);
     selectionCopyButton.hidden = isError;
+    // Nút đọc to chỉ hiện khi có kết quả hợp lệ và tm-tts-enabled đang bật.
+    selectionSpeakButton.hidden = isError || GM_getValue('tm-tts-enabled', true) === false;
     selectionButton.hidden = true;
     selectionPanel.hidden = false;
     placeSelectionElement(selectionPanel, selectionPanel.offsetWidth || 220, selectionPanel.offsetHeight || 90);
@@ -2837,6 +2980,235 @@
     }
   }
 
+  /* ======================= TÓM TẮT TRANG (summarize) =======================
+   * Popup gửi trực tiếp {type:'summarizePageStart', language} → content thu
+   * thập text, gọi background {type:'summarizePage'} rồi render floating panel
+   * (style bám selection panel: shadow DOM + liquid glass). */
+
+  const SUMMARY_CONFIG = {
+    minChars: 200,
+    maxChars: 8000,
+    maxBullets: 8,
+  };
+
+  let summaryHost = null;
+  let summaryShadow = null;
+  let summaryPanel = null;
+  let summaryBody = null;
+  let summarySpeakButton = null;
+  let summaryCopyButton = null;
+  let summarySpeakTimer = null;
+  let summaryResultText = '';
+  let summaryLanguage = 'vi';
+
+  function ensureSummaryUI() {
+    if (summaryHost) {
+      if (!summaryHost.isConnected) document.documentElement.appendChild(summaryHost);
+      return;
+    }
+
+    summaryHost = document.createElement('div');
+    summaryHost.id = 'tm-summary-host';
+    summaryHost.dataset.tmNoTranslate = 'true';
+    document.documentElement.appendChild(summaryHost);
+
+    summaryShadow = summaryHost.attachShadow({ mode: 'closed' });
+    summaryShadow.innerHTML = `
+      <style>
+        :host {
+          all: initial;
+          position: fixed;
+          inset: 0;
+          z-index: 2147483647;
+          pointer-events: none;
+          font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+        }
+        [hidden] { display: none !important; }
+        .panel {
+          position: fixed;
+          top: 16px;
+          right: 16px;
+          box-sizing: border-box;
+          width: min(380px, calc(100vw - 32px));
+          max-height: 70vh;
+          overflow-y: auto;
+          padding: 12px 13px 13px;
+          border: 1px solid rgba(255,255,255,.6);
+          border-radius: 15px;
+          background: linear-gradient(160deg, rgba(255,255,255,.7), rgba(244,245,249,.46));
+          box-shadow: 0 18px 44px rgba(15,17,23,.24), inset 0 1px 0 rgba(255,255,255,.95), inset 0 -10px 18px rgba(255,255,255,.12);
+          color: #17181c;
+          backdrop-filter: blur(24px) saturate(1.8) brightness(1.1);
+          pointer-events: auto;
+        }
+        .title {
+          font: 700 12.5px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          letter-spacing: .02em;
+          color: rgba(23,24,28,.85);
+          margin-bottom: 8px;
+        }
+        .body {
+          white-space: pre-wrap;
+          word-break: break-word;
+          color: rgba(23,24,28,.9);
+          font: 500 13px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        }
+        .body[data-error="true"] { color: #b3402f; }
+        .body .bullet { padding-left: 14px; text-indent: -14px; margin: 4px 0; }
+        .body .bullet::before { content: "• "; }
+        .actions { display: flex; gap: 6px; margin-top: 10px; }
+        .actions button {
+          all: unset;
+          box-sizing: border-box;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          cursor: pointer;
+          padding: 5px 9px;
+          border-radius: 8px;
+          border: 1px solid rgba(15,17,23,.08);
+          background: rgba(255,255,255,.4);
+          color: rgba(23,24,28,.78);
+          font: 620 11px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+          transition: background .18s cubic-bezier(.32,.72,0,1);
+        }
+        .actions button:hover { background: rgba(255,255,255,.65); }
+        .actions .close { margin-left: auto; padding: 5px 7px; color: rgba(23,24,28,.5); }
+      </style>
+      <div class="panel" data-tm-no-translate hidden>
+        <div class="title">Tóm tắt trang</div>
+        <div class="body"></div>
+        <div class="actions">
+          <button type="button" class="speak" title="Đọc tóm tắt" hidden>🔊</button>
+          <button type="button" class="copy" title="Sao chép tóm tắt" hidden>📋</button>
+          <button type="button" class="close" title="Đóng">${NPT_ICONS.close}</button>
+        </div>
+      </div>
+    `;
+
+    summaryPanel = summaryShadow.querySelector('.panel');
+    summaryBody = summaryShadow.querySelector('.body');
+    summarySpeakButton = summaryShadow.querySelector('.speak');
+    summaryCopyButton = summaryShadow.querySelector('.copy');
+
+    summaryShadow.querySelector('.close').addEventListener('click', () => hideSummaryUI());
+    summarySpeakButton.addEventListener('click', () => toggleSummarySpeak());
+    summaryCopyButton.addEventListener('click', () => copySummaryResult());
+  }
+
+  function hideSummaryUI() {
+    if (summaryPanel) summaryPanel.hidden = true;
+    if (summarySpeakButton) summarySpeakButton.textContent = '🔊';
+    clearInterval(summarySpeakTimer);
+    globalThis.NPT_TTS?.stop();
+  }
+
+  // Reset nút 🔊 khi đọc xong.
+  function pollSummarySpeakState() {
+    clearInterval(summarySpeakTimer);
+    summarySpeakTimer = setInterval(() => {
+      if (globalThis.NPT_TTS?.isSpeaking()) return;
+      clearInterval(summarySpeakTimer);
+      if (summarySpeakButton) summarySpeakButton.textContent = '🔊';
+    }, 400);
+  }
+
+  function toggleSummarySpeak() {
+    const tts = globalThis.NPT_TTS;
+    if (!tts || !summaryResultText) return;
+    if (tts.isSpeaking()) {
+      tts.stop();
+      summarySpeakButton.textContent = '🔊';
+      return;
+    }
+    const rate = Number(GM_getValue('tm-tts-rate', 1)) || 1;
+    tts.speak(summaryResultText, summaryLanguage, rate);
+    summarySpeakButton.textContent = '⏹';
+    pollSummarySpeakState();
+  }
+
+  function copySummaryResult() {
+    if (!summaryResultText) return;
+    navigator.clipboard.writeText(summaryResultText).then(() => {
+      summaryCopyButton.textContent = '✓';
+      setTimeout(() => {
+        if (summaryCopyButton) summaryCopyButton.textContent = '📋';
+      }, 1500);
+    }).catch(() => {
+      // Clipboard bị chặn — bỏ qua.
+    });
+  }
+
+  function showSummaryLoading() {
+    summaryResultText = '';
+    summaryBody.dataset.error = 'false';
+    summaryBody.textContent = 'Đang tóm tắt…';
+    summarySpeakButton.hidden = true;
+    summaryCopyButton.hidden = true;
+    summaryPanel.hidden = false;
+  }
+
+  function showSummaryError(message) {
+    summaryResultText = '';
+    summaryBody.dataset.error = 'true';
+    summaryBody.textContent = message;
+    summarySpeakButton.hidden = true;
+    summaryCopyButton.hidden = true;
+    summaryPanel.hidden = false;
+  }
+
+  function renderSummaryResult(text, language) {
+    summaryResultText = text;
+    summaryLanguage = language;
+    summaryBody.dataset.error = 'false';
+    summaryBody.textContent = '';
+    const bullets = text
+      .split(/\r?\n/)
+      .map(line => line.replace(/^\s*[-•*]\s+/, '').trim())
+      .filter(Boolean);
+    for (const bullet of bullets) {
+      const item = document.createElement('div');
+      item.className = 'bullet';
+      item.textContent = bullet;
+      summaryBody.appendChild(item);
+    }
+    if (!bullets.length) summaryBody.textContent = text;
+    summarySpeakButton.hidden = GM_getValue('tm-tts-enabled', true) === false;
+    summaryCopyButton.hidden = false;
+    summaryPanel.hidden = false;
+  }
+
+  // Ưu tiên vùng nội dung chính; fallback toàn body. Trim + cap 8000 ký tự.
+  function collectPageTextForSummary() {
+    const container = document.querySelector('article')
+      || document.querySelector('main')
+      || document.querySelector('[role="main"]');
+    const raw = String(container?.innerText || document.body?.innerText || '').trim();
+    return raw.slice(0, SUMMARY_CONFIG.maxChars);
+  }
+
+  async function summarizePage(language) {
+    const text = collectPageTextForSummary();
+    if (text.length < SUMMARY_CONFIG.minChars) {
+      showPageToast('Không đủ nội dung để tóm tắt');
+      return;
+    }
+
+    ensureSummaryUI();
+    showSummaryLoading();
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'summarizePage',
+        payload: { text, targetLanguage: language, maxBullets: SUMMARY_CONFIG.maxBullets },
+      });
+      if (!response?.ok) throw new Error(response?.error || 'Không tóm tắt được trang này');
+      renderSummaryResult(String(response.text || ''), language);
+    } catch (error) {
+      showSummaryError(friendlyError(error));
+    }
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'ping') {
       sendResponse({ ok: true, frame: location.href });
@@ -2844,6 +3216,12 @@
     }
     if (message?.type === 'setPageLanguage' && ['original', 'vi', 'en'].includes(message.language)) {
       if (!isSiteBlacklisted()) setLanguage(message.language);
+      sendResponse({ ok: true });
+      return false;
+    }
+    // Popup gọi trực tiếp (chrome.tabs.sendMessage, không qua background).
+    if (message?.type === 'summarizePageStart' && ['vi', 'en'].includes(message.language)) {
+      if (IS_TOP_FRAME) summarizePage(message.language);
       sendResponse({ ok: true });
       return false;
     }

@@ -18,6 +18,7 @@ const installedListeners = [];
 const contextMenuListeners = [];
 const createdMenus = [];
 const sentTabMessages = [];
+const createdTabs = [];
 
 const chromeStub = {
   storage: {
@@ -57,6 +58,7 @@ const chromeStub = {
   webNavigation: { async getAllFrames() { return null; } },
   tabs: {
     async sendMessage(tabId, message) { sentTabMessages.push({ tabId, message }); },
+    async create(props) { createdTabs.push(props); return { id: 99, ...props }; },
   },
 };
 
@@ -73,6 +75,17 @@ async function fetchStub(url, options = {}) {
       ok: true,
       headers: new Map([['content-type', 'image/png']]),
       async arrayBuffer() { return new Uint8Array([137, 80, 78, 71]).buffer; },
+      async text() { return ''; },
+    };
+  }
+
+  // PDF giả để test fetchPdf: 4 byte "%PDF" + content-type PDF.
+  if (u.endsWith('.pdf')) {
+    return {
+      status: 200,
+      ok: true,
+      headers: new Map([['content-type', 'application/pdf']]),
+      async arrayBuffer() { return new Uint8Array([37, 80, 68, 70]).buffer; },
       async text() { return ''; },
     };
   }
@@ -310,7 +323,106 @@ async function main() {
     assert.equal(cancel.ok, true, JSON.stringify(cancel));
   }
 
-  console.log('SW smoke test PASS ✔ (background khởi động OK, seed key OK, nativeTranslate OK, providerTranslate OK, proxyFetch OK, dịch ảnh OK, deeplUsage OK)');
+  // 11. summarizePage: gemini đã bật (mục 8) -> plain text bullet từ LLM
+  {
+    const summary = await sendMessage({
+      type: 'summarizePage',
+      payload: { text: 'Nội dung trang rất dài cần tóm tắt', targetLanguage: 'vi', maxBullets: 5 },
+    });
+    assert.equal(summary.ok, true, JSON.stringify(summary));
+    assert.equal(summary.text, 'hello from gemini');
+    assert.equal(summary.provider, 'gemini');
+    assert.equal(summary.providerLabel, 'Google AI Studio (Gemini)');
+    // Request gửi đi phải nhắc đích Vietnamese + yêu cầu bullet
+    const summaryCall = fetchCalls.filter(c => c.url.includes('generativelanguage')).pop();
+    const summaryBody = JSON.parse(summaryCall.options.body);
+    assert.match(summaryBody.systemInstruction.parts[0].text, /at most 5 bullet points/);
+    assert.match(summaryBody.systemInstruction.parts[0].text, /ENTIRE summary in Vietnamese/);
+
+    // targetLanguage ngoài vi/en -> ok:false
+    const badLang = await sendMessage({
+      type: 'summarizePage',
+      payload: { text: 'x', targetLanguage: 'zh' },
+    });
+    assert.equal(badLang.ok, false);
+    assert.match(badLang.error, /chỉ hỗ trợ/);
+
+    // Chỉ còn DeepL (tắt tạm gemini) -> SUMMARIZE_REQUIRES_LLM rõ ràng
+    const cfg = storageData.get('tm-multi-provider-config');
+    const geminiBackup = cfg.providers.gemini;
+    cfg.providers.gemini = { enabled: false, keys: [] };
+    await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+    const noLlm = await sendMessage({
+      type: 'summarizePage',
+      payload: { text: 'nội dung', targetLanguage: 'vi' },
+    });
+    assert.equal(noLlm.ok, false);
+    assert.match(noLlm.error, /SUMMARIZE_REQUIRES_LLM/);
+    cfg.providers.gemini = geminiBackup;
+    await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+  }
+
+  // 12. fetchPdf: tải PDF -> base64 + contentType; thiếu quyền -> NO_PERMISSION
+  {
+    const pdf = await sendMessage({
+      type: 'fetchPdf',
+      payload: { url: 'https://example.com/tailieu.pdf' },
+    });
+    assert.equal(pdf.ok, true, JSON.stringify(pdf));
+    assert.equal(pdf.contentType, 'application/pdf');
+    assert.equal(pdf.base64, Buffer.from([37, 80, 68, 70]).toString('base64'));
+
+    // Thiếu host permission -> NO_PERMISSION + needsPermission (không throw)
+    const originalContains = chromeStub.permissions.contains;
+    chromeStub.permissions.contains = async () => false;
+    const denied = await sendMessage({
+      type: 'fetchPdf',
+      payload: { url: 'https://example.com/tailieu.pdf' },
+    });
+    chromeStub.permissions.contains = originalContains;
+    assert.equal(denied.ok, false);
+    assert.equal(denied.error, 'NO_PERMISSION');
+    assert.equal(denied.needsPermission, true);
+
+    // Protocol lạ -> ok:false
+    const badProto = await sendMessage({
+      type: 'fetchPdf',
+      payload: { url: 'ftp://example.com/tailieu.pdf' },
+    });
+    assert.equal(badProto.ok, false);
+    assert.match(badProto.error, /http\/https/);
+  }
+
+  // 13. Context menu PDF: đã tạo menu + click mở pdf-viewer.html kèm ?src=
+  {
+    const pdfMenu = createdMenus.find(menu => menu.id === 'npt-pdf-translate');
+    assert.ok(pdfMenu, 'chưa tạo context menu dịch PDF');
+    assert.equal(pdfMenu.title, 'Dịch PDF bằng Native Translator');
+    assert.deepEqual(Array.from(pdfMenu.contexts), ['page', 'link']);
+
+    const before = createdTabs.length;
+    contextMenuListeners[0](
+      { menuItemId: 'npt-pdf-translate', linkUrl: 'https://example.com/báo cáo.pdf?dl=1', pageUrl: 'https://example.com/page' },
+      { id: 7 },
+    );
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(createdTabs.length, before + 1);
+    const tab = createdTabs[createdTabs.length - 1];
+    assert.equal(
+      tab.url,
+      'chrome-extension://npt-smoke/pdf-viewer.html?src=' + encodeURIComponent('https://example.com/báo cáo.pdf?dl=1'),
+    );
+
+    // Link không phải PDF -> không mở tab
+    contextMenuListeners[0](
+      { menuItemId: 'npt-pdf-translate', linkUrl: 'https://example.com/page.html', pageUrl: 'https://example.com/page.html' },
+      { id: 7 },
+    );
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(createdTabs.length, before + 1);
+  }
+
+  console.log('SW smoke test PASS ✔ (background khởi động OK, seed key OK, nativeTranslate OK, providerTranslate OK, proxyFetch OK, dịch ảnh OK, deeplUsage OK, summarizePage OK, fetchPdf OK, menu PDF OK)');
 }
 
 main().catch(error => {

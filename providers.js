@@ -484,7 +484,14 @@
     mode: 'natural',
     grammarFix: false,
     keepProperNouns: true,
+    customPrompt: '',
+    glossaryText: '',
+    docMode: false,
   };
+
+  // Giới hạn độ dài field tự do: chặn prompt injection quá dài / lạm dụng token.
+  const MAX_CUSTOM_PROMPT_CHARS = 2000;
+  const MAX_GLOSSARY_CHARS = 8000;
 
   // Sanitize pageOptions từ caller: giá trị lạ/sai kiểu -> về default.
   function normalizePageOptions(raw) {
@@ -494,11 +501,19 @@
       mode: raw?.mode === 'literal' || raw?.mode === 'natural' ? raw.mode : DEFAULT_PAGE_OPTIONS.mode,
       grammarFix: typeof raw?.grammarFix === 'boolean' ? raw.grammarFix : DEFAULT_PAGE_OPTIONS.grammarFix,
       keepProperNouns: typeof raw?.keepProperNouns === 'boolean' ? raw.keepProperNouns : DEFAULT_PAGE_OPTIONS.keepProperNouns,
+      customPrompt: typeof raw?.customPrompt === 'string'
+        ? raw.customPrompt.trim().slice(0, MAX_CUSTOM_PROMPT_CHARS)
+        : DEFAULT_PAGE_OPTIONS.customPrompt,
+      glossaryText: typeof raw?.glossaryText === 'string'
+        ? raw.glossaryText.trim().slice(0, MAX_GLOSSARY_CHARS)
+        : DEFAULT_PAGE_OPTIONS.glossaryText,
+      docMode: typeof raw?.docMode === 'boolean' ? raw.docMode : DEFAULT_PAGE_OPTIONS.docMode,
     };
   }
 
   // Thứ tự lines: 4 base -> style -> dialect (chỉ target English) -> literal
-  // -> grammarFix -> properNouns -> line chốt idiomatic (khi có rule bổ sung).
+  // -> grammarFix -> properNouns -> line chốt idiomatic (khi có rule bổ sung)
+  // -> docMode -> glossary -> customPrompt (ưu tiên cao nhất, đứng cuối).
   function buildBatchInstructions(sourceLanguage, targetName, pageOptions) {
     const opts = normalizePageOptions(pageOptions);
     const src = sourceLanguage && sourceLanguage !== 'auto'
@@ -521,7 +536,21 @@
       extras.push(`Apply every style rule above idiomatically in ${targetName} — express the register the way a native ${targetName} speaker would, not literally.`);
     }
 
-    return [...lines, ...extras].join('\n');
+    const finalLines = [...lines, ...extras];
+    // Tài liệu kỹ thuật: giữ nguyên code/lệnh/path, chỉ dịch văn xuôi.
+    if (opts.docMode) {
+      finalLines.push('This page is technical documentation: keep all code, inline code, commands, file paths and identifiers unchanged; translate only prose.');
+    }
+    // Glossary thuật ngữ của user: ưu tiên cao hơn cách dịch mặc định.
+    if (opts.glossaryText) {
+      finalLines.push(`Always apply this terminology glossary (highest priority for these terms):\n${opts.glossaryText}`);
+    }
+    // Chỉ dẫn tự do của user: đứng cuối, được phép ghi đè rule phía trên.
+    if (opts.customPrompt) {
+      finalLines.push(`Additional user instructions (override the rules above if conflicting):\n${opts.customPrompt}`);
+    }
+
+    return finalLines.join('\n');
   }
 
   function buildBatchRequest({ providerId, providerConfig, apiKey, texts, sourceLanguage, targetLanguage, pageOptions }) {
@@ -836,6 +865,137 @@
   }
 
   /* ------------------------------------------------------------------
+   * Tóm tắt trang (summarize): LLM trả plain text bullet, KHÔNG phải JSON.
+   * CHỈ gemini/openai — DeepL là engine dịch thuần, không tóm tắt tự do.
+   * ------------------------------------------------------------------ */
+  const SUMMARY_TARGET = { vi: 'Vietnamese', en: 'English' };
+
+  function clampSummaryBullets(maxBullets) {
+    const value = Number(maxBullets);
+    if (!Number.isFinite(value)) return 8;
+    return Math.min(15, Math.max(3, Math.round(value)));
+  }
+
+  function buildSummaryInstructions(targetName, maxBullets) {
+    return [
+      `Summarize the given page content into at most ${maxBullets} bullet points.`,
+      "Each bullet must be exactly one line starting with '- '.",
+      `Write the ENTIRE summary in ${targetName} — every single bullet, no exceptions.`,
+      'Return plain text only: no JSON, no headings, no intro or closing commentary.',
+    ].join('\n');
+  }
+
+  // Dựng request tóm tắt theo provider (pattern giống buildBatchRequest).
+  function buildSummaryRequest({ providerId, providerConfig, apiKey, text, targetLanguage, maxBullets }) {
+    const targetName = SUMMARY_TARGET[String(targetLanguage || '').toLowerCase()];
+    if (!targetName) throw new Error('Ngôn ngữ đích không hỗ trợ');
+    if (providerId === 'deepl') throw new Error('SUMMARIZE_REQUIRES_LLM');
+
+    const instructions = buildSummaryInstructions(targetName, clampSummaryBullets(maxBullets));
+    const prompt = String(text || '');
+
+    if (providerId === 'gemini') {
+      const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      const generationConfig = { temperature: 0.3 };
+      if (/2\.5/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      return {
+        url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: instructions }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig,
+          safetySettings: GEMINI_SAFETY_SETTINGS,
+        }),
+      };
+    }
+
+    if (providerId === 'openai') {
+      const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
+
+      let payload;
+      if (format === 'responses') {
+        payload = { model, instructions, input: prompt, max_output_tokens: 2000, store: false };
+      } else if (format === 'chat') {
+        payload = {
+          model,
+          messages: [
+            { role: 'system', content: instructions },
+            { role: 'user', content: prompt },
+          ],
+          stream: false,
+        };
+      } else {
+        // libre/generic là engine dịch thuần, không tóm tắt tự do được.
+        throw new Error(`${PROVIDER_DEFS.openai.label}: format "${format}" không hỗ trợ tóm tắt`);
+      }
+
+      return { url, method: 'POST', headers, body: JSON.stringify(payload), openaiFormat: format };
+    }
+
+    throw new Error(`Provider không hỗ trợ: ${providerId}`);
+  }
+
+  // Tóm tắt qua rotation key: ép config chỉ còn provider LLM (bỏ DeepL).
+  // Chỉ có DeepL key -> throw 'SUMMARIZE_REQUIRES_LLM' để UI báo rõ.
+  async function summarizeWithRotation({ config, text, targetLanguage, maxBullets, fetchText, keyState, now, sleep }) {
+    const content = String(text || '').trim();
+    if (!content) throw new Error('Không có nội dung cần tóm tắt');
+    const target = String(targetLanguage || '').toLowerCase();
+    if (!SUMMARY_TARGET[target]) throw new Error('Ngôn ngữ đích không hỗ trợ');
+
+    const llmProviders = {};
+    for (const id of ['gemini', 'openai']) {
+      const provider = config?.providers?.[id];
+      if (provider?.enabled) llmProviders[id] = provider;
+    }
+    if (!Object.keys(llmProviders).length) throw new Error('SUMMARIZE_REQUIRES_LLM');
+    const llmConfig = {
+      ...config,
+      // preferred 'deepl' không còn trong providers -> về LLM đầu tiên khả dụng.
+      preferred: llmProviders[config?.preferred] ? config.preferred : (llmProviders.gemini ? 'gemini' : 'openai'),
+      providers: llmProviders,
+    };
+
+    const outcome = await withKeyRotation({
+      config: llmConfig,
+      keyState,
+      now,
+      sleep,
+      attempt: async ({ providerId, providerConfig, apiKey }) => {
+        const request = buildSummaryRequest({
+          providerId,
+          providerConfig,
+          apiKey,
+          text: content,
+          targetLanguage: target,
+          maxBullets,
+        });
+        const response = await fetchText(request);
+        const verdict = classifyResponse({
+          providerId,
+          openaiFormat: request?.openaiFormat,
+          status: response.status,
+          bodyText: response.bodyText,
+        });
+        return { verdict };
+      },
+    });
+
+    // Response là plain text bullet — giữ nguyên, chỉ trim.
+    return {
+      text: String(outcome.verdict.text || '').trim(),
+      provider: outcome.provider,
+      providerLabel: outcome.providerLabel,
+    };
+  }
+
+  /* ------------------------------------------------------------------
    * Dịch ảnh (OCR + dịch) qua Gemini vision. CHỈ gemini hỗ trợ ảnh —
    * deepl/openai bị bỏ qua dù đang enabled.
    * ------------------------------------------------------------------ */
@@ -955,6 +1115,8 @@
     classifyBatchResponse,
     translateWithRotation,
     translateBatchWithRotation,
+    buildSummaryRequest,
+    summarizeWithRotation,
     buildVisionRequest,
     parseVisionLines,
     translateVisionWithRotation,

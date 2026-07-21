@@ -165,6 +165,14 @@ select {
   padding-right: 30px;
 }
 
+/* Dropdown <option> dùng rendering native của OS: nền mặc định TRẮNG trong khi
+ * theme set chữ sáng → chữ trắng trên nền trắng, không đọc được.
+ * Ép nền tối đặc (không dùng var trong suốt — option list không hỗ trợ alpha). */
+select option {
+  background: #14171f;
+  color: var(--text);
+}
+
 button {
   display: inline-flex;
   align-items: center;
@@ -558,4 +566,106 @@ label .ico {
   background: currentColor;
   box-shadow: 0 0 8px currentColor;
   vertical-align: 1px;
+}
+
+/* ---------- Templates, glossary & TTS (options) / popup additions ---------- */
+
+[hidden] {
+  display: none !important;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button:disabled:active {
+  transform: none;
+}
+
+/* Radio chọn template đang dùng trong danh sách (options). */
+.tpl-radio {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.tpl-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #d7dbe2;
+}
+
+.key-row .tpl-name + button,
+.key-row button + button {
+  margin-left: 0;
+}
+
+/* Glossary: 2 cột source → target. */
+.glossary-row {
+  font-size: 12px;
+}
+
+.glossary-source,
+.glossary-target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #d7dbe2;
+}
+
+.glossary-target {
+  color: var(--text-dim);
+}
+
+.glossary-arrow {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.glossary-add-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.glossary-add-row button {
+  width: auto;
+  padding: 9px 13px;
+  white-space: nowrap;
+}
+
+/* Badge đếm số từ (tái dùng style badge của provider-head ở section-title). */
+.section-title .badge {
+  padding: 3px 9px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: #c7d2fe;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* Slider tốc độ đọc TTS. */
+input[type="range"] {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+input[type="range"]:focus {
+  box-shadow: none;
 }

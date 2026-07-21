@@ -28,7 +28,21 @@ const PREFS_KEYS = {
   pageKeepProperNouns: 'tm-page-keep-proper-nouns',
   pageDynamicTranslate: 'tm-page-dynamic-translate',
   pageLazyTranslate: 'tm-page-lazy-translate',
+  docMode: 'tm-doc-mode',
+  ttsEnabled: 'tm-tts-enabled',
+  ttsRate: 'tm-tts-rate',
 };
+
+// Contract chung với content/background: templates, template đang dùng và glossary.
+const TEMPLATE_KEYS = { templates: 'tm-prompt-templates', active: 'tm-active-template' };
+const GLOSSARY_KEY = 'tm-glossary';
+
+// Seed mặc định khi 'tm-prompt-templates' chưa từng tồn tại trong storage.
+const DEFAULT_TEMPLATES = [
+  { id: 'van-hoc', name: 'Văn học', prompt: 'Dịch theo phong cách văn học, giàu hình ảnh, giữ nhịp câu tự nhiên như văn xuôi.' },
+  { id: 'ky-thuat', name: 'Kỹ thuật', prompt: 'Giữ nguyên thuật ngữ kỹ thuật tiếng Anh (không dịch tên hàm, lệnh, API, framework); chỉ dịch phần giải thích.' },
+  { id: 'gen-z', name: 'Giọng Gen Z', prompt: 'Dịch theo giọng Gen Z Việt Nam: tự nhiên, hài hước vừa phải, dùng từ lóng phổ biến nhưng vẫn rõ nghĩa.' },
+];
 
 // Giá trị hợp lệ của văn phong trang — sai thì về 'natural' theo contract.
 const PAGE_STYLE_VALUES = ['natural', 'casual', 'work-email', 'game-chat', 'genz', 'formal'];
@@ -311,6 +325,9 @@ async function saveSettings(showSaved = true) {
     [PREFS_KEYS.pageKeepProperNouns]: $('#pageKeepProperNouns').checked,
     [PREFS_KEYS.pageDynamicTranslate]: $('#pageDynamicTranslate').checked,
     [PREFS_KEYS.pageLazyTranslate]: $('#pageLazyTranslate').checked,
+    [PREFS_KEYS.docMode]: $('#docMode').value,
+    [PREFS_KEYS.ttsEnabled]: $('#ttsEnabled').checked,
+    [PREFS_KEYS.ttsRate]: Number($('#ttsRate').value),
   });
   if (showSaved) setStatus('Đã lưu cài đặt');
 }
@@ -367,6 +384,239 @@ async function loadPrefs() {
   $('#pageKeepProperNouns').checked = values[PREFS_KEYS.pageKeepProperNouns] !== false;
   $('#pageDynamicTranslate').checked = values[PREFS_KEYS.pageDynamicTranslate] !== false;
   $('#pageLazyTranslate').checked = values[PREFS_KEYS.pageLazyTranslate] !== false;
+  // Trang tài liệu & TTS — default khớp contract ('auto' / bật / 1x).
+  $('#docMode').value = ['auto', 'on', 'off'].includes(values[PREFS_KEYS.docMode]) ? values[PREFS_KEYS.docMode] : 'auto';
+  $('#ttsEnabled').checked = values[PREFS_KEYS.ttsEnabled] !== false;
+  const ttsRate = Number(values[PREFS_KEYS.ttsRate]);
+  $('#ttsRate').value = (ttsRate >= 0.5 && ttsRate <= 2) ? String(ttsRate) : '1';
+  $('#ttsRateValue').textContent = $('#ttsRate').value;
+}
+
+/* ------------------------- Prompt Templates ------------------------- */
+
+let templates = [];
+let activeTemplateId = '';
+let editingTemplateId = null;
+
+async function persistTemplates() {
+  await chrome.storage.local.set({ [TEMPLATE_KEYS.templates]: templates });
+}
+
+function renderTemplates() {
+  const list = $('#templateList');
+  list.textContent = '';
+
+  if (!templates.length) {
+    list.appendChild(el('div', 'key-empty', 'Chưa có template nào.'));
+  }
+
+  templates.forEach(tpl => {
+    const row = el('div', 'key-row');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'activeTemplate';
+    radio.className = 'tpl-radio';
+    radio.checked = tpl.id === activeTemplateId;
+    radio.title = 'Chọn làm template đang dùng';
+    radio.addEventListener('change', async () => {
+      activeTemplateId = tpl.id;
+      await chrome.storage.local.set({ [TEMPLATE_KEYS.active]: activeTemplateId });
+      renderTemplates();
+      setStatus(`Đang dùng template "${tpl.name}"`);
+    });
+    row.appendChild(radio);
+    row.appendChild(el('span', 'tpl-name', tpl.name));
+
+    const edit = el('button', '', 'Sửa');
+    edit.type = 'button';
+    edit.title = 'Sửa template này';
+    edit.addEventListener('click', () => {
+      editingTemplateId = tpl.id;
+      $('#tplName').value = tpl.name;
+      $('#tplPrompt').value = tpl.prompt;
+      $('#tplSave').textContent = 'Cập nhật template';
+      $('#tplCancel').hidden = false;
+      $('#tplName').focus();
+    });
+    row.appendChild(edit);
+
+    const remove = el('button', '', 'Xoá');
+    remove.type = 'button';
+    remove.title = 'Xoá template này';
+    remove.addEventListener('click', async () => {
+      templates = templates.filter(item => item.id !== tpl.id);
+      if (activeTemplateId === tpl.id) {
+        activeTemplateId = '';
+        await chrome.storage.local.set({ [TEMPLATE_KEYS.active]: '' });
+      }
+      if (editingTemplateId === tpl.id) resetTemplateForm();
+      await persistTemplates();
+      renderTemplates();
+      setStatus('Đã xoá template');
+    });
+    row.appendChild(remove);
+    list.appendChild(row);
+  });
+
+  // Dòng "không dùng template" — radio về mặc định.
+  const noneRow = el('div', 'key-row');
+  const noneRadio = document.createElement('input');
+  noneRadio.type = 'radio';
+  noneRadio.name = 'activeTemplate';
+  noneRadio.className = 'tpl-radio';
+  noneRadio.checked = activeTemplateId === '';
+  noneRadio.title = 'Không dùng template';
+  noneRadio.addEventListener('change', async () => {
+    activeTemplateId = '';
+    await chrome.storage.local.set({ [TEMPLATE_KEYS.active]: '' });
+    renderTemplates();
+    setStatus('Đã bỏ chọn template — dịch theo mặc định');
+  });
+  noneRow.appendChild(noneRadio);
+  noneRow.appendChild(el('span', 'tpl-name', 'Mặc định (không dùng template)'));
+  list.appendChild(noneRow);
+}
+
+function resetTemplateForm() {
+  editingTemplateId = null;
+  $('#tplName').value = '';
+  $('#tplPrompt').value = '';
+  $('#tplSave').textContent = 'Lưu template';
+  $('#tplCancel').hidden = true;
+}
+
+async function saveTemplateForm() {
+  const name = $('#tplName').value.trim();
+  const prompt = $('#tplPrompt').value.trim();
+  if (!name || !prompt) return setStatus('Nhập đủ tên và prompt cho template', true);
+
+  if (editingTemplateId) {
+    const tpl = templates.find(item => item.id === editingTemplateId);
+    if (tpl) {
+      tpl.name = name;
+      tpl.prompt = prompt;
+    }
+    setStatus(`Đã cập nhật template "${name}"`);
+  } else {
+    templates.push({ id: `tpl-${Date.now().toString(36)}`, name, prompt });
+    setStatus(`Đã thêm template "${name}"`);
+  }
+  resetTemplateForm();
+  await persistTemplates();
+  renderTemplates();
+}
+
+async function loadTemplates() {
+  const values = await chrome.storage.local.get([TEMPLATE_KEYS.templates, TEMPLATE_KEYS.active]);
+  if (values[TEMPLATE_KEYS.templates] === undefined) {
+    // Chưa từng tồn tại → seed bộ mặc định (mảng rỗng đã lưu thì tôn trọng, không seed lại).
+    templates = DEFAULT_TEMPLATES.map(tpl => ({ ...tpl }));
+    await persistTemplates();
+  } else {
+    templates = Array.isArray(values[TEMPLATE_KEYS.templates]) ? values[TEMPLATE_KEYS.templates] : [];
+  }
+  const savedActive = values[TEMPLATE_KEYS.active];
+  activeTemplateId = typeof savedActive === 'string' && templates.some(tpl => tpl.id === savedActive) ? savedActive : '';
+  renderTemplates();
+}
+
+/* ------------------------- Glossary thuật ngữ ------------------------- */
+
+let glossary = [];
+
+async function persistGlossary() {
+  await chrome.storage.local.set({ [GLOSSARY_KEY]: glossary });
+}
+
+function renderGlossary() {
+  const list = $('#glossaryList');
+  list.textContent = '';
+  $('#glossaryCount').textContent = `${glossary.length} từ`;
+
+  if (!glossary.length) {
+    list.appendChild(el('div', 'key-empty', 'Chưa có thuật ngữ nào.'));
+    return;
+  }
+
+  glossary.forEach((entry, index) => {
+    const row = el('div', 'key-row glossary-row');
+    row.appendChild(el('span', 'glossary-source', entry.source));
+    row.appendChild(el('span', 'glossary-arrow', '→'));
+    row.appendChild(el('span', 'glossary-target', entry.target));
+    const remove = el('button', '', 'Xoá');
+    remove.type = 'button';
+    remove.title = 'Xoá cặp từ này';
+    remove.addEventListener('click', async () => {
+      glossary.splice(index, 1);
+      await persistGlossary();
+      renderGlossary();
+      setStatus('Đã xoá cặp từ');
+    });
+    row.appendChild(remove);
+    list.appendChild(row);
+  });
+}
+
+// Merge entries mới vào glossary, dedupe theo source (source đã có thì cập nhật target).
+async function mergeGlossary(entries) {
+  let added = 0;
+  for (const entry of entries) {
+    const source = String(entry?.source || '').trim();
+    const target = String(entry?.target || '').trim();
+    if (!source || !target) continue;
+    const existing = glossary.find(item => item.source === source);
+    if (existing) existing.target = target;
+    else {
+      glossary.push({ source, target });
+      added++;
+    }
+  }
+  await persistGlossary();
+  renderGlossary();
+  return added;
+}
+
+async function addGlossaryEntry() {
+  const source = $('#glossarySource').value.trim();
+  const target = $('#glossaryTarget').value.trim();
+  if (!source || !target) return setStatus('Nhập đủ thuật ngữ gốc và bản dịch', true);
+  await mergeGlossary([{ source, target }]);
+  $('#glossarySource').value = '';
+  $('#glossaryTarget').value = '';
+  $('#glossarySource').focus();
+  setStatus('Đã thêm cặp từ vào glossary');
+}
+
+async function importGlossaryFile(file) {
+  const helper = globalThis.NPT_GLOSSARY;
+  if (!helper?.parse) return setStatus('Module glossary.js chưa sẵn sàng — không import được', true);
+  const text = await file.text();
+  const entries = helper.parse(text);
+  if (!Array.isArray(entries) || !entries.length) return setStatus('Không đọc được cặp từ nào từ file này', true);
+  const added = await mergeGlossary(entries);
+  setStatus(`Đã import ${entries.length} cặp từ (${added} từ mới, còn lại cập nhật/trùng)`);
+}
+
+function exportGlossary(format) {
+  const helper = globalThis.NPT_GLOSSARY;
+  if (!helper?.serialize) return setStatus('Module glossary.js chưa sẵn sàng — không export được', true);
+  if (!glossary.length) return setStatus('Glossary đang trống', true);
+  const text = helper.serialize(glossary, format);
+  const isJson = format === 'json';
+  const blob = new Blob([text], { type: isJson ? 'application/json' : 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = isJson ? 'glossary.json' : 'glossary.csv';
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  setStatus(`Đã xuất ${glossary.length} từ ra ${anchor.download}`);
+}
+
+async function loadGlossary() {
+  const values = await chrome.storage.local.get([GLOSSARY_KEY]);
+  glossary = Array.isArray(values[GLOSSARY_KEY]) ? values[GLOSSARY_KEY] : [];
+  renderGlossary();
 }
 
 /* ------------------------- Quota DeepL ------------------------- */
@@ -433,6 +683,24 @@ $('#refreshDeeplUsage').addEventListener('click', async event => {
     button.disabled = false;
   }
 });
+// Prompt Templates.
+$('#tplSave').addEventListener('click', () => saveTemplateForm().catch(error => setStatus(error.message, true)));
+$('#tplCancel').addEventListener('click', resetTemplateForm);
+// Glossary.
+$('#glossaryAdd').addEventListener('click', () => addGlossaryEntry().catch(error => setStatus(error.message, true)));
+$('#glossaryTarget').addEventListener('keydown', event => {
+  if (event.key === 'Enter') addGlossaryEntry().catch(error => setStatus(error.message, true));
+});
+$('#glossaryImport').addEventListener('click', () => $('#glossaryFile').click());
+$('#glossaryFile').addEventListener('change', async event => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (file) await importGlossaryFile(file).catch(error => setStatus(error.message, true));
+});
+$('#glossaryExportJson').addEventListener('click', () => exportGlossary('json'));
+$('#glossaryExportCsv').addEventListener('click', () => exportGlossary('csv'));
+// TTS: hiển thị giá trị tốc độ đọc ngay khi kéo slider.
+$('#ttsRate').addEventListener('input', () => { $('#ttsRateValue').textContent = $('#ttsRate').value; });
 
 (async () => {
   try {
@@ -441,6 +709,8 @@ $('#refreshDeeplUsage').addEventListener('click', async event => {
     renderPreferredSelect();
     renderProviders();
     await loadPrefs();
+    await loadTemplates();
+    await loadGlossary();
     renderDeeplUsage();
   } catch (error) {
     setStatus(error.message, true);

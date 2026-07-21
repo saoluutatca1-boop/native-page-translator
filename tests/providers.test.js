@@ -637,20 +637,34 @@ async function run() {
     const def = {
       style: 'natural', dialect: 'us', mode: 'natural',
       grammarFix: false, keepProperNouns: true,
+      customPrompt: '', glossaryText: '', docMode: false,
     };
     assert.deepEqual(P.normalizePageOptions(null), def);
     assert.deepEqual(P.normalizePageOptions(undefined), def);
     assert.deepEqual(P.normalizePageOptions({}), def);
     // Giá trị hợp lệ được giữ nguyên
     assert.deepEqual(
-      P.normalizePageOptions({ style: 'genz', dialect: 'uk', mode: 'literal', grammarFix: true, keepProperNouns: false }),
-      { style: 'genz', dialect: 'uk', mode: 'literal', grammarFix: true, keepProperNouns: false },
+      P.normalizePageOptions({
+        style: 'genz', dialect: 'uk', mode: 'literal', grammarFix: true, keepProperNouns: false,
+        customPrompt: 'dịch kiểu lính thủy đánh bộ', glossaryText: '- server => máy chủ', docMode: true,
+      }),
+      {
+        style: 'genz', dialect: 'uk', mode: 'literal', grammarFix: true, keepProperNouns: false,
+        customPrompt: 'dịch kiểu lính thủy đánh bộ', glossaryText: '- server => máy chủ', docMode: true,
+      },
     );
     // Từng field rác (sai enum / sai kiểu) -> về default của field đó
     assert.deepEqual(
-      P.normalizePageOptions({ style: 'hacker', dialect: 'mars', mode: 'yolo', grammarFix: 'yes', keepProperNouns: 1 }),
+      P.normalizePageOptions({
+        style: 'hacker', dialect: 'mars', mode: 'yolo', grammarFix: 'yes', keepProperNouns: 1,
+        customPrompt: 42, glossaryText: null, docMode: 'yes',
+      }),
       def,
     );
+    // String được trim; customPrompt quá 2000 ký tự / glossaryText quá 8000 ký tự bị cắt
+    assert.equal(P.normalizePageOptions({ customPrompt: '  hello  ' }).customPrompt, 'hello');
+    assert.equal(P.normalizePageOptions({ customPrompt: 'x'.repeat(3000) }).customPrompt.length, 2000);
+    assert.equal(P.normalizePageOptions({ glossaryText: 'y'.repeat(9000) }).glossaryText.length, 8000);
   }
 
   // 36. PAGE_STYLES / PAGE_DIALECTS: export đúng nguyên văn label + instruction theo contract
@@ -793,6 +807,147 @@ async function run() {
     const instructions = JSON.parse(calls[0].body).systemInstruction.parts[0].text;
     assert.match(instructions, /formal/);
     assert.match(instructions, /British/);
+  }
+
+  // 45. buildBatchInstructions: docMode/glossaryText/customPrompt xuất hiện đúng block, đúng thứ tự
+  {
+    const out = P.buildBatchInstructions('auto', 'Vietnamese', {
+      docMode: true,
+      glossaryText: '- server => máy chủ\n- deploy => triển khai',
+      customPrompt: 'Dịch ngắn gọn như thông báo nội bộ',
+    });
+    assert.match(out, /technical documentation: keep all code, inline code, commands, file paths and identifiers unchanged; translate only prose\./);
+    assert.match(out, /Always apply this terminology glossary \(highest priority for these terms\):\n- server => máy chủ\n- deploy => triển khai/);
+    assert.match(out, /Additional user instructions \(override the rules above if conflicting\):\nDịch ngắn gọn như thông báo nội bộ/);
+    // Thứ tự: docMode -> glossary -> customPrompt (đứng cuối cùng)
+    const iDoc = out.indexOf('technical documentation');
+    const iGloss = out.indexOf('terminology glossary');
+    const iCustom = out.indexOf('Additional user instructions');
+    assert.ok(iDoc !== -1 && iDoc < iGloss && iGloss < iCustom);
+
+    // Không truyền 3 field -> không có block nào
+    const bare = P.buildBatchInstructions('auto', 'Vietnamese');
+    assert.doesNotMatch(bare, /technical documentation/);
+    assert.doesNotMatch(bare, /terminology glossary/);
+    assert.doesNotMatch(bare, /Additional user instructions/);
+
+    // Chỉ docMode
+    assert.match(P.buildBatchInstructions('auto', 'Vietnamese', { docMode: true }), /translate only prose/);
+    // customPrompt/glossary rỗng sau trim -> bỏ qua
+    const blank = P.buildBatchInstructions('auto', 'Vietnamese', { customPrompt: '   ', glossaryText: '  ' });
+    assert.doesNotMatch(blank, /terminology glossary|Additional user instructions/);
+  }
+
+  // 46. buildSummaryRequest: prompt yêu cầu bullet + ngôn ngữ đích (gemini + openai)
+  {
+    const gem = P.buildSummaryRequest({
+      providerId: 'gemini', providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'gkey',
+      text: 'Nội dung trang cần tóm tắt', targetLanguage: 'vi', maxBullets: 5,
+    });
+    assert.match(gem.url, /v1beta\/models\/gemini-2\.5-flash:generateContent$/);
+    assert.equal(gem.headers['x-goog-api-key'], 'gkey');
+    const gemBody = JSON.parse(gem.body);
+    const gemIns = gemBody.systemInstruction.parts[0].text;
+    assert.match(gemIns, /at most 5 bullet points/);
+    assert.match(gemIns, /starting with '- '/);
+    assert.match(gemIns, /ENTIRE summary in Vietnamese/);
+    assert.match(gemIns, /plain text only/);
+    assert.equal(gemBody.contents[0].parts[0].text, 'Nội dung trang cần tóm tắt');
+
+    const chat = P.buildSummaryRequest({
+      providerId: 'openai',
+      providerConfig: { url: 'https://api.openai.com/v1/chat/completions', format: 'chat' },
+      apiKey: 'sk-test', text: 'page content', targetLanguage: 'en', maxBullets: 10,
+    });
+    assert.equal(chat.openaiFormat, 'chat');
+    assert.equal(chat.headers.Authorization, 'Bearer sk-test');
+    const chatBody = JSON.parse(chat.body);
+    assert.match(chatBody.messages[0].content, /at most 10 bullet points/);
+    assert.match(chatBody.messages[0].content, /ENTIRE summary in English/);
+    assert.equal(chatBody.messages[1].content, 'page content');
+
+    // maxBullets mặc định 8, cap 3..15
+    const def = P.buildSummaryRequest({ providerId: 'gemini', providerConfig: {}, apiKey: 'g', text: 'x', targetLanguage: 'vi' });
+    assert.match(JSON.parse(def.body).systemInstruction.parts[0].text, /at most 8 bullet/);
+    const high = P.buildSummaryRequest({ providerId: 'gemini', providerConfig: {}, apiKey: 'g', text: 'x', targetLanguage: 'vi', maxBullets: 99 });
+    assert.match(JSON.parse(high.body).systemInstruction.parts[0].text, /at most 15 bullet/);
+
+    // DeepL / ngôn ngữ lạ -> từ chối
+    assert.throws(
+      () => P.buildSummaryRequest({ providerId: 'deepl', providerConfig: {}, apiKey: 'd:fx', text: 'x', targetLanguage: 'vi' }),
+      /SUMMARIZE_REQUIRES_LLM/,
+    );
+    assert.throws(
+      () => P.buildSummaryRequest({ providerId: 'gemini', providerConfig: {}, apiKey: 'g', text: 'x', targetLanguage: 'zh' }),
+      /Ngôn ngữ đích không hỗ trợ/,
+    );
+  }
+
+  // 47. summarizeWithRotation: plain text bullet, bỏ qua DeepL dù enabled
+  {
+    const { fetchText, calls } = fakeFetch([
+      (req) => (req.url.includes('generativelanguage')
+        ? { status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: '- điểm 1\n- điểm 2' }] } }] }) }
+        : null),
+    ]);
+    const result = await P.summarizeWithRotation({
+      config: BASE_CONFIG, text: 'Nội dung dài cần tóm tắt', targetLanguage: 'vi', maxBullets: 5,
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.text, '- điểm 1\n- điểm 2');
+    assert.equal(result.provider, 'gemini');
+    assert.equal(result.providerLabel, 'Google AI Studio (Gemini)');
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes('generativelanguage')); // deepl không bị gọi
+
+    // OpenAI cũng summarize được khi gemini không khả dụng
+    const cfgOpenai = P.normalizeConfig({
+      preferred: 'openai',
+      providers: {
+        deepl: { enabled: true, keys: [{ key: 'd:fx' }] },
+        openai: { enabled: true, keys: [{ key: 'sk' }], url: 'https://api.openai.com/v1/chat/completions', format: 'chat' },
+      },
+    });
+    const { fetchText: fetchText2, calls: calls2 } = fakeFetch([
+      () => ({ status: 200, bodyText: JSON.stringify({ choices: [{ message: { content: '- point 1\n- point 2' } }] }) }),
+    ]);
+    const result2 = await P.summarizeWithRotation({
+      config: cfgOpenai, text: 'long page', targetLanguage: 'en',
+      fetchText: fetchText2, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result2.provider, 'openai');
+    assert.equal(result2.text, '- point 1\n- point 2');
+    assert.equal(calls2.length, 1);
+
+    // Ngôn ngữ lạ / text rỗng -> từ chối
+    await assert.rejects(
+      P.summarizeWithRotation({
+        config: BASE_CONFIG, text: 'x', targetLanguage: 'zh',
+        fetchText, keyState: P.createKeyState(), sleep: noSleep,
+      }),
+      /Ngôn ngữ đích không hỗ trợ/,
+    );
+    await assert.rejects(
+      P.summarizeWithRotation({
+        config: BASE_CONFIG, text: '   ', targetLanguage: 'vi',
+        fetchText, keyState: P.createKeyState(), sleep: noSleep,
+      }),
+      /Không có nội dung/,
+    );
+  }
+
+  // 48. Chỉ có DeepL key -> SUMMARIZE_REQUIRES_LLM (không gọi fetch nào)
+  {
+    const cfg = P.normalizeConfig({ providers: { deepl: { enabled: true, keys: [{ key: 'd:fx' }] } } });
+    const { fetchText, calls } = fakeFetch([() => ({ status: 200, bodyText: '{}' })]);
+    await assert.rejects(
+      P.summarizeWithRotation({
+        config: cfg, text: 'nội dung', targetLanguage: 'vi',
+        fetchText, keyState: P.createKeyState(), sleep: noSleep,
+      }),
+      /SUMMARIZE_REQUIRES_LLM/,
+    );
+    assert.equal(calls.length, 0);
   }
 
   console.log('Tất cả test providers.js đều PASS ✔');

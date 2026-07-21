@@ -10,6 +10,7 @@ const {
   normalizePageOptions,
   translateWithRotation,
   translateBatchWithRotation,
+  summarizeWithRotation,
   translateVisionWithRotation,
   createKeyState,
 } = globalThis.NPT_PROVIDERS;
@@ -231,6 +232,105 @@ const MAX_BATCH_ITEMS = 64;
 const MAX_BATCH_CHARS = 20000;
 // Cap đọc response text (providers) — chống stream payload khổng lồ DoS worker.
 const MAX_RESPONSE_TEXT_BYTES = 4 * 1024 * 1024;
+// Giới hạn tóm tắt trang: text quá dài bị cắt bớt trước khi gửi LLM.
+const MAX_SUMMARY_CHARS = 16000;
+
+// Tóm tắt nội dung trang thành bullet (chỉ LLM: gemini/openai — DeepL bị loại ở tầng providers).
+async function summarizePage(payload) {
+  const text = String(payload?.text || '').trim();
+  if (!text) throw new Error('payload.text phải là chuỗi không rỗng');
+
+  const targetLanguage = String(payload?.targetLanguage || '').toLowerCase();
+  if (!['vi', 'en'].includes(targetLanguage)) {
+    throw new Error("targetLanguage chỉ hỗ trợ 'vi' hoặc 'en'");
+  }
+
+  let maxBullets = Number(payload?.maxBullets);
+  if (!Number.isFinite(maxBullets)) maxBullets = 8;
+  maxBullets = Math.min(15, Math.max(3, Math.round(maxBullets)));
+
+  const config = await ensureConfig();
+  const result = await summarizeWithRotation({
+    config,
+    text: text.slice(0, MAX_SUMMARY_CHARS),
+    targetLanguage,
+    maxBullets,
+    keyState,
+    fetchText: providerFetchText,
+  });
+
+  return { ok: true, text: result.text, provider: result.provider, providerLabel: result.providerLabel };
+}
+
+/* ------------------------------------------------------------------
+ * Tải PDF (binary -> base64) cho trình xem/dịch PDF của extension.
+ * Chỉ http/https, cần host permission của origin, cap 25MB, timeout 60s.
+ * Thiếu quyền -> trả { ok:false, error:'NO_PERMISSION', needsPermission:true }
+ * (KHÔNG throw) để caller xin quyền bằng user gesture phía mình.
+ * ------------------------------------------------------------------ */
+const PDF_MAX_BYTES = 25 * 1024 * 1024; // 25MB
+
+async function fetchPdf(payload) {
+  let url;
+  try {
+    url = new URL(String(payload?.url || ''));
+  } catch (_) {
+    throw new Error('payload.url không hợp lệ');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('Chỉ hỗ trợ URL http/https');
+  }
+
+  const allowed = await chrome.permissions.contains({ origins: [`${url.origin}/*`] });
+  if (!allowed) {
+    return { ok: false, error: 'NO_PERMISSION', needsPermission: true };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60000);
+  try {
+    const response = await fetch(url.href, {
+      signal: controller.signal,
+      credentials: 'omit',
+      redirect: 'follow',
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`Không tải được PDF (HTTP ${response.status})`);
+    const contentType = (response.headers.get('content-type') || '').split(';')[0].trim() || 'application/pdf';
+
+    // Đọc theo chunk và abort NGAY khi vượt 25MB — không buffer toàn bộ rồi mới kiểm tra.
+    const reader = response.body?.getReader?.();
+    if (!reader) {
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > PDF_MAX_BYTES) throw new Error('PDF quá lớn (tối đa 25MB)');
+      return { ok: true, base64: arrayBufferToBase64(buffer), contentType };
+    }
+    const chunks = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > PDF_MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error('PDF quá lớn (tối đa 25MB)');
+      }
+      chunks.push(value);
+    }
+    const merged = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { ok: true, base64: arrayBufferToBase64(merged.buffer), contentType };
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('Tải PDF quá chậm (timeout 60s)');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function providerTranslate(payload) {
   const texts = payload?.texts;
@@ -359,6 +459,10 @@ const IMAGE_MENU_ID = 'npt-translate-image';
 const IMAGE_TARGET_KEY = 'tm-image-target';
 const IMAGE_MAX_BYTES = 8 * 1024 * 1024; // ~8MB
 
+// Menu chuột phải mở PDF bằng trình xem/dịch của extension.
+const PDF_MENU_ID = 'npt-pdf-translate';
+const PDF_URL_PATTERNS = ['*://*/*.pdf', '*://*/*.pdf?*', '*://*/*.pdf#*'];
+
 function registerImageContextMenu() {
   // removeAll trước để tránh lỗi trùng id khi tạo lại.
   chrome.contextMenus.removeAll(() => {
@@ -366,6 +470,13 @@ function registerImageContextMenu() {
       id: IMAGE_MENU_ID,
       title: 'Dịch ảnh này (Gemini)',
       contexts: ['image'],
+    });
+    chrome.contextMenus.create({
+      id: PDF_MENU_ID,
+      title: 'Dịch PDF bằng Native Translator',
+      contexts: ['page', 'link'],
+      documentUrlPatterns: PDF_URL_PATTERNS,
+      targetUrlPatterns: PDF_URL_PATTERNS,
     });
   });
 }
@@ -495,7 +606,21 @@ async function handleImageTranslate(info, tab) {
   }
 }
 
+// Click menu PDF: mở pdf-viewer.html kèm ?src=<url pdf>. Kiểm tra lại đuôi .pdf
+// bằng regex phòng trường hợp documentUrlPatterns/targetUrlPatterns không khớp.
+function handlePdfMenuClick(info) {
+  const pdfUrl = String(info?.linkUrl || info?.pageUrl || '');
+  if (!/\.pdf(\?|#|$)/i.test(pdfUrl)) return;
+  chrome.tabs.create({
+    url: chrome.runtime.getURL('pdf-viewer.html') + '?src=' + encodeURIComponent(pdfUrl),
+  });
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info?.menuItemId === PDF_MENU_ID) {
+    handlePdfMenuClick(info);
+    return;
+  }
   if (info?.menuItemId !== IMAGE_MENU_ID) return;
   handleImageTranslate(info, tab).catch(error =>
     console.warn('[Native Page Translator] Dịch ảnh thất bại:', error));
@@ -535,6 +660,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'providerTranslate') {
     providerTranslate(message.payload).then(sendResponse).catch(error => {
       sendResponse({ ok: false, error: sanitizeProviderError(error) });
+    });
+    return true;
+  }
+
+  if (message?.type === 'summarizePage') {
+    summarizePage(message.payload).then(sendResponse).catch(error => {
+      sendResponse({ ok: false, error: sanitizeProviderError(error) });
+    });
+    return true;
+  }
+
+  if (message?.type === 'fetchPdf') {
+    fetchPdf(message.payload).then(sendResponse).catch(error => {
+      sendResponse({ ok: false, error: error?.message || String(error) });
     });
     return true;
   }

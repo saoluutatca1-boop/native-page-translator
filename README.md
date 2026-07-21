@@ -117,6 +117,50 @@ Giới hạn hiện tại:
 - **Chuột phải**: mở menu chọn VI / EN / Gốc kèm trạng thái dịch.
 - Nút ✨ EN cạnh ô nhập cũng **kéo thả được** (offset lưu ở `tm-input-helper-offset`); menu mũi tên → **"Về vị trí mặc định"** để reset.
 
+## Custom Prompt Templates
+
+Tự định nghĩa "phong cách dịch" bằng prompt riêng, áp dụng khi dịch trang với provider LLM (Gemini/OpenAI):
+
+- Quản lý trong **Cài đặt → Prompt Templates**: thêm/sửa/xoá template (tên + nội dung prompt), chọn template **Đang dùng** bằng radio.
+- Cài sẵn 3 template mẫu: **Văn học** (giàu hình ảnh, nhịp câu văn xuôi), **Kỹ thuật** (giữ nguyên thuật ngữ/hàm/API tiếng Anh, chỉ dịch phần giải thích), **Giọng Gen Z** (tự nhiên, hài hước vừa phải).
+- Popup có **ô chọn nhanh template** — đổi template khi trang đang dịch sẽ **tự dịch lại** theo template mới.
+- Storage: `tm-prompt-templates` (danh sách), `tm-active-template` (id đang dùng, `''` = mặc định).
+
+## Glossary thuật ngữ
+
+Khoá cách dịch các thuật ngữ quan trọng (tên riêng, thuật ngữ ngành, biệt danh...) để bản dịch luôn nhất quán:
+
+- Quản lý trong **Cài đặt → Glossary thuật ngữ**: bảng 2 cột gốc → dịch, thêm/xoá từng cặp, hiển thị số lượng từ.
+- **Import** file `.json` / `.csv` / `.tsv` / `.txt` (định dạng `gốc => dịch`) — tự gộp, dedupe theo source.
+- **Export** ra JSON hoặc CSV để sao lưu/chia sẻ.
+- Storage: `tm-glossary` (danh sách `{source, target}`).
+
+## Tóm tắt & dịch trang
+
+Nút **"Tóm tắt & dịch"** trong popup: tóm tắt nội dung chính của trang hiện tại rồi dịch bản tóm tắt sang ngôn ngữ đang chọn (VI/EN), hiển thị trong panel ngay trên trang. Nút tự khoá trên các trang hệ thống (`chrome://`...) không chạy được extension.
+
+## Chế độ trang tài liệu kỹ thuật
+
+Chọn trong **Cài đặt → Trang tài liệu kỹ thuật** (storage key `tm-doc-mode`):
+
+- **Tự động nhận diện** (mặc định) — phát hiện trang docs (nhiều code block, cấu trúc tài liệu) và tự bật.
+- **Luôn bật** / **Tắt** — ép theo ý bạn.
+
+Khi bật, extension **giữ nguyên code block** khi dịch trang tài liệu kỹ thuật — chỉ dịch phần văn bản giải thích.
+
+## Đọc bản dịch (TTS)
+
+Bật trong **Cài đặt → Đọc bản dịch (TTS)** để có nút nghe bản dịch bằng giọng nói, kèm thanh chỉnh **tốc độ đọc 0.5x–2x** (mặc định 1x). Storage: `tm-tts-enabled`, `tm-tts-rate`.
+
+## Dịch PDF dạng văn bản
+
+Khi đang mở một file PDF trên trình duyệt, popup hiện nút **"Dịch PDF này"** — mở trang viewer riêng của extension:
+
+- Trích xuất text bằng pdf.js (bundle sẵn trong extension), gom thành đoạn và dịch theo batch qua provider đã cấu hình, kèm thanh tiến trình "Đang xử lý trang x/y".
+- Chọn ngôn ngữ đích VI/EN; 3 chế độ hiển thị: **Song ngữ / Chỉ bản dịch / Chỉ gốc** — đổi qua lại không tốn dịch lại.
+- Cũng mở được **file PDF từ máy** qua nút chọn file. Tài liệu quá dài sẽ chỉ dịch phần đầu (kèm thông báo).
+- **Giới hạn**: bản dịch là **dạng văn bản song ngữ — không giữ nguyên layout/font/hình ảnh** của PDF gốc; PDF scan dạng ảnh không trích xuất được chữ.
+
 ## Phím tắt dịch trang
 
 - `Alt+V`: dịch trang sang tiếng Việt.
@@ -136,8 +180,10 @@ Cấu trúc:
 - `fancy-text.js` — chuẩn hóa/gán style "font đặc biệt" Unicode (JS thuần, test được bằng node).
 - `background.js` — service worker: routing dịch, seed config, proxy fetch có kiểm soát quyền.
 - `content.js` — dịch trang + nút ✨ EN trên ô nhập.
-- `options.html` / `options.js` — trang Cài đặt (quản lý key, quota DeepL, blacklist site).
-- `popup.html` / `popup.js` — tác vụ nhanh.
+- `options.html` / `options.js` — trang Cài đặt (quản lý key, quota DeepL, blacklist site, prompt templates, glossary, TTS).
+- `popup.html` / `popup.js` — tác vụ nhanh (dịch trang, chọn template, tóm tắt & dịch, mở PDF viewer).
+- `glossary.js` — parse/serialize glossary (JSON/CSV/TSV/`a => b`), JS thuần dùng chung.
+- `pdf-viewer.html` / `pdf-viewer.js` — trang dịch PDF dạng văn bản (dùng pdf.js trong `vendor/pdfjs/`).
 
 Từ v4.2, cấu trúc file giữ nguyên — chỉ mở rộng contract message: `content.js` gửi `providerTranslate` kèm `pageOptions` `{ style, dialect, mode, grammarFix, keepProperNouns }`; `background.js` sanitize (giá trị sai về mặc định) rồi truyền vào `providers.js`, nơi `buildBatchInstructions` ghép các rule thành system instruction. DeepL là engine dịch thuần nên bỏ qua `pageOptions`.
 

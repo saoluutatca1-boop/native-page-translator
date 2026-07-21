@@ -18,6 +18,13 @@ const KEYS = {
 // Giá trị hợp lệ của văn phong trang — sai thì về 'natural' theo contract.
 const PAGE_STYLE_VALUES = ['natural', 'casual', 'work-email', 'game-chat', 'genz', 'formal'];
 
+// Contract chung: danh sách template + template đang dùng (quản lý đầy đủ ở trang Cài đặt).
+const TEMPLATE_KEYS = { templates: 'tm-prompt-templates', active: 'tm-active-template' };
+
+// Ngôn ngữ đích hiện tại của popup (mặc định VI) + trạng thái trang đã dịch trong phiên popup này.
+let currentLanguage = 'vi';
+let pageTranslated = false;
+
 const $ = selector => document.querySelector(selector);
 const statusElement = $('#status');
 
@@ -140,7 +147,16 @@ async function testApi() {
 }
 
 document.querySelectorAll('[data-lang]').forEach(button => {
-  button.addEventListener('click', () => setPageLanguage(button.dataset.lang).catch(error => setStatus(error.message, true)));
+  button.addEventListener('click', () => {
+    const language = button.dataset.lang;
+    if (language === 'vi' || language === 'en') {
+      currentLanguage = language;
+      pageTranslated = true;
+    } else if (language === 'original') {
+      pageTranslated = false;
+    }
+    setPageLanguage(language).catch(error => setStatus(error.message, true));
+  });
 });
 $('#defaultMode').addEventListener('change', () => saveSettings().catch(error => setStatus(error.message, true)));
 $('#fallbackQuick').addEventListener('change', () => saveSettings().catch(error => setStatus(error.message, true)));
@@ -156,6 +172,68 @@ $('#pageGrammarFix').addEventListener('change', () => saveSettings().catch(error
 $('#testApi').addEventListener('click', () => testApi().catch(error => setStatus(error.message, true)));
 $('#openOptions').addEventListener('click', () => chrome.runtime.openOptionsPage());
 $('#openOptions2').addEventListener('click', () => chrome.runtime.openOptionsPage());
+
+/* ------------------ Prompt template / Tóm tắt / PDF ------------------ */
+
+async function loadTemplates() {
+  const values = await chrome.storage.local.get([TEMPLATE_KEYS.templates, TEMPLATE_KEYS.active]);
+  const templates = Array.isArray(values[TEMPLATE_KEYS.templates]) ? values[TEMPLATE_KEYS.templates] : [];
+  const select = $('#templateSwitch');
+  // Giữ option "Mặc định" (value '') đầu tiên, thay toàn bộ option template phía sau.
+  select.querySelectorAll('option[data-tpl]').forEach(option => option.remove());
+  for (const tpl of templates) {
+    const option = document.createElement('option');
+    option.value = tpl.id;
+    option.dataset.tpl = '1';
+    option.textContent = tpl.name;
+    select.appendChild(option);
+  }
+  const active = values[TEMPLATE_KEYS.active];
+  select.value = typeof active === 'string' && templates.some(tpl => tpl.id === active) ? active : '';
+}
+
+async function onTemplateSwitch() {
+  const id = $('#templateSwitch').value;
+  await chrome.storage.local.set({ [TEMPLATE_KEYS.active]: id });
+  // Trang đang ở trạng thái dịch → dịch lại theo template mới.
+  if (pageTranslated && (currentLanguage === 'vi' || currentLanguage === 'en')) {
+    await setPageLanguage(currentLanguage);
+    return;
+  }
+  setStatus(id ? 'Đã chọn template — áp dụng cho lần dịch sau' : 'Đã về template mặc định');
+}
+
+async function summarizePage() {
+  const tab = await getActiveTab();
+  if (!tab?.id) return setStatus('Không tìm thấy tab hiện tại', true);
+  const injected = await ensureInjected(tab.id);
+  if (!injected) return setStatus('Trang này không cho extension chạy', true);
+  await chrome.tabs.sendMessage(tab.id, { type: 'summarizePageStart', language: currentLanguage });
+  setStatus('Đã gửi lệnh tóm tắt & dịch');
+}
+
+// Nhận diện tab PDF (hiện nút "Dịch PDF này") và khoá nút tóm tắt trên trang không inject được.
+async function initTabContext() {
+  const tab = await getActiveTab();
+  const url = tab?.url || '';
+  if (/\.pdf(\?|#|$)/i.test(url)) {
+    const button = $('#btnTranslatePdf');
+    button.hidden = false;
+    button.addEventListener('click', () => {
+      chrome.tabs.create({ url: `${chrome.runtime.getURL('pdf-viewer.html')}?src=${encodeURIComponent(url)}` });
+    });
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    $('#btnSummarize').disabled = true;
+    $('#btnSummarize').title = 'Trang này không cho extension chạy';
+  }
+}
+
+$('#templateSwitch').addEventListener('change', () => onTemplateSwitch().catch(error => setStatus(error.message, true)));
+$('#btnSummarize').addEventListener('click', () => summarizePage().catch(error => setStatus(error.message, true)));
+
+loadTemplates().catch(error => setStatus(error.message, true));
+initTabContext().catch(() => {});
 
 loadSettings().catch(error => setStatus(error.message, true));
 loadProviderStatus();

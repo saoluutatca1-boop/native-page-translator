@@ -35,6 +35,18 @@
     </section>
 
     <section>
+      <label for="templateSwitch"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>Prompt template</label>
+      <select id="templateSwitch">
+        <option value="">Mặc định</option>
+      </select>
+      <p class="note">Đổi template khi trang đang dịch sẽ tự dịch lại theo template mới.</p>
+      <div class="row two action-row">
+        <button id="btnSummarize" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 11h16M4 16h10M4 21h7"/></svg>Tóm tắt &amp; dịch</button>
+        <button id="btnTranslatePdf" type="button" hidden><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 13h6M9 17h4"/></svg>Dịch PDF này</button>
+      </div>
+    </section>
+
+    <section>
       <label for="pageDisplayMode"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"/><path d="m17 15 3 3-3 3"/></svg>Dịch trang nâng cao</label>
       <select id="pageDisplayMode">
         <option value="replace">Chỉ hiện bản dịch</option>
