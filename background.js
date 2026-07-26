@@ -5,6 +5,8 @@ const {
   PROVIDER_DEFS,
   normalizeConfig,
   usableProviders,
+  providerKind,
+  providerLabelOf,
   maskKey,
   deeplUsageEndpoint,
   normalizePageOptions,
@@ -127,15 +129,19 @@ async function ensureConfig() {
 async function isRemoteAllowed(url) {
   if (BUILTIN_ORIGINS.has(url.origin)) return true;
 
+  /* Mỗi slot OpenAI-compatible có endpoint riêng, nên whitelist là origin của
+   * TẤT CẢ slot đang cấu hình — không còn mỗi một url duy nhất. Origin nào có
+   * url hỏng thì bỏ qua chứ không chặn luôn các slot còn lại. */
   const config = await ensureConfig();
-  let configured;
-  try {
-    configured = normalizeEndpoint(config.providers.openai?.url);
-  } catch (_) {
-    return false;
+  const origins = new Set();
+  for (const [id, provider] of Object.entries(config.providers)) {
+    if (providerKind(id) !== 'openai') continue;
+    try {
+      origins.add(normalizeEndpoint(provider?.url).origin);
+    } catch (_) { /* endpoint hỏng -> không tính vào whitelist */ }
   }
 
-  if (configured.origin !== url.origin) return false;
+  if (!origins.has(url.origin)) return false;
   return chrome.permissions.contains({ origins: [`${url.origin}/*`] });
 }
 
@@ -570,7 +576,7 @@ async function providerStatus() {
         {
           enabled: Boolean(provider.enabled),
           keyCount: provider.keys.length,
-          label: PROVIDER_DEFS[id]?.label || id,
+          label: providerLabelOf(id, provider),
         },
       ]),
     ),

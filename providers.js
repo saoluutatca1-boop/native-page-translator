@@ -53,6 +53,63 @@
   };
 
   /* ------------------------------------------------------------------
+   * Nhiều endpoint OpenAI-compatible chạy song song.
+   *
+   * PROVIDER_DEFS chỉ mô tả BA KIỂU provider (deepl / gemini / openai), còn
+   * kiểu openai được phép có nhiều bản: 'openai' là slot đầu, các slot sau
+   * mang id 'openai-2', 'openai-3'... mỗi slot có url/model/format/key riêng
+   * nên Groq + OpenRouter + API tự host cùng nằm trong một vòng xoay key.
+   * Mọi chỗ dựng request làm việc theo KIỂU (providerKind); chỉ UI và thông
+   * báo lỗi mới cần id/tên cụ thể của từng slot.
+   * ------------------------------------------------------------------ */
+  const CUSTOM_PROVIDER_RE = /^openai-(\d+)$/;
+  const MAX_CUSTOM_PROVIDERS = 20;
+
+  function isCustomProvider(id) {
+    return CUSTOM_PROVIDER_RE.test(String(id || ''));
+  }
+
+  function providerKind(id) {
+    return isCustomProvider(id) ? 'openai' : String(id || '');
+  }
+
+  function providerDefOf(id) {
+    return PROVIDER_DEFS[providerKind(id)] || null;
+  }
+
+  // Tên hiển thị: mọi slot OpenAI-compatible đều đặt tên được (Groq, OpenRouter…);
+  // chưa đặt thì slot đầu giữ nhãn mặc định, các slot sau đánh số.
+  function providerLabelOf(id, providerConfig) {
+    const name = String(providerConfig?.name || '').trim();
+    if (name) return name;
+    const custom = CUSTOM_PROVIDER_RE.exec(String(id || ''));
+    if (custom) return `API tùy chỉnh ${custom[1]}`;
+    return providerDefOf(id)?.label || String(id || '');
+  }
+
+  // Thứ tự hiển thị: ba provider dựng sẵn, rồi tới các slot tùy chỉnh theo số.
+  function customProviderIds(source) {
+    return Object.keys(source?.providers || {})
+      .filter(isCustomProvider)
+      .sort((a, b) => Number(CUSTOM_PROVIDER_RE.exec(a)[1]) - Number(CUSTOM_PROVIDER_RE.exec(b)[1]))
+      .slice(0, MAX_CUSTOM_PROVIDERS);
+  }
+
+  function providerIdsOf(config) {
+    return [...PROVIDER_ORDER, ...customProviderIds(config)];
+  }
+
+  // Id còn trống cho slot tùy chỉnh mới ('' nếu đã kịch trần).
+  function nextCustomProviderId(config) {
+    const used = new Set(Object.keys(config?.providers || {}));
+    for (let index = 2; index <= MAX_CUSTOM_PROVIDERS + 1; index++) {
+      const id = `openai-${index}`;
+      if (!used.has(id)) return id;
+    }
+    return '';
+  }
+
+  /* ------------------------------------------------------------------
    * Ngôn ngữ đích của dịch trang: chỉ VI/EN.
    *  - deepl:       mã target_lang của DeepL
    *  - englishName: tên tiếng Anh đưa vào prompt LLM
@@ -87,10 +144,12 @@
    * ------------------------------------------------------------------ */
 
   function emptyProviderConfig(id) {
-    const def = PROVIDER_DEFS[id];
+    const def = providerDefOf(id);
     return {
       enabled: false,
       keys: [],
+      // Chỉ kiểu OpenAI-compatible mới cần tên riêng: có nhiều slot cùng kiểu.
+      ...(def.needsUrl ? { name: '' } : {}),
       ...(def.needsModel ? { model: def.defaultModel } : {}),
       ...(def.needsUrl ? { url: def.defaultUrl, format: 'auto' } : {}),
     };
@@ -270,12 +329,28 @@
     return { entries, duplicates, invalid };
   }
 
+  /* Đoán key thuộc KIỂU provider nào, để dán một mớ key trộn lẫn của nhiều
+   * nhà cung cấp là tự chia về đúng thẻ. Chỉ trả lời khi chắc chắn — key lạ
+   * (API tự host, proxy) trả '' và được giữ nguyên ở chỗ người dùng đang dán.
+   *   AIza… / AQ.…            -> gemini
+   *   uuid hoặc uuid:fx       -> deepl
+   *   sk-… gsk_… xai-… hf_…   -> openai (OpenAI, OpenRouter, Groq, xAI, HF)
+   */
+  function detectProviderForKey(key) {
+    const value = String(key || '').trim();
+    if (!value) return '';
+    if (/^AIza[\w-]{10,}$/.test(value) || /^AQ\./.test(value)) return 'gemini';
+    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?::[a-z]{2})?$/i.test(value)) return 'deepl';
+    if (/^(?:sk|gsk|xai|hf|or|pk)[-_]/i.test(value)) return 'openai';
+    return '';
+  }
+
   /* Cảnh báo mềm khi key trông sai định dạng của provider: KHÔNG chặn lưu
    * (API tự host / proxy có thể dùng key kiểu khác), chỉ nhắc để người dùng
    * biết trước vì sao key đó sẽ bị từ chối. */
   function keyFormatWarning(providerId, key) {
     const value = String(key || '');
-    if (providerId === 'gemini' && !value.startsWith('AIza')) {
+    if (providerKind(providerId) === 'gemini' && !value.startsWith('AIza')) {
       return 'Key Gemini chuẩn bắt đầu bằng "AIza". Key dạng "AQ." là key bị Google giới hạn — Gemini API sẽ từ chối. Hãy tạo key "AIza" bằng project/tài khoản Google khác, hoặc tạo trong Google Cloud Console.';
     }
     return '';
@@ -296,12 +371,15 @@
   }
 
   function normalizeConfig(raw) {
+    // Ba provider dựng sẵn luôn có mặt; slot tùy chỉnh lấy theo đúng những id
+    // đang nằm trong config (người dùng thêm/xoá bao nhiêu cũng được).
+    const ids = [...PROVIDER_ORDER, ...customProviderIds(raw)];
     const config = {
-      preferred: PROVIDER_ORDER.includes(raw?.preferred) ? raw.preferred : PROVIDER_ORDER[0],
+      preferred: ids.includes(raw?.preferred) ? raw.preferred : PROVIDER_ORDER[0],
       tone: TONES.includes(raw?.tone) ? raw.tone : 'natural',
       providers: {},
     };
-    for (const id of PROVIDER_ORDER) {
+    for (const id of ids) {
       const base = emptyProviderConfig(id);
       const incoming = raw?.providers?.[id] || {};
       // keys có thể là mảng {key,label}, mảng chuỗi, hoặc (config nhập tay/
@@ -314,14 +392,16 @@
         ...incoming,
         enabled: incoming.enabled !== undefined ? Boolean(incoming.enabled) : base.enabled,
         keys: normalizeKeyList(keys),
+        ...(base.name !== undefined ? { name: String(incoming.name || '').trim().slice(0, 40) } : {}),
       };
     }
     return config;
   }
 
   function orderedProviderIds(config) {
-    const rest = PROVIDER_ORDER.filter(id => id !== config.preferred);
-    return [config.preferred, ...rest];
+    const all = providerIdsOf(config);
+    const rest = all.filter(id => id !== config.preferred);
+    return all.includes(config.preferred) ? [config.preferred, ...rest] : rest;
   }
 
   function usableProviders(config) {
@@ -329,7 +409,7 @@
       const provider = config.providers[id];
       if (!provider?.enabled) return false;
       // OpenAI-compatible cho phép không cần key (API free tự host).
-      if (id === 'openai') return true;
+      if (providerKind(id) === 'openai') return true;
       return provider.keys.length > 0;
     });
   }
@@ -459,10 +539,11 @@
   }
 
   function buildRequest({ providerId, providerConfig, apiKey, source, context, tone }) {
+    const kind = providerKind(providerId);
     const instructions = buildNativeInstructions(tone);
     const prompt = buildPrompt(source, context);
 
-    if (providerId === 'deepl') {
+    if (kind === 'deepl') {
       return {
         url: PROVIDER_DEFS.deepl.endpointFor(apiKey),
         method: 'POST',
@@ -478,7 +559,7 @@
       };
     }
 
-    if (providerId === 'gemini') {
+    if (kind === 'gemini') {
       const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
       // Dịch thuật không cần suy luận: tắt thinking để tiết kiệm token.
       // Chỉ gửi cho dòng 2.5 (đã kiểm chứng field hợp lệ); dòng 3.x mặc định
@@ -502,7 +583,7 @@
       };
     }
 
-    if (providerId === 'openai') {
+    if (kind === 'openai') {
       const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
 
       let payload;
@@ -599,8 +680,8 @@
   }
 
   // Phân loại lỗi theo HTTP status (dùng chung single + batch). 2xx -> null.
-  function classifyHttpError({ providerId, status, bodyText, retryAfterMs }) {
-    const def = PROVIDER_DEFS[providerId];
+  function classifyHttpError({ providerId, providerLabel, status, bodyText, retryAfterMs }) {
+    const def = { label: providerLabel || providerLabelOf(providerId) };
 
     if (status === 0) {
       return { kind: 'providerFailed', message: `${def.label}: lỗi mạng/timeout` };
@@ -655,9 +736,10 @@
     return null;
   }
 
-  function classifyResponse({ providerId, openaiFormat, status, bodyText, retryAfterMs }) {
-    const def = PROVIDER_DEFS[providerId];
-    const httpError = classifyHttpError({ providerId, status, bodyText, retryAfterMs });
+  function classifyResponse({ providerId, providerLabel, openaiFormat, status, bodyText, retryAfterMs }) {
+    const kind = providerKind(providerId);
+    const def = { label: providerLabel || providerLabelOf(providerId) };
+    const httpError = classifyHttpError({ providerId, providerLabel: def.label, status, bodyText, retryAfterMs });
     if (httpError) return httpError;
 
     let data;
@@ -668,9 +750,9 @@
     }
 
     let text = '';
-    if (providerId === 'deepl') {
+    if (kind === 'deepl') {
       text = String(data?.translations?.[0]?.text || '').trim();
-    } else if (providerId === 'gemini') {
+    } else if (kind === 'gemini') {
       const parts = data?.candidates?.[0]?.content?.parts || [];
       text = parts.map(part => part?.text || '').join('').trim();
     } else {
@@ -790,11 +872,12 @@
   }
 
   function buildBatchRequest({ providerId, providerConfig, apiKey, texts, sourceLanguage, targetLanguage, pageOptions }) {
+    const kind = providerKind(providerId);
     // Ngôn ngữ đích chỉ hỗ trợ VI/EN.
     const target = findBatchTarget(targetLanguage);
     if (!target) throw new Error('Ngôn ngữ đích không hỗ trợ');
 
-    if (providerId === 'deepl') {
+    if (kind === 'deepl') {
       // DeepL hỗ trợ mảng text trong 1 request duy nhất.
       return {
         url: PROVIDER_DEFS.deepl.endpointFor(apiKey),
@@ -815,7 +898,7 @@
     const instructions = buildBatchInstructions(sourceLanguage, target.englishName, pageOptions);
     const prompt = JSON.stringify(texts);
 
-    if (providerId === 'gemini') {
+    if (kind === 'gemini') {
       const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
       const generationConfig = { temperature: 0.3 };
       if (/2\.5/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -836,7 +919,7 @@
       };
     }
 
-    if (providerId === 'openai') {
+    if (kind === 'openai') {
       const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
 
       let payload;
@@ -880,9 +963,10 @@
 
   // Nhánh classify cho batch: lỗi HTTP dùng chung classifyHttpError,
   // body 2xx phải parse ra mảng bản dịch CÙNG ĐỘ DÀI với texts gửi đi.
-  function classifyBatchResponse({ providerId, openaiFormat, status, bodyText, expectedLength, retryAfterMs }) {
-    const def = PROVIDER_DEFS[providerId];
-    const httpError = classifyHttpError({ providerId, status, bodyText, retryAfterMs });
+  function classifyBatchResponse({ providerId, providerLabel, openaiFormat, status, bodyText, expectedLength, retryAfterMs }) {
+    const kind = providerKind(providerId);
+    const def = { label: providerLabel || providerLabelOf(providerId) };
+    const httpError = classifyHttpError({ providerId, providerLabel: def.label, status, bodyText, retryAfterMs });
     if (httpError) return httpError;
 
     let data;
@@ -894,13 +978,13 @@
     }
 
     let translations = null;
-    if (providerId === 'deepl') {
+    if (kind === 'deepl') {
       if (Array.isArray(data?.translations)) {
         translations = data.translations.map(item => String(item?.text ?? ''));
       }
     } else {
       let text = '';
-      if (providerId === 'gemini') {
+      if (kind === 'gemini') {
         const parts = data?.candidates?.[0]?.content?.parts || [];
         text = parts.map(part => part?.text || '').join('').trim();
       } else {
@@ -958,6 +1042,8 @@
 
     for (const providerId of providerIds) {
       const providerConfig = config.providers[providerId];
+      // Nhiều slot tùy chỉnh cùng kiểu 'openai' -> lỗi phải gọi đúng tên slot.
+      const providerLabel = providerLabelOf(providerId, providerConfig);
       // OpenAI-compatible không bắt buộc key: cho phép 1 lượt không key.
       const keyPool = providerConfig.keys.length ? providerConfig.keys : [{ key: '', label: '' }];
 
@@ -980,9 +1066,9 @@
         let buildFailed = false;
         for (let transientAttempt = 0; ; transientAttempt++) {
           try {
-            ({ verdict } = await attempt({ providerId, providerConfig, apiKey: entry.key }));
+            ({ verdict } = await attempt({ providerId, providerConfig, providerLabel, apiKey: entry.key }));
           } catch (error) {
-            errors.push(`${PROVIDER_DEFS[providerId].label}: ${error?.message || error}`);
+            errors.push(`${providerLabel}: ${error?.message || error}`);
             buildFailed = true;
             break;
           }
@@ -999,7 +1085,7 @@
           return {
             verdict,
             provider: providerId,
-            providerLabel: PROVIDER_DEFS[providerId].label,
+            providerLabel,
             keyMasked: entry.key ? maskKey(entry.key) : '',
           };
         }
@@ -1030,7 +1116,7 @@
       keyState,
       now,
       sleep,
-      attempt: async ({ providerId, providerConfig, apiKey }) => {
+      attempt: async ({ providerId, providerConfig, providerLabel, apiKey }) => {
         const request = buildRequest({
           providerId,
           providerConfig,
@@ -1042,6 +1128,7 @@
         const response = await fetchText(request);
         const verdict = classifyResponse({
           providerId,
+          providerLabel,
           openaiFormat: request?.openaiFormat,
           status: response.status,
           bodyText: response.bodyText,
@@ -1075,7 +1162,7 @@
       keyState,
       now,
       sleep,
-      attempt: async ({ providerId, providerConfig, apiKey }) => {
+      attempt: async ({ providerId, providerConfig, providerLabel, apiKey }) => {
         const request = buildBatchRequest({
           providerId,
           providerConfig,
@@ -1093,6 +1180,7 @@
           const response = await fetchText(request);
           const verdict = classifyBatchResponse({
             providerId,
+            providerLabel,
             openaiFormat: request?.openaiFormat,
             status: response.status,
             bodyText: response.bodyText,
@@ -1140,12 +1228,13 @@
   function buildSummaryRequest({ providerId, providerConfig, apiKey, text, targetLanguage, maxBullets }) {
     const targetName = SUMMARY_TARGET[String(targetLanguage || '').toLowerCase()];
     if (!targetName) throw new Error('Ngôn ngữ đích không hỗ trợ');
-    if (providerId === 'deepl') throw new Error('SUMMARIZE_REQUIRES_LLM');
+    const kind = providerKind(providerId);
+    if (kind === 'deepl') throw new Error('SUMMARIZE_REQUIRES_LLM');
 
     const instructions = buildSummaryInstructions(targetName, clampSummaryBullets(maxBullets));
     const prompt = String(text || '');
 
-    if (providerId === 'gemini') {
+    if (kind === 'gemini') {
       const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
       const generationConfig = { temperature: 0.3 };
       if (/2\.5/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -1166,7 +1255,7 @@
       };
     }
 
-    if (providerId === 'openai') {
+    if (kind === 'openai') {
       const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
 
       let payload;
@@ -1200,16 +1289,19 @@
     const target = String(targetLanguage || '').toLowerCase();
     if (!SUMMARY_TARGET[target]) throw new Error('Ngôn ngữ đích không hỗ trợ');
 
+    // Mọi provider LLM đang bật (Gemini + tất cả slot OpenAI-compatible).
     const llmProviders = {};
-    for (const id of ['gemini', 'openai']) {
+    for (const id of providerIdsOf(config)) {
+      if (providerKind(id) === 'deepl') continue;
       const provider = config?.providers?.[id];
       if (provider?.enabled) llmProviders[id] = provider;
     }
-    if (!Object.keys(llmProviders).length) throw new Error('SUMMARIZE_REQUIRES_LLM');
+    const llmIds = Object.keys(llmProviders);
+    if (!llmIds.length) throw new Error('SUMMARIZE_REQUIRES_LLM');
     const llmConfig = {
       ...config,
       // preferred 'deepl' không còn trong providers -> về LLM đầu tiên khả dụng.
-      preferred: llmProviders[config?.preferred] ? config.preferred : (llmProviders.gemini ? 'gemini' : 'openai'),
+      preferred: llmProviders[config?.preferred] ? config.preferred : llmIds[0],
       providers: llmProviders,
     };
 
@@ -1218,7 +1310,7 @@
       keyState,
       now,
       sleep,
-      attempt: async ({ providerId, providerConfig, apiKey }) => {
+      attempt: async ({ providerId, providerConfig, providerLabel, apiKey }) => {
         const request = buildSummaryRequest({
           providerId,
           providerConfig,
@@ -1230,6 +1322,7 @@
         const response = await fetchText(request);
         const verdict = classifyResponse({
           providerId,
+          providerLabel,
           openaiFormat: request?.openaiFormat,
           status: response.status,
           bodyText: response.bodyText,
@@ -1354,7 +1447,16 @@
     normalizeConfig,
     normalizeKeyList,
     parseKeysInput,
+    detectProviderForKey,
     keyFormatWarning,
+    emptyProviderConfig,
+    isCustomProvider,
+    providerKind,
+    providerDefOf,
+    providerLabelOf,
+    providerIdsOf,
+    nextCustomProviderId,
+    MAX_CUSTOM_PROVIDERS,
     orderedProviderIds,
     usableProviders,
     maskKey,

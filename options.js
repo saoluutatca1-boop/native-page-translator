@@ -3,11 +3,19 @@
 
 const {
   CONFIG_STORAGE_KEY,
-  PROVIDER_ORDER,
   PROVIDER_DEFS,
   normalizeConfig,
   parseKeysInput,
+  detectProviderForKey,
   keyFormatWarning,
+  emptyProviderConfig,
+  isCustomProvider,
+  providerKind,
+  providerDefOf,
+  providerLabelOf,
+  providerIdsOf,
+  nextCustomProviderId,
+  MAX_CUSTOM_PROVIDERS,
   maskKey,
 } = globalThis.NPT_PROVIDERS;
 
@@ -112,10 +120,10 @@ const KEY_ICON = '<svg class="key-ico" width="13" height="13" viewBox="0 0 24 24
 function renderPreferredSelect() {
   const select = $('#preferred');
   select.textContent = '';
-  for (const id of PROVIDER_ORDER) {
+  for (const id of providerIdsOf(config)) {
     const option = document.createElement('option');
     option.value = id;
-    option.textContent = PROVIDER_DEFS[id].label;
+    option.textContent = providerLabelOf(id, config.providers[id]);
     select.appendChild(option);
   }
   select.value = config.preferred;
@@ -131,6 +139,18 @@ const keyDrafts = new Map();
 // Ô nhập bị thay bằng element mới sau khi vẽ lại -> trả con trỏ về đúng ô đó,
 // nhờ vậy gõ key rồi Enter liên tục vẫn chạy như bản cũ.
 let pendingKeyFocus = '';
+
+/* Dán một mớ key trộn lẫn của nhiều nhà cung cấp thì tự chia về đúng thẻ:
+ * key nhận ra được định dạng (AIza… / uuid:fx / sk-…) đi theo định dạng, key
+ * lạ (API tự host) ở lại đúng thẻ đang dán. Key kiểu OpenAI đang dán ở thẻ
+ * OpenAI-compatible nào thì ở yên thẻ đó — nhiều slot cùng kiểu nên không
+ * đoán hộ được slot nào là đúng. */
+function routeKeyTo(key, currentId) {
+  const kind = detectProviderForKey(key);
+  if (!kind || kind === providerKind(currentId)) return currentId;
+  if (kind !== 'openai') return kind;
+  return providerIdsOf(config).find(id => providerKind(id) === 'openai') || currentId;
+}
 
 /* Bản cũ nhận cả chuỗi dán gộp làm MỘT key. Nếu config còn sót "key" kiểu đó
  * thì tách lại giúp, thay vì buộc người dùng xoá rồi dán tay từng cái. */
@@ -156,11 +176,12 @@ function splitPastedKeys(providerId) {
 
 function renderKeyList(card, providerId) {
   const provider = config.providers[providerId];
-  const def = PROVIDER_DEFS[providerId];
+  const def = providerDefOf(providerId);
+  const label = providerLabelOf(providerId, provider);
   const list = el('div', 'key-list');
 
   if (!provider.keys.length) {
-    list.appendChild(el('div', 'key-empty', providerId === 'openai'
+    list.appendChild(el('div', 'key-empty', providerKind(providerId) === 'openai'
       ? 'Không bắt buộc key nếu API của bạn là free.'
       : 'Chưa có key nào.'));
   }
@@ -184,7 +205,7 @@ function renderKeyList(card, providerId) {
     remove.type = 'button';
     remove.title = 'Xoá key này';
     remove.addEventListener('click', () => {
-      if (!confirm(`Xoá key ${maskKey(entry.key)} của ${def.label}?\nKhông khôi phục lại được.`)) return;
+      if (!confirm(`Xoá key ${maskKey(entry.key)} của ${label}?\nKhông khôi phục lại được.`)) return;
       provider.keys.splice(index, 1);
       renderProviders();
       markDirty();
@@ -211,12 +232,12 @@ function renderKeyList(card, providerId) {
     const clearAll = el('button', 'key-link key-link-danger', `Xoá hết ${provider.keys.length} key`);
     clearAll.type = 'button';
     clearAll.addEventListener('click', () => {
-      if (!confirm(`Xoá toàn bộ ${provider.keys.length} key của ${def.label}?\nKhông khôi phục lại được.`)) return;
+      if (!confirm(`Xoá toàn bộ ${provider.keys.length} key của ${label}?\nKhông khôi phục lại được.`)) return;
       provider.keys = [];
       expandedKeyLists.delete(providerId);
       renderProviders();
       markDirty();
-      setStatus(`Đã xoá hết key của ${def.label} — nhớ bấm Lưu cài đặt`);
+      setStatus(`Đã xoá hết key của ${label} — nhớ bấm Lưu cài đặt`);
     });
     tools.appendChild(clearAll);
   }
@@ -251,45 +272,80 @@ function renderKeyList(card, providerId) {
   addButton.type = 'button';
   foot.append(hint, addButton);
 
+  // Xem trước cả việc chia key: gộp theo provider đích, giữ đúng thứ tự dán.
+  const preview = () => {
+    const parsed = parseKeysInput(input.value, { existing: provider.keys });
+    const groups = new Map();
+    let duplicates = parsed.duplicates;
+    for (const entry of parsed.entries) {
+      const targetId = routeKeyTo(entry.key, providerId);
+      // Key đã nằm ở thẻ đích (dán ở thẻ khác) cũng là trùng.
+      if (config.providers[targetId].keys.some(item => item.key === entry.key)) {
+        duplicates++;
+        continue;
+      }
+      if (!groups.has(targetId)) groups.set(targetId, []);
+      groups.get(targetId).push(entry);
+    }
+    const total = [...groups.values()].reduce((sum, list) => sum + list.length, 0);
+    return { groups, total, duplicates, invalid: parsed.invalid };
+  };
+
   const refresh = () => {
-    const { entries, duplicates, invalid } = parseKeysInput(input.value, { existing: provider.keys });
+    const { groups, total, duplicates, invalid } = preview();
     input.rows = Math.min(12, Math.max(2, input.value.split('\n').length));
-    addButton.textContent = entries.length > 1 ? `Thêm ${entries.length} key` : 'Thêm key';
+    addButton.textContent = total > 1 ? `Thêm ${total} key` : 'Thêm key';
     if (!input.value.trim()) {
       hint.textContent = '';
       delete hint.dataset.tone;
       return;
     }
-    const parts = [`nhận diện ${entries.length} key mới`];
+    const parts = [`nhận diện ${total} key mới`];
+    // Dán mớ key trộn lẫn -> nói rõ mỗi provider nhận bao nhiêu trước khi bấm.
+    if (groups.size > 1 || (groups.size === 1 && !groups.has(providerId))) {
+      parts.push([...groups].map(([id, list]) => `${list.length} → ${providerLabelOf(id, config.providers[id])}`).join(' · '));
+    }
     if (duplicates) parts.push(`${duplicates} trùng`);
     if (invalid.length) parts.push(`${invalid.length} mẩu bỏ qua`);
     hint.textContent = parts.join(' · ');
-    hint.dataset.tone = entries.length ? 'ok' : 'warn';
+    hint.dataset.tone = total ? 'ok' : 'warn';
   };
 
   const addKeys = () => {
-    const { entries, duplicates, invalid } = parseKeysInput(input.value, { existing: provider.keys });
-    if (!entries.length) {
+    const { groups, total, duplicates, invalid } = preview();
+    if (!total) {
       setStatus(duplicates
         ? `Toàn bộ ${duplicates} key vừa dán đã có trong danh sách`
         : 'Không tìm thấy key nào trong nội dung vừa dán', true);
       return;
     }
 
-    provider.keys.push(...entries);
+    const added = [];
+    for (const [targetId, entries] of groups) {
+      const target = config.providers[targetId];
+      const hadKeys = target.keys.length > 0;
+      target.keys.push(...entries);
+      // Provider vừa có key đầu tiên thì bật luôn, không thì key nằm im vô ích.
+      if (!hadKeys && !target.enabled) target.enabled = true;
+      if (target.keys.length > KEY_PREVIEW_LIMIT) expandedKeyLists.add(targetId);
+      added.push(`${entries.length} key → ${providerLabelOf(targetId, target)}`);
+    }
+
     keyDrafts.delete(providerId);
-    if (provider.keys.length > KEY_PREVIEW_LIMIT) expandedKeyLists.add(providerId);
     pendingKeyFocus = providerId;
+    renderPreferredSelect();
     renderProviders();
     markDirty();
 
     const notes = [];
     if (duplicates) notes.push(`bỏ ${duplicates} key trùng`);
     if (invalid.length) notes.push(`bỏ qua ${invalid.length} mẩu không giống key (${invalid.slice(0, 3).join(', ')})`);
-    const suspicious = entries.filter(entry => keyFormatWarning(providerId, entry.key));
-    if (suspicious.length) notes.push(`${suspicious.length} key trông sai định dạng: ${keyFormatWarning(providerId, suspicious[0].key)}`);
+    const suspicious = [...groups].flatMap(([id, entries]) => entries
+      .map(entry => keyFormatWarning(id, entry.key))
+      .filter(Boolean));
+    if (suspicious.length) notes.push(`${suspicious.length} key trông sai định dạng: ${suspicious[0]}`);
     setStatus(
-      `Đã thêm ${entries.length} key cho ${def.label}${notes.length ? ` — ${notes.join(' · ')}` : ''} — nhớ bấm Lưu cài đặt`,
+      `Đã thêm ${added.join(' · ')}${notes.length ? ` — ${notes.join(' · ')}` : ''} — nhớ bấm Lưu cài đặt`,
       Boolean(invalid.length || suspicious.length),
     );
   };
@@ -320,9 +376,31 @@ function renderKeyList(card, providerId) {
 }
 
 function renderProviderFields(card, providerId) {
-  const def = PROVIDER_DEFS[providerId];
+  const def = providerDefOf(providerId);
   const provider = config.providers[providerId];
   const fields = el('div', 'provider-fields');
+
+  // Nhiều slot cùng kiểu OpenAI-compatible -> phải đặt tên mới phân biệt được
+  // trong ô "Provider ưu tiên" và trong thông báo lỗi.
+  if (providerKind(providerId) === 'openai') {
+    fields.appendChild(el('label', 'small-label', 'Tên hiển thị'));
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.spellcheck = false;
+    name.maxLength = 40;
+    name.value = provider.name || '';
+    name.placeholder = 'VD: Groq · OpenRouter · API nhà';
+    name.addEventListener('input', () => {
+      provider.name = name.value.trim();
+      markDirty();
+      const label = providerLabelOf(providerId, provider);
+      const title = card.querySelector('.provider-title');
+      if (title) title.textContent = label;
+      const option = $('#preferred').querySelector(`option[value="${providerId}"]`);
+      if (option) option.textContent = label;
+    });
+    fields.appendChild(name);
+  }
 
   if (def.needsUrl) {
     fields.appendChild(el('label', 'small-label', 'API URL'));
@@ -354,7 +432,7 @@ function renderProviderFields(card, providerId) {
   }
 
   if (def.needsModel) {
-    fields.appendChild(el('label', 'small-label', providerId === 'gemini'
+    fields.appendChild(el('label', 'small-label', providerKind(providerId) === 'gemini'
       ? 'Model — khuyên dùng gemini-3.1-flash-lite (rẻ, ít token)'
       : 'Model'));
     const model = document.createElement('input');
@@ -381,16 +459,50 @@ function renderProviderFields(card, providerId) {
   card.appendChild(fields);
 }
 
+/* Thêm một slot OpenAI-compatible nữa: Groq, OpenRouter, API tự host... mỗi
+ * slot có endpoint/model/key riêng và cùng nằm trong vòng xoay key. */
+function addCustomProvider() {
+  const id = nextCustomProviderId(config);
+  if (!id) {
+    setStatus(`Tối đa ${MAX_CUSTOM_PROVIDERS} API tùy chỉnh`, true);
+    return;
+  }
+  config.providers[id] = emptyProviderConfig(id);
+  renderPreferredSelect();
+  renderProviders();
+  markDirty();
+  setStatus('Đã thêm slot API tùy chỉnh — điền URL/model rồi dán key vào đó');
+  const card = document.querySelector(`.provider-card[data-provider="${id}"]`);
+  card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card?.querySelector('input[type="text"]')?.focus();
+}
+
+function removeCustomProvider(providerId) {
+  const provider = config.providers[providerId];
+  const label = providerLabelOf(providerId, provider);
+  if (!confirm(`Xoá "${label}" cùng ${provider.keys.length} key của nó?\nKhông khôi phục lại được.`)) return;
+  delete config.providers[providerId];
+  keyDrafts.delete(providerId);
+  expandedKeyLists.delete(providerId);
+  if (config.preferred === providerId) config.preferred = providerIdsOf(config)[0];
+  renderPreferredSelect();
+  renderProviders();
+  markDirty();
+  setStatus(`Đã xoá "${label}" — nhớ bấm Lưu cài đặt`);
+}
+
 function renderProviders() {
   const container = $('#providers');
   container.textContent = '';
 
-  for (const providerId of PROVIDER_ORDER) {
-    const def = PROVIDER_DEFS[providerId];
+  for (const providerId of providerIdsOf(config)) {
+    const def = providerDefOf(providerId);
     const provider = config.providers[providerId];
+    const custom = isCustomProvider(providerId);
 
     const card = el('div', 'provider-card');
     card.dataset.enabled = String(provider.enabled);
+    card.dataset.provider = providerId;
 
     const head = el('div', 'provider-head');
     const toggle = document.createElement('input');
@@ -403,19 +515,30 @@ function renderProviders() {
       markDirty();
     });
     head.appendChild(toggle);
-    if (PROVIDER_BADGES[providerId]) head.insertAdjacentHTML('beforeend', PROVIDER_BADGES[providerId]);
-    head.appendChild(el('span', '', def.label));
+    const badgeId = custom ? 'openai' : providerId;
+    if (PROVIDER_BADGES[badgeId]) head.insertAdjacentHTML('beforeend', PROVIDER_BADGES[badgeId]);
+    head.appendChild(el('span', 'provider-title', providerLabelOf(providerId, provider)));
     head.appendChild(el('span', 'badge', `${provider.keys.length} key`));
+    if (custom) {
+      const remove = el('button', 'key-link key-link-danger', 'Xoá provider');
+      remove.type = 'button';
+      remove.title = 'Xoá hẳn slot API tùy chỉnh này';
+      remove.addEventListener('click', () => removeCustomProvider(providerId));
+      head.appendChild(remove);
+    }
     card.appendChild(head);
 
-    const site = el('div', 'provider-site');
-    const link = document.createElement('a');
-    link.href = def.site;
-    link.target = '_blank';
-    link.rel = 'noreferrer';
-    link.textContent = 'Lấy API key tại đây';
-    site.appendChild(link);
-    card.appendChild(site);
+    // OpenAI-compatible là endpoint tự chọn nên không có trang "lấy key".
+    if (def.site) {
+      const site = el('div', 'provider-site');
+      const link = document.createElement('a');
+      link.href = def.site;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      link.textContent = 'Lấy API key tại đây';
+      site.appendChild(link);
+      card.appendChild(site);
+    }
 
     renderKeyList(card, providerId);
     renderProviderFields(card, providerId);
@@ -425,27 +548,49 @@ function renderProviders() {
 
 /* ------------------------- Quyền truy cập URL tùy chỉnh ------------------------- */
 
-async function requestEndpointPermission(endpoint) {
+const BUILTIN_ORIGINS = new Set([
+  'https://api.openai.com',
+  'https://translate.googleapis.com',
+  'https://translate.google.com',
+  'https://api.mymemory.translated.net',
+  'https://generativelanguage.googleapis.com',
+  'https://api-free.deepl.com',
+  'https://api.deepl.com',
+]);
+
+function endpointOrigin(endpoint, label) {
   let url;
   try {
     url = new URL(endpoint);
   } catch (_) {
-    throw new Error('API URL không hợp lệ');
+    throw new Error(`API URL của "${label}" không hợp lệ`);
   }
-  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('API URL phải dùng HTTP/HTTPS');
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`API URL của "${label}" phải dùng HTTP/HTTPS`);
+  return url.origin;
+}
 
-  const builtin = new Set([
-    'https://api.openai.com',
-    'https://translate.googleapis.com',
-    'https://translate.google.com',
-    'https://api.mymemory.translated.net',
-    'https://generativelanguage.googleapis.com',
-    'https://api-free.deepl.com',
-    'https://api.deepl.com',
-  ]);
-  if (builtin.has(url.origin)) return true;
+/* Mỗi slot OpenAI-compatible là một origin cần quyền riêng. Gom hết origin
+ * còn thiếu rồi hỏi MỘT lần: chrome.permissions.request cần user gesture, hỏi
+ * nhiều lần liên tiếp sẽ bị Chrome chặn từ lần thứ hai. */
+async function ensureEndpointPermissions() {
+  const wanted = new Set();
+  for (const id of providerIdsOf(config)) {
+    if (providerKind(id) !== 'openai') continue;
+    const provider = config.providers[id];
+    if (!provider.enabled && !provider.keys.length) continue;
+    const origin = endpointOrigin(provider.url || providerDefOf(id).defaultUrl, providerLabelOf(id, provider));
+    if (!BUILTIN_ORIGINS.has(origin)) wanted.add(`${origin}/*`);
+  }
+  if (!wanted.size) return;
 
-  return chrome.permissions.request({ origins: [`${url.origin}/*`] });
+  const missing = [];
+  for (const pattern of wanted) {
+    if (!(await chrome.permissions.contains({ origins: [pattern] }))) missing.push(pattern);
+  }
+  if (!missing.length) return;
+
+  const granted = await chrome.permissions.request({ origins: missing });
+  if (!granted) throw new Error(`Bạn chưa cấp quyền truy cập ${missing.length} API URL tùy chỉnh`);
 }
 
 /* ------------------------- Lưu / Test / Dịch trang ------------------------- */
@@ -460,11 +605,7 @@ function parseSiteBlacklist(text) {
 
 async function saveSettings(showSaved = true) {
   config.preferred = $('#preferred').value;
-  const openai = config.providers.openai;
-  if (openai.enabled || openai.keys.length) {
-    const granted = await requestEndpointPermission(openai.url);
-    if (!granted) throw new Error('Bạn chưa cấp quyền truy cập API URL tùy chỉnh');
-  }
+  await ensureEndpointPermissions();
 
   await persistConfig();
   await chrome.storage.local.set({
@@ -949,6 +1090,7 @@ for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => selectTab(tab.dataset.tab));
 }
 $('#save').addEventListener('click', () => saveSettings().catch(error => setStatus(error.message, true)));
+$('#addCustomProvider').addEventListener('click', addCustomProvider);
 $('#testApi').addEventListener('click', () => testApi().catch(error => setStatus(error.message, true)));
 $('#preferred').addEventListener('change', () => { config.preferred = $('#preferred').value; markDirty(); });
 $('#tone').addEventListener('change', () => { config.tone = $('#tone').value; markDirty(); });

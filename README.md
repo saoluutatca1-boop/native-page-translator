@@ -48,6 +48,16 @@ Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options
   - Với model dòng 2.5, extension tự tắt "thinking" để tiết kiệm token.
 - **OpenAI-compatible** — endpoint tùy ý (OpenAI, LibreTranslate, API tự host...), có thể không cần key.
 
+### Nhiều nhà cung cấp chạy song song
+
+Ba provider trên bật **đồng thời** được, mỗi cái giữ danh sách key riêng. Ngoài ra bấm **"Thêm API tùy chỉnh"** để tạo thêm bao nhiêu endpoint OpenAI-compatible cũng được (tối đa 20): Groq, OpenRouter, Together, API tự host… — **mỗi slot có URL / model / định dạng / key riêng** và tự đặt tên để nhận ra trong ô "Provider ưu tiên" lẫn trong thông báo lỗi.
+
+Tất cả nằm chung một vòng xoay: hết key của provider này thì tự sang provider kế, đúng thứ tự bạn chọn. Ví dụ một cấu hình chạy được ngay: DeepL 5 key → Gemini 30 key → Groq 3 key → OpenRouter 2 key.
+
+- Quyền truy cập từng endpoint tùy chỉnh được xin **gộp một lần** khi bấm Lưu cài đặt.
+- Extension chỉ cho phép gọi ra đúng origin của những endpoint đang cấu hình — origin lạ vẫn bị `isRemoteAllowed` chặn.
+- Xoá một slot bằng nút **"Xoá provider"** ngay trên thẻ.
+
 ### Dán nhiều key một lượt
 
 Ô thêm key nhận **cả một mớ key trong một lần dán** — không phải thêm từng cái. Cứ dán y nguyên như bạn đang có, extension tự bóc tách:
@@ -61,8 +71,11 @@ Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options
 | Dòng .env | `GEMINI_API_KEY=AIza...1` |
 | Kèm nhãn | `AIza...1 (acc phụ)` · `acc 2: AIza...2` · `AIza...3 # acc 3` |
 | Key bị nối liền do dán vào ô một dòng của bản cũ | `AIza...1AIza...2` |
+| **Trộn lẫn key của nhiều nhà cung cấp** | `AIza...1`⏎`uuid:fx`⏎`sk-...` |
 
-- Số key nhận diện được hiện ngay trên nút (**"Thêm 12 key"**) trước khi bấm.
+- **Dán mớ key trộn lẫn ở thẻ nào cũng được**: key nhận ra được định dạng tự về đúng thẻ — `AIza…`/`AQ.` → Gemini, `uuid` hoặc `uuid:fx` → DeepL, `sk-…`/`gsk_…`/`xai-…`/`hf_…` → OpenAI-compatible. Key lạ (API tự host) ở lại đúng thẻ bạn đang dán, và key kiểu OpenAI dán ở slot tùy chỉnh nào thì ở yên slot đó.
+- Provider vừa nhận key đầu tiên được **bật tự động** — key nằm trong provider đang tắt thì vô dụng.
+- Số key nhận diện được hiện ngay trên nút (**"Thêm 12 key"**) trước khi bấm, kèm dòng chia key (`7 → Gemini · 3 → DeepL`).
 - **Key trùng tự bỏ** (trùng nhau trong nội dung dán, hoặc trùng key đã lưu) — báo lại bao nhiêu cái bị bỏ.
 - Mẩu rác dán kèm (URL, chữ "API KEY", số thứ tự) bị loại và báo rõ, **không** làm hỏng cả lượt dán.
 - Ký tự vô hình / nháy cong / NBSP copy từ web được dọn sạch trước khi lưu.

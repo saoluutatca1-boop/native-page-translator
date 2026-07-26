@@ -139,7 +139,12 @@
         <p class="note">Khi dịch, extension thử provider ưu tiên trước; key lỗi/hết quota sẽ tự xoay sang key khác, rồi sang provider khác.</p>
         <p class="note">Mẹo: chuột phải vào ảnh bất kỳ → "Dịch ảnh này (Gemini)" để OCR + dịch chữ trong ảnh (cần key Gemini).</p>
         <p class="note">Thêm key: dán <b>bao nhiêu key cũng được</b> vào một lượt — mỗi dòng 1 key, hoặc ngăn bằng dấu phẩy / khoảng trắng / gạch dọc. Nhận cả dạng dán từ code (<code>["key1", "key2"]</code>), danh sách có số thứ tự, dòng <code>API_KEY=...</code>, và chú thích cuối dòng (<code>key (acc 2)</code>) sẽ thành nhãn. Key trùng tự bỏ. Enter để thêm nhanh 1 key, Ctrl/⌘+Enter khi đã dán nhiều dòng.</p>
+        <p class="note">Dán key của nhiều nhà cung cấp cùng lúc cũng được: key nhận ra được định dạng (<code>AIza…</code> → Gemini, <code>uuid:fx</code> → DeepL, <code>sk-…</code>/<code>gsk_…</code> → OpenAI-compatible) sẽ <b>tự về đúng thẻ</b>, dán ở thẻ nào cũng vậy.</p>
         <div id="providers"></div>
+        <div class="row action-row">
+          <button id="addCustomProvider" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Thêm API tùy chỉnh</button>
+        </div>
+        <p class="note">Mỗi "API tùy chỉnh" là một endpoint OpenAI-compatible riêng (Groq, OpenRouter, API tự host…) với URL/model/key riêng — tất cả cùng nằm trong vòng xoay key, hết provider này tự sang provider kế.</p>
         <div class="row two action-row">
           <button id="testApi" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 5 13h5l-1 9 8-11h-5l1-9Z"/></svg>Test API</button>
         </div>

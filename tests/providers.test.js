@@ -1210,6 +1210,130 @@ async function run() {
     assert.equal(new Set(usedKeys).size, 60, `chỉ dùng ${new Set(usedKeys).size}/60 key`);
   }
 
+  // 67. detectProviderForKey: đoán đúng nhà cung cấp, key lạ thì chịu
+  {
+    assert.equal(P.detectProviderForKey(`AIza${'x'.repeat(35)}`), 'gemini');
+    assert.equal(P.detectProviderForKey('AQ.Ab8RN6abcdef'), 'gemini');
+    assert.equal(P.detectProviderForKey('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx'), 'deepl');
+    assert.equal(P.detectProviderForKey('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'), 'deepl');
+    assert.equal(P.detectProviderForKey('sk-proj-abcdefghij'), 'openai');
+    assert.equal(P.detectProviderForKey('sk-or-v1-abcdefghij'), 'openai');
+    assert.equal(P.detectProviderForKey('gsk_abcdefghijklmnop'), 'openai');
+    assert.equal(P.detectProviderForKey('xai-abcdefghijklmnop'), 'openai');
+    assert.equal(P.detectProviderForKey('key-cua-api-tu-host'), '');
+  }
+
+  // 68. normalizeConfig giữ nguyên các slot OpenAI-compatible thêm vào
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'openai-3',
+      providers: {
+        gemini: { enabled: true, keys: [`AIza${'g'.repeat(35)}`] },
+        'openai-2': { enabled: true, name: '  Groq  ', url: 'https://api.groq.com/openai/v1/chat/completions', keys: ['gsk_aaaaaaaaaa'] },
+        'openai-3': { enabled: true, name: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', keys: ['sk-or-v1-bbbbbbbb'] },
+      },
+    });
+    assert.deepEqual(P.providerIdsOf(cfg), ['deepl', 'gemini', 'openai', 'openai-2', 'openai-3']);
+    assert.equal(cfg.providers['openai-2'].name, 'Groq');
+    assert.equal(cfg.providers['openai-2'].model, P.PROVIDER_DEFS.openai.defaultModel, 'slot tùy chỉnh phải có model mặc định');
+    assert.equal(P.providerLabelOf('openai-2', cfg.providers['openai-2']), 'Groq');
+    assert.equal(P.providerLabelOf('openai-3', { name: '' }), 'API tùy chỉnh 3');
+    assert.equal(P.providerKind('openai-3'), 'openai');
+    assert.equal(P.nextCustomProviderId(cfg), 'openai-4');
+    // preferred là slot tùy chỉnh -> được xếp đầu vòng xoay
+    assert.equal(P.orderedProviderIds(cfg)[0], 'openai-3');
+    assert.deepEqual(P.usableProviders(cfg), ['openai-3', 'gemini', 'openai-2']);
+
+    // preferred trỏ vào slot không tồn tại -> về provider đầu tiên
+    assert.equal(P.normalizeConfig({ preferred: 'openai-9' }).preferred, 'deepl');
+  }
+
+  // 69. Mỗi slot tùy chỉnh dựng request bằng url/model/key CỦA CHÍNH NÓ
+  {
+    const cfg = P.normalizeConfig({
+      providers: {
+        'openai-2': { enabled: true, name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', model: 'llama-3.3-70b', keys: ['gsk_aaa'] },
+      },
+    });
+    const req = P.buildRequest({
+      providerId: 'openai-2', providerConfig: cfg.providers['openai-2'], apiKey: 'gsk_aaa',
+      source: 'xin chào', context: '',
+    });
+    assert.equal(req.url, 'https://api.groq.com/openai/v1/chat/completions');
+    assert.equal(req.headers.Authorization, 'Bearer gsk_aaa');
+    assert.equal(JSON.parse(req.body).model, 'llama-3.3-70b');
+
+    // Lỗi phải gọi đúng TÊN slot, không phải nhãn chung của kiểu openai.
+    const verdict = P.classifyResponse({ providerId: 'openai-2', providerLabel: 'Groq', status: 401, bodyText: '{}' });
+    assert.match(verdict.message, /^Groq: /);
+  }
+
+  // 70. Xoay vòng qua nhiều provider khác nhau: DeepL -> Gemini -> 2 slot tùy chỉnh
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'deepl',
+      providers: {
+        deepl: { enabled: true, keys: ['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx'] },
+        gemini: { enabled: true, keys: [`AIza${'g'.repeat(35)}`] },
+        'openai-2': { enabled: true, name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', keys: ['gsk_aaa'] },
+        'openai-3': { enabled: true, name: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', keys: ['sk-or-v1-bbb'] },
+      },
+    });
+
+    const hosts = [];
+    const fetchText = async (request) => {
+      const host = new URL(request.url).host;
+      hosts.push(host);
+      // Ba provider đầu cạn quota, chỉ OpenRouter trả lời.
+      if (host !== 'openrouter.ai') return { status: 429, bodyText: '{}' };
+      return { status: 200, bodyText: JSON.stringify({ choices: [{ message: { content: 'hello' } }] }) };
+    };
+    const result = await P.translateWithRotation({
+      config: cfg, source: 'xin chào', context: '',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.text, 'hello');
+    assert.equal(result.provider, 'openai-3');
+    assert.equal(result.providerLabel, 'OpenRouter');
+    // Slot 'openai' mặc định đang tắt nên không bị gọi; ba cái còn lại đúng thứ tự.
+    assert.deepEqual(hosts, [
+      'api-free.deepl.com',
+      'generativelanguage.googleapis.com',
+      'api.groq.com',
+      'openrouter.ai',
+    ], `thứ tự gọi: ${hosts.join(' -> ')}`);
+  }
+
+  // 71. Tóm tắt: mọi slot tùy chỉnh đều được coi là provider LLM
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'deepl',
+      providers: {
+        deepl: { enabled: true, keys: ['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx'] },
+        'openai-2': { enabled: true, name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', keys: ['gsk_aaa'] },
+      },
+    });
+    const { fetchText, calls } = fakeFetch([
+      () => ({ status: 200, bodyText: JSON.stringify({ choices: [{ message: { content: '- một\n- hai' } }] }) }),
+    ]);
+    const result = await P.summarizeWithRotation({
+      config: cfg, text: 'nội dung dài cần tóm tắt', targetLanguage: 'vi',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.provider, 'openai-2');
+    assert.equal(new URL(calls[0].url).host, 'api.groq.com');
+    assert.ok(result.text.includes('một'));
+
+    // Chỉ có DeepL -> vẫn báo cần LLM
+    await assert.rejects(
+      () => P.summarizeWithRotation({
+        config: P.normalizeConfig({ providers: { deepl: { enabled: true, keys: ['a-b:fx'] } } }),
+        text: 'abc', targetLanguage: 'vi', fetchText, keyState: P.createKeyState(), sleep: noSleep,
+      }),
+      /SUMMARIZE_REQUIRES_LLM/,
+    );
+  }
+
   console.log('Tất cả test providers.js đều PASS ✔');
 }
 

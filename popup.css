@@ -479,8 +479,18 @@ a:focus-visible,
   background: #fff;
 }
 
+/* Tên provider đẩy phần còn lại về mép phải, nhờ vậy badge số key và nút
+ * "Xoá provider" (thẻ tùy chỉnh) đứng dính nhau thay vì mỗi cái một góc. */
+.provider-head .provider-title {
+  margin-right: auto;
+}
+
+.provider-head .key-link {
+  flex: none;
+  margin-left: 0;
+}
+
 .provider-head .badge {
-  margin-left: auto;
   padding: 3px 9px;
   border: 1px solid var(--hairline-soft);
   border-radius: 99px;
