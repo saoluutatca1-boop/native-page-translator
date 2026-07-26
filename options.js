@@ -31,6 +31,8 @@ const PREFS_KEYS = {
   docMode: 'tm-doc-mode',
   ttsEnabled: 'tm-tts-enabled',
   ttsRate: 'tm-tts-rate',
+  translationCache: 'tm-translation-cache',
+  uiTheme: 'tm-ui-theme',
 };
 
 // Contract chung với content/background: templates, template đang dùng và glossary.
@@ -54,7 +56,25 @@ let config = null;
 
 function setStatus(text, error = false) {
   statusElement.textContent = text;
-  statusElement.style.color = error ? '#fca5a5' : '#93c5fd';
+  if (text) statusElement.dataset.tone = error ? 'error' : 'ok';
+  else delete statusElement.dataset.tone;
+}
+
+/* Trước đây provider URL/model/key được sửa thẳng vào object trong bộ nhớ và
+ * chỉ ghi xuống storage khi bấm "Lưu cài đặt" — đóng tab là mất trắng mà không
+ * có một dấu hiệu nào. Giờ mọi thay đổi bật cờ này và hiện pill cảnh báo. */
+let dirty = false;
+
+function markDirty() {
+  dirty = true;
+  const pill = document.querySelector('#dirtyPill');
+  if (pill) pill.hidden = false;
+}
+
+function markClean() {
+  dirty = false;
+  const pill = document.querySelector('#dirtyPill');
+  if (pill) pill.hidden = true;
 }
 
 async function loadConfig() {
@@ -118,8 +138,10 @@ function renderKeyList(card, providerId) {
     remove.type = 'button';
     remove.title = 'Xoá key này';
     remove.addEventListener('click', () => {
+      if (!confirm(`Xoá key ${maskKey(entry.key)} của ${PROVIDER_DEFS[providerId].label}?\nKhông khôi phục lại được.`)) return;
       provider.keys.splice(index, 1);
       renderProviders();
+      markDirty();
       setStatus('Đã xoá key — nhớ bấm Lưu cài đặt');
     });
     row.appendChild(remove);
@@ -143,6 +165,7 @@ function renderKeyList(card, providerId) {
     }
     provider.keys.push({ key: value, label: '' });
     renderProviders();
+    markDirty();
     if (providerId === 'gemini' && !value.startsWith('AIza')) {
       setStatus('Đã thêm key, nhưng lưu ý: key Gemini chuẩn bắt đầu bằng "AIza". Key dạng "AQ." là key bị Google giới hạn — Gemini API sẽ từ chối. Hãy tạo key "AIza" bằng project/tài khoản Google khác, hoặc tạo trong Google Cloud Console.', true);
       return;
@@ -171,7 +194,7 @@ function renderProviderFields(card, providerId) {
     url.spellcheck = false;
     url.value = provider.url || def.defaultUrl;
     url.placeholder = def.defaultUrl;
-    url.addEventListener('input', () => { provider.url = url.value.trim(); });
+    url.addEventListener('input', () => { provider.url = url.value.trim(); markDirty(); });
     fields.appendChild(url);
 
     fields.appendChild(el('label', 'small-label', 'Định dạng API'));
@@ -189,7 +212,7 @@ function renderProviderFields(card, providerId) {
       format.appendChild(option);
     }
     format.value = provider.format || 'auto';
-    format.addEventListener('change', () => { provider.format = format.value; });
+    format.addEventListener('change', () => { provider.format = format.value; markDirty(); });
     fields.appendChild(format);
   }
 
@@ -214,7 +237,7 @@ function renderProviderFields(card, providerId) {
       }
       fields.appendChild(datalist);
     }
-    model.addEventListener('input', () => { provider.model = model.value.trim(); });
+    model.addEventListener('input', () => { provider.model = model.value.trim(); markDirty(); });
     fields.appendChild(model);
   }
 
@@ -240,6 +263,7 @@ function renderProviders() {
     toggle.addEventListener('change', () => {
       provider.enabled = toggle.checked;
       card.dataset.enabled = String(provider.enabled);
+      markDirty();
     });
     head.appendChild(toggle);
     if (PROVIDER_BADGES[providerId]) head.insertAdjacentHTML('beforeend', PROVIDER_BADGES[providerId]);
@@ -328,7 +352,10 @@ async function saveSettings(showSaved = true) {
     [PREFS_KEYS.docMode]: $('#docMode').value,
     [PREFS_KEYS.ttsEnabled]: $('#ttsEnabled').checked,
     [PREFS_KEYS.ttsRate]: Number($('#ttsRate').value),
+    [PREFS_KEYS.translationCache]: $('#translationCache').checked,
+    [PREFS_KEYS.uiTheme]: $('#uiTheme').value,
   });
+  markClean();
   if (showSaved) setStatus('Đã lưu cài đặt');
 }
 
@@ -349,17 +376,6 @@ async function testApi() {
     throw new Error(message);
   }
   setStatus(`API hoạt động (${result.providerLabel}):\n${result.text}`);
-}
-
-async function setPageLanguage(language) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return setStatus('Không tìm thấy tab hiện tại', true);
-  const result = await chrome.runtime.sendMessage({
-    type: 'broadcastPageLanguage',
-    tabId: tab.id,
-    language,
-  });
-  setStatus(result?.ok ? 'Đã gửi lệnh dịch' : 'Không thể điều khiển trang này', !result?.ok);
 }
 
 async function loadPrefs() {
@@ -390,6 +406,10 @@ async function loadPrefs() {
   const ttsRate = Number(values[PREFS_KEYS.ttsRate]);
   $('#ttsRate').value = (ttsRate >= 0.5 && ttsRate <= 2) ? String(ttsRate) : '1';
   $('#ttsRateValue').textContent = $('#ttsRate').value;
+  $('#translationCache').checked = values[PREFS_KEYS.translationCache] !== false;
+  const theme = values[PREFS_KEYS.uiTheme];
+  $('#uiTheme').value = ['dark', 'light'].includes(theme) ? theme : 'auto';
+  applyTheme(theme);
 }
 
 /* ------------------------- Prompt Templates ------------------------- */
@@ -660,20 +680,135 @@ async function renderDeeplUsage() {
   const usages = Array.isArray(result?.usages) ? result.usages : [];
   if (!result?.ok || !usages.length) {
     const line = el('div', 'note', result?.error || 'Chưa có dữ liệu quota DeepL.');
-    if (!result?.ok) line.style.color = '#fca5a5';
+    if (!result?.ok) line.style.color = 'var(--danger)';
     container.appendChild(line);
     return;
   }
   for (const usage of usages) renderUsageRow(container, usage);
 }
 
-document.querySelectorAll('[data-lang]').forEach(button => {
-  button.addEventListener('click', () => setPageLanguage(button.dataset.lang).catch(error => setStatus(error.message, true)));
-});
+/* ------------------------- Giao diện: tab, theme ------------------------- */
+
+function applyTheme(theme) {
+  if (theme === 'dark' || theme === 'light') document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+}
+
+function selectTab(name) {
+  for (const tab of document.querySelectorAll('.tab')) {
+    tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
+  }
+  for (const panel of document.querySelectorAll('.tabpanel')) {
+    panel.hidden = panel.id !== `tab-${name}`;
+  }
+  location.hash = name;
+}
+
+/* ------------------------- Cache bản dịch ------------------------- */
+
+async function refreshCacheStats() {
+  const result = await chrome.runtime.sendMessage({ type: 'translationCacheStats' }).catch(() => null);
+  $('#cacheCount').textContent = result?.ok ? `${result.entries.toLocaleString('vi-VN')} mục` : '— mục';
+}
+
+async function clearCache() {
+  const result = await chrome.runtime.sendMessage({ type: 'clearTranslationCache' }).catch(() => null);
+  if (!result?.ok) return setStatus(result?.error || 'Không xoá được cache', true);
+  await refreshCacheStats();
+  setStatus('Đã xoá cache bản dịch');
+}
+
+/* ------------------------- Sao lưu / khôi phục -------------------------
+ * CỐ Ý không xuất 'tm-multi-provider-config': file backup hay bị chia sẻ hoặc
+ * đồng bộ lên cloud, không nên mang theo API key. */
+const BACKUP_EXCLUDED = new Set([CONFIG_STORAGE_KEY, 'tm-translation-cache-v1']);
+
+function downloadFile(name, text, mime) {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function exportSettings() {
+  await saveSettings(false);
+  const all = await chrome.storage.local.get(null);
+  const data = {};
+  for (const [key, value] of Object.entries(all)) {
+    if (BACKUP_EXCLUDED.has(key)) continue;
+    data[key] = value;
+  }
+  downloadFile(
+    `native-translator-settings-${new Date().toISOString().slice(0, 10)}.json`,
+    JSON.stringify({ version: chrome.runtime.getManifest().version, settings: data }, null, 2),
+    'application/json',
+  );
+  setStatus('Đã xuất cài đặt (không kèm API key)');
+}
+
+async function importSettings(file) {
+  let parsed;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch (_) {
+    return setStatus('File không phải JSON hợp lệ', true);
+  }
+  const data = parsed?.settings && typeof parsed.settings === 'object' ? parsed.settings : parsed;
+  if (!data || typeof data !== 'object') return setStatus('Không đọc được cài đặt trong file', true);
+
+  const clean = {};
+  for (const [key, value] of Object.entries(data)) {
+    // Chỉ nhận key của extension này, và không bao giờ ghi đè config chứa API key.
+    if (!key.startsWith('tm-') || BACKUP_EXCLUDED.has(key)) continue;
+    clean[key] = value;
+  }
+  if (!Object.keys(clean).length) return setStatus('File không chứa cài đặt nào dùng được', true);
+
+  await chrome.storage.local.set(clean);
+  setStatus(`Đã nhập ${Object.keys(clean).length} mục cài đặt — đang tải lại…`);
+  setTimeout(() => location.reload(), 700);
+}
+
+async function resetSettings() {
+  if (!confirm('Đưa mọi cài đặt về mặc định?\nAPI key, glossary và prompt template sẽ được GIỮ NGUYÊN.')) return;
+  const all = await chrome.storage.local.get(null);
+  const remove = Object.keys(all).filter(key =>
+    key.startsWith('tm-')
+    && !BACKUP_EXCLUDED.has(key)
+    && key !== GLOSSARY_KEY
+    && key !== TEMPLATE_KEYS.templates
+    && key !== TEMPLATE_KEYS.active);
+  await chrome.storage.local.remove(remove);
+  setStatus('Đã về mặc định — đang tải lại…');
+  setTimeout(() => location.reload(), 700);
+}
+
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.addEventListener('click', () => selectTab(tab.dataset.tab));
+}
 $('#save').addEventListener('click', () => saveSettings().catch(error => setStatus(error.message, true)));
 $('#testApi').addEventListener('click', () => testApi().catch(error => setStatus(error.message, true)));
-$('#preferred').addEventListener('change', () => { config.preferred = $('#preferred').value; });
-$('#tone').addEventListener('change', () => { config.tone = $('#tone').value; });
+$('#preferred').addEventListener('change', () => { config.preferred = $('#preferred').value; markDirty(); });
+$('#tone').addEventListener('change', () => { config.tone = $('#tone').value; markDirty(); });
+$('#uiTheme').addEventListener('change', () => applyTheme($('#uiTheme').value));
+$('#cacheClear').addEventListener('click', () => clearCache().catch(error => setStatus(error.message, true)));
+$('#settingsExport').addEventListener('click', () => exportSettings().catch(error => setStatus(error.message, true)));
+$('#settingsImport').addEventListener('click', () => $('#settingsFile').click());
+$('#settingsFile').addEventListener('change', async event => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (file) await importSettings(file).catch(error => setStatus(error.message, true));
+});
+$('#settingsReset').addEventListener('click', () => resetSettings().catch(error => setStatus(error.message, true)));
+
+// Đóng tab khi còn thay đổi chưa lưu → cảnh báo thay vì mất im lặng.
+window.addEventListener('beforeunload', event => {
+  if (!dirty) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 $('#refreshDeeplUsage').addEventListener('click', async event => {
   const button = event.currentTarget;
   button.disabled = true;
@@ -702,8 +837,33 @@ $('#glossaryExportCsv').addEventListener('click', () => exportGlossary('csv'));
 // TTS: hiển thị giá trị tốc độ đọc ngay khi kéo slider.
 $('#ttsRate').addEventListener('input', () => { $('#ttsRateValue').textContent = $('#ttsRate').value; });
 
+// Mọi control prefs đều bật cờ "chưa lưu" — trước đây chỉ có provider mới bẩn.
+for (const control of document.querySelectorAll('.tabpanel input, .tabpanel select, .tabpanel textarea')) {
+  if (control.type === 'file') continue;
+  control.addEventListener('change', markDirty);
+}
+
+/* Popup lưu ngay khi đổi, trang này lưu khi bấm nút. Mở cả hai cùng lúc thì
+ * trang này đang giữ ảnh chụp cũ và sẽ ghi đè thay đổi vừa làm ở popup.
+ * Quay lại tab mà chưa có gì chưa lưu → nạp lại từ storage. */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || dirty) return;
+  Promise.all([loadConfig(), loadPrefs()])
+    .then(() => {
+      $('#tone').value = config.tone;
+      renderPreferredSelect();
+      renderProviders();
+      markClean();
+    })
+    .catch(() => { /* nạp lại thất bại: giữ nguyên màn hình đang có */ });
+});
+
 (async () => {
   try {
+    $('#versionPill').textContent = `v${chrome.runtime.getManifest().version}`;
+    const hash = location.hash.replace('#', '');
+    if (document.querySelector(`.tab[data-tab="${CSS.escape(hash)}"]`)) selectTab(hash);
+
     await loadConfig();
     $('#tone').value = config.tone;
     renderPreferredSelect();
@@ -711,8 +871,12 @@ $('#ttsRate').addEventListener('input', () => { $('#ttsRateValue').textContent =
     await loadPrefs();
     await loadTemplates();
     await loadGlossary();
+    markClean();
+    document.body.dataset.ready = 'true';
     renderDeeplUsage();
+    refreshCacheStats();
   } catch (error) {
+    document.body.dataset.ready = 'true';
     setStatus(error.message, true);
   }
 })();

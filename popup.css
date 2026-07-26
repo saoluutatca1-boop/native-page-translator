@@ -16,6 +16,9 @@
   box-sizing: border-box;
 }
 
+/* Tokens: mặc định là bảng tối. Bảng sáng nằm ở khối theme phía dưới —
+ * theo prefers-color-scheme của hệ thống, và ghi đè được bằng data-theme
+ * (Cài đặt → Giao diện: Tự động / Tối / Sáng). */
 :root {
   --bg: #0a0c10;
   --panel: rgba(255, 255, 255, 0.035);
@@ -24,15 +27,76 @@
   --hairline-soft: rgba(255, 255, 255, 0.055);
   --text: #f4f5f7;
   --text-dim: #9aa1ad;
-  --text-faint: #6d7480;
+  /* Cũ #6d7480 chỉ đạt 4.16:1 trên nền #0a0c10 — dưới ngưỡng WCAG AA, trong
+   * khi .note lại chứa phần lớn thông tin quan trọng của popup. */
+  --text-faint: #8b93a1;
   --accent: #6366f1;
   --accent-2: #3b82f6;
   --accent-soft: rgba(99, 102, 241, 0.16);
   --danger: #f87171;
   --ok: #7dd3fc;
+  --option-bg: #14171f;
+  --glow-1: rgba(99, 102, 241, 0.14);
+  --glow-2: rgba(59, 130, 246, 0.10);
+  --card-bg: rgba(14, 16, 22, 0.72);
+  --card-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --knob: #c8cdd6;
+  --link: #a5b4fc;
   --radius: 14px;
   --radius-sm: 10px;
   --spring: cubic-bezier(0.32, 0.72, 0, 1);
+  color-scheme: dark;
+}
+
+/* Bảng sáng dùng chung cho cả hai nhánh chọn theme. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f5f6fa;
+    --panel: rgba(15, 17, 23, 0.035);
+    --panel-strong: rgba(15, 17, 23, 0.065);
+    --hairline: rgba(15, 17, 23, 0.14);
+    --hairline-soft: rgba(15, 17, 23, 0.09);
+    --text: #14161b;
+    --text-dim: #4d5460;
+    --text-faint: #5b6270;
+    --accent: #4f46e5;
+    --accent-2: #2563eb;
+    --accent-soft: rgba(79, 70, 229, 0.12);
+    --danger: #c81e1e;
+    --ok: #0b6d9e;
+    --option-bg: #ffffff;
+    --glow-1: rgba(99, 102, 241, 0.12);
+    --glow-2: rgba(59, 130, 246, 0.09);
+    --card-bg: rgba(255, 255, 255, 0.82);
+    --card-shadow: 0 20px 48px rgba(15, 17, 23, 0.12);
+    --knob: #ffffff;
+    --link: #4338ca;
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #f5f6fa;
+  --panel: rgba(15, 17, 23, 0.035);
+  --panel-strong: rgba(15, 17, 23, 0.065);
+  --hairline: rgba(15, 17, 23, 0.14);
+  --hairline-soft: rgba(15, 17, 23, 0.09);
+  --text: #14161b;
+  --text-dim: #4d5460;
+  --text-faint: #5b6270;
+  --accent: #4f46e5;
+  --accent-2: #2563eb;
+  --accent-soft: rgba(79, 70, 229, 0.12);
+  --danger: #c81e1e;
+  --ok: #0b6d9e;
+  --option-bg: #ffffff;
+  --glow-1: rgba(99, 102, 241, 0.12);
+  --glow-2: rgba(59, 130, 246, 0.09);
+  --card-bg: rgba(255, 255, 255, 0.82);
+  --card-shadow: 0 20px 48px rgba(15, 17, 23, 0.12);
+  --knob: #ffffff;
+  --link: #4338ca;
+  color-scheme: light;
 }
 
 body {
@@ -41,10 +105,23 @@ body {
   color: var(--text);
   font: 13px/1.45 "Be Vietnam Pro", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   background:
-    radial-gradient(120% 90% at 85% -10%, rgba(99, 102, 241, 0.14), transparent 55%),
-    radial-gradient(100% 80% at -10% 110%, rgba(59, 130, 246, 0.10), transparent 50%),
+    radial-gradient(120% 90% at 85% -10%, var(--glow-1), transparent 55%),
+    radial-gradient(100% 80% at -10% 110%, var(--glow-2), transparent 50%),
     var(--bg);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Tôn trọng "giảm chuyển động" của hệ thống: bỏ mọi transition/animation
+ * (spring scale, slide-in của key-row và provider-card). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .options-page {
@@ -54,13 +131,13 @@ body {
 }
 
 .options-page main {
-  width: min(700px, 100%);
+  width: min(760px, 100%);
   margin: 0 auto;
   padding: 24px;
   border: 1px solid var(--hairline-soft);
   border-radius: 20px;
-  background: rgba(14, 16, 22, 0.72);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  background: var(--card-bg);
+  box-shadow: var(--card-shadow);
 }
 
 main {
@@ -72,7 +149,7 @@ h1 {
   font-size: 18px;
   font-weight: 760;
   letter-spacing: -0.02em;
-  background: linear-gradient(100deg, #fff 30%, #a5b4fc 90%);
+  background: linear-gradient(100deg, var(--text) 30%, var(--accent) 90%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -151,7 +228,7 @@ select:hover {
 
 input:focus,
 select:focus {
-  border-color: rgba(99, 102, 241, 0.65);
+  border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
@@ -167,9 +244,9 @@ select {
 
 /* Dropdown <option> dùng rendering native của OS: nền mặc định TRẮNG trong khi
  * theme set chữ sáng → chữ trắng trên nền trắng, không đọc được.
- * Ép nền tối đặc (không dùng var trong suốt — option list không hỗ trợ alpha). */
+ * Ép nền đặc (option list không hỗ trợ alpha nên token này là màu đặc). */
 select option {
-  background: #14171f;
+  background: var(--option-bg);
   color: var(--text);
 }
 
@@ -185,11 +262,24 @@ button {
 
 button:hover {
   background: var(--panel-strong);
-  border-color: rgba(255, 255, 255, 0.16);
+  border-color: var(--hairline);
 }
 
 button:active {
   transform: scale(0.97);
+}
+
+/* outline:none ở khối control phía trên xoá luôn vòng focus mặc định, mà chỉ
+ * input/select mới có style thay thế — nút bấm thì không còn dấu hiệu nào cho
+ * ngưởi dùng bàn phím. Trả lại bằng focus-visible (không hiện khi click chuột). */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .primary {
@@ -229,7 +319,7 @@ button:active {
   padding: 0;
   border: 1px solid var(--hairline);
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--panel-strong);
   cursor: pointer;
   transition: background 0.3s var(--spring), border-color 0.3s var(--spring);
 }
@@ -242,7 +332,7 @@ button:active {
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  background: #c8cdd6;
+  background: var(--knob);
   transition: transform 0.3s var(--spring), background 0.3s var(--spring);
 }
 
@@ -303,7 +393,7 @@ button:active {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #a5b4fc;
+  color: var(--link);
   font-size: 11px;
 }
 
@@ -318,7 +408,7 @@ button:active {
   padding: 5px;
   border: 1px solid var(--hairline-soft);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--panel);
   transition: opacity 0.3s var(--spring), border-color 0.3s var(--spring);
 }
 
@@ -359,7 +449,7 @@ button:active {
   padding: 0;
   border: 1px solid var(--hairline);
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--panel-strong);
   cursor: pointer;
   transition: background 0.3s var(--spring), border-color 0.3s var(--spring);
 }
@@ -372,7 +462,7 @@ button:active {
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  background: #c8cdd6;
+  background: var(--knob);
   transition: transform 0.3s var(--spring), background 0.3s var(--spring);
 }
 
@@ -405,7 +495,7 @@ button:active {
 }
 
 .provider-site a {
-  color: #a5b4fc;
+  color: var(--link);
   text-decoration: none;
 }
 
@@ -427,7 +517,7 @@ button:active {
   padding: 7px 10px;
   border: 1px solid var(--hairline-soft);
   border-radius: var(--radius-sm);
-  background: rgba(10, 12, 16, 0.55);
+  background: var(--panel-strong);
   font-size: 12px;
   animation: keyIn 0.35s var(--spring);
 }
@@ -442,7 +532,7 @@ button:active {
   text-overflow: ellipsis;
   white-space: nowrap;
   font: 500 11.5px/1.3 ui-monospace, "Cascadia Mono", SFMono-Regular, Menlo, monospace;
-  color: #d7dbe2;
+  color: var(--text);
 }
 
 .key-row .key-label {
@@ -600,7 +690,7 @@ button:disabled:active {
   white-space: nowrap;
   font-size: 12.5px;
   font-weight: 600;
-  color: #d7dbe2;
+  color: var(--text);
 }
 
 .key-row .tpl-name + button,
@@ -620,7 +710,7 @@ button:disabled:active {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #d7dbe2;
+  color: var(--text);
 }
 
 .glossary-target {
@@ -668,4 +758,288 @@ input[type="range"] {
 
 input[type="range"]:focus {
   box-shadow: none;
+}
+
+/* ==========================================================================
+ * Popup v4.3 — trạng thái trang hiện tại, tab, tiến trình
+ * Popup của Chrome bị cắt cứng ở 600px chiều cao: bản cũ xếp 5 section chồng
+ * nhau thành ~1000px nên thanh trạng thái ở đáy nằm ngoài tầm nhìn vĩnh viễn.
+ * Bố cục mới: status + trang hiện tại luôn thấy, phần cài đặt chia tab.
+ * ========================================================================== */
+
+.current-site {
+  padding-top: 10px;
+}
+
+.site-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 9px;
+}
+
+.site-host {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.pill {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--link);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.pill-muted {
+  background: var(--panel);
+  color: var(--text-faint);
+}
+
+/* Segmented VI / EN / Gốc — nút đang áp dụng được tô rõ, không còn phải đoán. */
+.seg button[aria-pressed="true"] {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 6px 16px rgba(79, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+
+.progress {
+  overflow: hidden;
+  height: 5px;
+  margin-top: 10px;
+  border-radius: 99px;
+  background: var(--panel-strong);
+}
+
+.progress-bar {
+  width: 0;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  transition: width 0.25s var(--spring);
+}
+
+/* Chưa biết tổng số đoạn (đang quét DOM) → chạy sọc thay vì đứng im ở 0%. */
+.progress-bar.indeterminate {
+  width: 38%;
+  animation: nptSlide 1.1s ease-in-out infinite;
+}
+
+@keyframes nptSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+/* ---------- Tabs ---------- */
+
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  margin-top: 14px;
+  padding: 3px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.tab {
+  width: auto;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.tab:hover {
+  background: var(--panel-strong);
+  border: 0;
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.tabpanel {
+  padding-top: 12px;
+  border-top: 0;
+}
+
+.tabpanel section:first-of-type {
+  padding-top: 0;
+}
+
+/* ---------- Quota DeepL trong popup ---------- */
+
+.quota-box {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.quota-row + .quota-row {
+  margin-top: 8px;
+}
+
+.quota-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.quota-track {
+  overflow: hidden;
+  height: 5px;
+  margin-top: 4px;
+  border-radius: 99px;
+  background: var(--panel-strong);
+}
+
+.quota-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+/* Gần cạn quota thì đổi màu — con số suông rất dễ bị lướt qua. */
+.quota-fill[data-level="warn"] { background: linear-gradient(135deg, #f59e0b, #f97316); }
+.quota-fill[data-level="full"] { background: linear-gradient(135deg, #ef4444, var(--danger)); }
+
+/* ---------- Trạng thái: màu theo token, không set inline từ JS ---------- */
+
+#status[data-tone="error"] { color: var(--danger); }
+#status[data-tone="ok"] { color: var(--ok); }
+#status[data-tone="busy"] { color: var(--text-dim); }
+
+code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--panel-strong);
+  font: 500 11px/1.4 ui-monospace, "Cascadia Mono", SFMono-Regular, Menlo, monospace;
+}
+
+/* Tránh nháy trạng thái control (FOUC): checkbox/select render theo giá trị mặc
+ * định trong HTML trước khi storage trả về, nên mọi toggle "bật" đều lật từ off
+ * sang on ngay trước mắt ngưởi dùng. Chỉ hiện sau khi đã nạp xong. */
+body:not([data-ready]) main {
+  opacity: 0;
+}
+
+main {
+  opacity: 1;
+  transition: opacity 0.12s linear;
+}
+
+.options-page:not([data-ready]) main {
+  opacity: 0;
+}
+
+/* ==========================================================================
+ * Options v4.3 — thanh điều hướng + lưu bám dính, tiêu đề mục thật sự
+ * ========================================================================== */
+
+.options-bar {
+  position: sticky;
+  top: -20px;
+  z-index: 5;
+  margin: 0 -24px;
+  padding: 14px 24px 10px;
+  border-bottom: 1px solid var(--hairline-soft);
+  background: var(--card-bg);
+  backdrop-filter: blur(12px);
+}
+
+.tabs-wide {
+  grid-template-columns: repeat(5, 1fr);
+  margin-top: 0;
+}
+
+.save-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.save-button {
+  width: auto;
+  margin-left: auto;
+  padding: 8px 16px;
+}
+
+.options-bar #status {
+  margin-top: 10px;
+}
+
+.options-bar #status:empty {
+  display: none;
+}
+
+/* Tiêu đề mục trước đây là <label> không gắn với control nào — trình đọc màn
+ * hình đọc ra "nhãn" rồi im, và bấm vào nhãn không focus được gì cả. */
+h2 {
+  margin: 0 0 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.section-title h2 {
+  margin: 0;
+}
+
+textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.3s var(--spring), background 0.3s var(--spring), box-shadow 0.3s var(--spring);
+}
+
+textarea:hover {
+  background: var(--panel-strong);
+}
+
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Nút nguy hiểm (xoá cache, về mặc định) phải trông khác nút thường. */
+.danger-button {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: var(--danger);
+}
+
+.danger-button:hover {
+  border-color: var(--danger);
+  background: rgba(248, 113, 113, 0.1);
 }

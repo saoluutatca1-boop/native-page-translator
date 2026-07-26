@@ -950,6 +950,108 @@ async function run() {
     assert.equal(calls.length, 0);
   }
 
+
+  /* ================= v4.3: retry tạm thời + Retry-After ================= */
+
+  // 49. parseRetryAfter: giây, HTTP-date, rác
+  {
+    assert.equal(P.parseRetryAfter('30'), 30000);
+    assert.equal(P.parseRetryAfter(''), null);
+    assert.equal(P.parseRetryAfter('không phải ngày'), null);
+    // Trần 30 phút: provider bảo chờ 1 ngày cũng không treo key cả ngày.
+    assert.equal(P.parseRetryAfter('999999'), 30 * 60 * 1000);
+    const soon = new Date(Date.now() + 45_000).toUTCString();
+    const parsed = P.parseRetryAfter(soon);
+    assert.ok(parsed > 30_000 && parsed <= 46_000, `HTTP-date ra ${parsed}`);
+  }
+
+  // 50. 5xx là lỗi TẠM THỜI -> verdict 'retry', không phải providerFailed
+  {
+    for (const status of [408, 425, 500, 502, 503, 504]) {
+      const verdict = P.classifyResponse({ providerId: 'gemini', status, bodyText: '{}' });
+      assert.equal(verdict.kind, 'retry', `HTTP ${status} phải là retry`);
+    }
+    // 400 vẫn là lỗi cứng của request, không retry
+    assert.equal(P.classifyResponse({ providerId: 'gemini', status: 400, bodyText: '{}' }).kind, 'providerFailed');
+  }
+
+  // 51. 503 rồi 200 -> tự thử lại trên CÙNG key và thành công
+  {
+    let hits = 0;
+    const fetchText = async (request) => {
+      if (!request.url.includes('deepl.com')) return { status: 200, bodyText: '{}' };
+      hits++;
+      return hits === 1
+        ? { status: 503, bodyText: 'server busy' }
+        : { status: 200, bodyText: JSON.stringify({ translations: [{ text: 'hello' }] }) };
+    };
+    const result = await P.translateWithRotation({
+      config: BASE_CONFIG, source: 'xin chào', context: '',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.text, 'hello');
+    assert.equal(result.provider, 'deepl');
+    assert.equal(hits, 2, 'phải thử lại đúng 1 lần trên cùng key');
+  }
+
+  // 52. 503 liên tục -> hết lượt retry thì mới rơi sang provider khác
+  {
+    let deeplHits = 0;
+    const fetchText = async (request) => {
+      if (request.url.includes('deepl.com')) {
+        deeplHits++;
+        return { status: 503, bodyText: '' };
+      }
+      return { status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }) };
+    };
+    const result = await P.translateWithRotation({
+      config: BASE_CONFIG, source: 'xin chào', context: '',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.provider, 'gemini');
+    // 2 key DeepL x (1 lần đầu + 2 lần retry) = 6
+    assert.equal(deeplHits, 6, `DeepL bị gọi ${deeplHits} lần`);
+  }
+
+  // 53. 429 kèm Retry-After -> cooldown lấy đúng con số provider trả về
+  {
+    const verdict = P.classifyResponse({
+      providerId: 'gemini', status: 429, bodyText: '{}', retryAfterMs: 45_000,
+    });
+    assert.equal(verdict.kind, 'keyFailed');
+    assert.equal(verdict.cooldownMs, 45_000);
+
+    // Không có header -> vẫn giữ mặc định 2 phút như trước
+    const fallback = P.classifyResponse({ providerId: 'gemini', status: 429, bodyText: '{}' });
+    assert.equal(fallback.cooldownMs, 2 * 60 * 1000);
+  }
+
+  // 54. DeepL 456 = cạn quota cả chu kỳ -> cooldown dài, không phải 2 phút
+  {
+    const verdict = P.classifyResponse({ providerId: 'deepl', status: 456, bodyText: '{}' });
+    assert.equal(verdict.kind, 'keyFailed');
+    assert.equal(verdict.cooldownMs, 6 * 60 * 60 * 1000);
+    assert.match(verdict.message, /chu kỳ/);
+  }
+
+  // 55. Dịch batch cũng được hưởng retry tạm thời
+  {
+    let hits = 0;
+    const fetchText = async (request) => {
+      if (!request.url.includes('deepl.com')) return { status: 200, bodyText: '{}' };
+      hits++;
+      return hits === 1
+        ? { status: 502, bodyText: '' }
+        : { status: 200, bodyText: JSON.stringify({ translations: [{ text: 'one' }, { text: 'two' }] }) };
+    };
+    const result = await P.translateBatchWithRotation({
+      config: BASE_CONFIG, texts: ['một', 'hai'], sourceLanguage: 'auto', targetLanguage: 'en',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.deepEqual(result.translations, ['one', 'two']);
+    assert.equal(hits, 2);
+  }
+
   console.log('Tất cả test providers.js đều PASS ✔');
 }
 

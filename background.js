@@ -771,6 +771,47 @@ function handlePdfMenuClick(info) {
   });
 }
 
+/* ------------------------------------------------------------------
+ * Phím tắt dịch trang. Trước đây content script tự nghe keydown, nên phím
+ * cố định cứng, đụng phím tắt của trang, và không đổi được ở
+ * chrome://extensions/shortcuts. Giờ khai báo trong manifest "commands".
+ * ------------------------------------------------------------------ */
+const COMMAND_LANGUAGE = {
+  'translate-vi': 'vi',
+  'translate-en': 'en',
+  'translate-original': 'original',
+};
+
+chrome.commands.onCommand.addListener(async (command) => {
+  const language = COMMAND_LANGUAGE[command];
+  if (!language) return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!Number.isInteger(tab?.id)) return;
+  await broadcastToFrames(tab.id, { type: 'setPageLanguage', language }).catch(() => {});
+});
+
+/* ------------------------------------------------------------------
+ * Badge trên icon: cho biết tab hiện tại đang xem bản dịch nào. Không có nó
+ * thì phải mở popup (hoặc soi FAB) mới biết trang đang ở trạng thái gì.
+ * ------------------------------------------------------------------ */
+const BADGE_COLOR = '#4f46e5';
+
+async function setPageBadge(tabId, language) {
+  if (!Number.isInteger(tabId)) return;
+  const active = language === 'vi' || language === 'en';
+  try {
+    await chrome.action.setBadgeText({ tabId, text: active ? language.toUpperCase() : '' });
+    if (active) {
+      await chrome.action.setBadgeBackgroundColor({ tabId, color: BADGE_COLOR });
+      await chrome.action.setTitle({ tabId, title: `Native Translator — đang hiển thị bản ${language.toUpperCase()}` });
+    } else {
+      await chrome.action.setTitle({ tabId, title: 'Native Translator' });
+    }
+  } catch (_) {
+    // Tab đã đóng giữa chừng — bỏ qua.
+  }
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info?.menuItemId === PDF_MENU_ID) {
     handlePdfMenuClick(info);
@@ -906,6 +947,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: error?.message || String(error) });
     });
     return true;
+  }
+
+  // Top frame báo trạng thái mới → cập nhật badge cho đúng tab đó.
+  if (message?.type === 'pageLanguageChanged') {
+    setPageBadge(sender.tab?.id, message.language);
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (message?.type === 'broadcastPageLanguage') {

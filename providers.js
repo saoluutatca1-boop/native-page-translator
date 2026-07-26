@@ -426,8 +426,9 @@
     }
 
     if (status === 429) {
-      // Provider nói rõ chờ bao lâu thì nghe theo, đừng đoán 2 phút.
-      const cooldownMs = Math.max(5000, Math.min(retryAfterMs || 0, MAX_RETRY_AFTER_MS)) || 2 * 60 * 1000;
+      // Provider nói rõ chờ bao lâu thì nghe theo; không có header mới đoán 2 phút.
+      const hinted = Number(retryAfterMs) > 0 ? Math.min(Number(retryAfterMs), MAX_RETRY_AFTER_MS) : 0;
+      const cooldownMs = hinted ? Math.max(5000, hinted) : 2 * 60 * 1000;
       return { kind: 'keyFailed', message: `${def.label}: bị giới hạn tốc độ (HTTP 429)`, cooldownMs };
     }
 
