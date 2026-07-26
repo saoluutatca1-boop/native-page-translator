@@ -6,17 +6,61 @@
   <title>Dịch PDF — Native Page Translator</title>
   <style>
     * { box-sizing: border-box; }
+    /* Bảng tối mặc định; bảng sáng theo prefers-color-scheme và theo lựa chọn
+       "Giao diện" trong Cài đặt (pdf-viewer.js gắn data-theme lên <html>). */
     :root {
       --bg: #0d1017;
       --panel: rgba(255, 255, 255, 0.045);
       --hairline: rgba(255, 255, 255, 0.09);
       --text: #eceef2;
       --dim: #9aa1ad;
-      --faint: #6d7480;
+      --faint: #8b93a1;
       --accent: #6366f1;
       --accent-2: #3b82f6;
       --danger: #f87171;
       --warn: #fbbf24;
+      --header-bg: rgba(13, 16, 23, 0.92);
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) {
+        --bg: #f5f6fa;
+        --panel: rgba(15, 17, 23, 0.04);
+        --hairline: rgba(15, 17, 23, 0.13);
+        --text: #14161b;
+        --dim: #4d5460;
+        --faint: #5b6270;
+        --accent: #4f46e5;
+        --accent-2: #2563eb;
+        --danger: #c81e1e;
+        --warn: #a16207;
+        --header-bg: rgba(255, 255, 255, 0.92);
+        color-scheme: light;
+      }
+    }
+    :root[data-theme="light"] {
+      --bg: #f5f6fa;
+      --panel: rgba(15, 17, 23, 0.04);
+      --hairline: rgba(15, 17, 23, 0.13);
+      --text: #14161b;
+      --dim: #4d5460;
+      --faint: #5b6270;
+      --accent: #4f46e5;
+      --accent-2: #2563eb;
+      --danger: #c81e1e;
+      --warn: #a16207;
+      --header-bg: rgba(255, 255, 255, 0.92);
+      color-scheme: light;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .001ms !important;
+        transition-duration: .001ms !important;
+      }
+    }
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
     body {
       margin: 0;
@@ -33,7 +77,7 @@
       z-index: 5;
       padding: 16px 20px 14px;
       border-bottom: 1px solid var(--hairline);
-      background: rgba(13, 16, 23, 0.92);
+      background: var(--header-bg);
       backdrop-filter: blur(10px);
     }
     h1 {

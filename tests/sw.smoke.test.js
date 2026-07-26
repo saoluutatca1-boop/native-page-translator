@@ -20,6 +20,7 @@ const createdMenus = [];
 const sentTabMessages = [];
 const createdTabs = [];
 const commandListeners = [];
+const navigationListeners = [];
 const badgeCalls = [];
 
 const chromeStub = {
@@ -57,7 +58,10 @@ const chromeStub = {
     removeAll(cb) { createdMenus.length = 0; if (cb) cb(); },
     onClicked: { addListener(fn) { contextMenuListeners.push(fn); } },
   },
-  webNavigation: { async getAllFrames() { return null; } },
+  webNavigation: {
+    async getAllFrames() { return null; },
+    onCommitted: { addListener(fn) { navigationListeners.push(fn); } },
+  },
   tabs: {
     async sendMessage(tabId, message) { sentTabMessages.push({ tabId, message }); },
     async create(props) { createdTabs.push(props); return { id: 99, ...props }; },
@@ -534,6 +538,18 @@ async function main() {
     await sendMessage({ type: 'pageLanguageChanged', language: 'original' }, { tab: { id: 7 } });
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(badgeCalls.find(call => call.kind === 'text').text, '', 'về bản gốc thì badge phải trống');
+
+    // Điều hướng top frame -> badge của tab đó phải được xoá
+    badgeCalls.length = 0;
+    navigationListeners[0]({ frameId: 0, tabId: 7 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(badgeCalls.find(call => call.kind === 'text')?.text, '');
+
+    // Điều hướng trong iframe -> không đụng badge
+    badgeCalls.length = 0;
+    navigationListeners[0]({ frameId: 3, tabId: 7 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(badgeCalls.length, 0);
   }
 
   console.log('SW smoke test PASS ✔ (background khởi động OK, seed key OK, nativeTranslate OK, providerTranslate OK, proxyFetch OK, dịch ảnh OK, deeplUsage OK, summarizePage OK, fetchPdf OK, menu PDF OK, cache dịch OK, commands OK, badge OK)');

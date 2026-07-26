@@ -812,6 +812,14 @@ async function setPageBadge(tabId, language) {
   }
 }
 
+/* Badge theo tab sống qua cả lần điều hướng. Trang mới chưa dịch mà vẫn thấy
+ * "VI" là sai — xoá khi top frame commit, content script sẽ báo lại nếu trang
+ * mới tự dịch theo preference đã lưu. */
+chrome.webNavigation.onCommitted.addListener(details => {
+  if (details.frameId !== 0) return;
+  setPageBadge(details.tabId, 'original');
+});
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info?.menuItemId === PDF_MENU_ID) {
     handlePdfMenuClick(info);
