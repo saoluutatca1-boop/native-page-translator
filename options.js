@@ -65,9 +65,15 @@ const statusElement = $('#status');
 let config = null;
 
 function setStatus(text, error = false) {
-  statusElement.textContent = text;
-  if (text) statusElement.dataset.tone = error ? 'error' : 'ok';
-  else delete statusElement.dataset.tone;
+  statusElement.textContent = '';
+  if (!text) {
+    delete statusElement.dataset.tone;
+    return;
+  }
+  statusElement.dataset.tone = error ? 'error' : 'ok';
+  // Icon đứng đầu dòng nói ngay kết quả, không phải đọc hết câu mới biết.
+  statusElement.insertAdjacentHTML('afterbegin', icon(error ? 'alert' : 'success', { size: 14, className: 'status-ico' }));
+  statusElement.appendChild(document.createTextNode(text));
 }
 
 /* Trước đây provider URL/model/key được sửa thẳng vào object trong bộ nhớ và
@@ -107,15 +113,20 @@ function el(tag, className, text) {
   return node;
 }
 
-/* Badge thương hiệu 22px (bo góc 6) đứng trước tên provider — chuỗi SVG tĩnh, an toàn innerHTML. */
-const PROVIDER_BADGES = {
-  deepl: '<svg class="provider-badge" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><defs><linearGradient id="pb-deepl" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f2b46"/><stop offset="1" stop-color="#14b8a6"/></linearGradient></defs><rect width="22" height="22" rx="6" fill="url(#pb-deepl)"/><text x="11" y="15" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="inherit">D</text></svg>',
-  gemini: '<svg class="provider-badge" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><defs><linearGradient id="pb-gemini" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs><rect width="22" height="22" rx="6" fill="url(#pb-gemini)"/><path d="M11 5c.4 3 1.5 4.1 4.5 4.5-3 .4-4.1 1.5-4.5 4.5-.4-3-1.5-4.1-4.5-4.5 3-.4 4.1-1.5 4.5-4.5Z" fill="#fff"/><path d="M16.4 13.2c.2 1.3.8 1.8 2.1 2-1.3.2-1.9.7-2.1 2-.2-1.3-.8-1.8-2.1-2 1.3-.2 1.9-.7 2.1-2Z" fill="#fff" opacity=".85"/></svg>',
-  openai: '<svg class="provider-badge" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><defs><linearGradient id="pb-openai" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#4b5563"/></linearGradient></defs><rect width="22" height="22" rx="6" fill="url(#pb-openai)"/><text x="11" y="15" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="inherit">O</text></svg>',
-};
+/* Toàn bộ icon lấy từ icons.js — cùng lưới 24×24, cùng độ dày nét. */
+const { svg: icon, brand: brandMark, logo: brandLogo } = globalThis.NPT_ICONS;
 
 /* Icon chìa khóa nhỏ đầu mỗi key-row. */
-const KEY_ICON = '<svg class="key-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="12" r="3.2"/><path d="M10.7 12h9.3m-3 0v3m3-3v2"/></svg>';
+const KEY_ICON = icon('key', { size: 13, className: 'key-ico' });
+
+/* Nút dựng bằng JS cũng có icon như nút trong HTML. */
+function iconButton(className, iconName, text, options = {}) {
+  const button = el('button', className);
+  button.type = 'button';
+  button.innerHTML = icon(iconName, { size: options.size || 14 });
+  button.appendChild(document.createTextNode(text));
+  return button;
+}
 
 function renderPreferredSelect() {
   const select = $('#preferred');
@@ -197,12 +208,12 @@ function renderKeyList(card, providerId) {
     if (entry.label) row.appendChild(el('span', 'key-label', entry.label));
     const warning = keyFormatWarning(providerId, entry.key);
     if (warning) {
-      const flag = el('span', 'key-warn', '⚠');
+      const flag = el('span', 'key-warn');
+      flag.innerHTML = icon('alert', { size: 13 });
       flag.title = warning;
       row.appendChild(flag);
     }
-    const remove = el('button', '', 'Xoá');
-    remove.type = 'button';
+    const remove = iconButton('key-remove', 'trash', 'Xoá', { size: 13 });
     remove.title = 'Xoá key này';
     remove.addEventListener('click', () => {
       if (!confirm(`Xoá key ${maskKey(entry.key)} của ${label}?\nKhông khôi phục lại được.`)) return;
@@ -217,10 +228,10 @@ function renderKeyList(card, providerId) {
 
   const tools = el('div', 'key-tools');
   if (provider.keys.length > KEY_PREVIEW_LIMIT) {
-    const toggle = el('button', 'key-link', expanded
+    const toggle = iconButton('key-link', 'chevron', expanded
       ? 'Thu gọn'
-      : `Xem thêm ${provider.keys.length - KEY_PREVIEW_LIMIT} key`);
-    toggle.type = 'button';
+      : `Xem thêm ${provider.keys.length - KEY_PREVIEW_LIMIT} key`, { size: 13 });
+    toggle.dataset.expanded = String(expanded);
     toggle.addEventListener('click', () => {
       if (expanded) expandedKeyLists.delete(providerId);
       else expandedKeyLists.add(providerId);
@@ -229,8 +240,7 @@ function renderKeyList(card, providerId) {
     tools.appendChild(toggle);
   }
   if (provider.keys.length >= 2) {
-    const clearAll = el('button', 'key-link key-link-danger', `Xoá hết ${provider.keys.length} key`);
-    clearAll.type = 'button';
+    const clearAll = iconButton('key-link key-link-danger', 'trash', `Xoá hết ${provider.keys.length} key`, { size: 13 });
     clearAll.addEventListener('click', () => {
       if (!confirm(`Xoá toàn bộ ${provider.keys.length} key của ${label}?\nKhông khôi phục lại được.`)) return;
       provider.keys = [];
@@ -246,9 +256,9 @@ function renderKeyList(card, providerId) {
   const blobs = provider.keys.filter(entry => parseKeysInput(entry.key).entries.length > 1);
   if (blobs.length) {
     const fixRow = el('div', 'key-fix');
+    fixRow.insertAdjacentHTML('beforeend', icon('alert', { size: 13 }));
     fixRow.appendChild(el('span', '', `${blobs.length} mục trông như nhiều key bị dán gộp thành một.`));
-    const fix = el('button', 'key-link', 'Tách ra');
-    fix.type = 'button';
+    const fix = iconButton('key-link', 'wand', 'Tách ra', { size: 13 });
     fix.addEventListener('click', () => splitPastedKeys(providerId));
     fixRow.appendChild(fix);
     list.appendChild(fixRow);
@@ -268,8 +278,7 @@ function renderKeyList(card, providerId) {
 
   const foot = el('div', 'add-key-row');
   const hint = el('div', 'key-hint');
-  const addButton = el('button', '', 'Thêm key');
-  addButton.type = 'button';
+  const addButton = iconButton('add-key-button', 'plus', 'Thêm key');
   foot.append(hint, addButton);
 
   // Xem trước cả việc chia key: gộp theo provider đích, giữ đúng thứ tự dán.
@@ -294,7 +303,7 @@ function renderKeyList(card, providerId) {
   const refresh = () => {
     const { groups, total, duplicates, invalid } = preview();
     input.rows = Math.min(12, Math.max(2, input.value.split('\n').length));
-    addButton.textContent = total > 1 ? `Thêm ${total} key` : 'Thêm key';
+    addButton.lastChild.nodeValue = total > 1 ? `Thêm ${total} key` : 'Thêm key';
     if (!input.value.trim()) {
       hint.textContent = '';
       delete hint.dataset.tone;
@@ -515,13 +524,13 @@ function renderProviders() {
       markDirty();
     });
     head.appendChild(toggle);
-    const badgeId = custom ? 'openai' : providerId;
-    if (PROVIDER_BADGES[badgeId]) head.insertAdjacentHTML('beforeend', PROVIDER_BADGES[badgeId]);
+    // Slot tùy chỉnh đổi màu theo số thứ tự -> Groq / OpenRouter nhìn là phân biệt được.
+    const customIndex = custom ? Number(providerId.split('-')[1]) : 0;
+    head.insertAdjacentHTML('beforeend', brandMark(providerKind(providerId), { custom: customIndex }));
     head.appendChild(el('span', 'provider-title', providerLabelOf(providerId, provider)));
     head.appendChild(el('span', 'badge', `${provider.keys.length} key`));
     if (custom) {
-      const remove = el('button', 'key-link key-link-danger', 'Xoá provider');
-      remove.type = 'button';
+      const remove = iconButton('key-link key-link-danger', 'trash', 'Xoá provider', { size: 13 });
       remove.title = 'Xoá hẳn slot API tùy chỉnh này';
       remove.addEventListener('click', () => removeCustomProvider(providerId));
       head.appendChild(remove);
@@ -535,7 +544,8 @@ function renderProviders() {
       link.href = def.site;
       link.target = '_blank';
       link.rel = 'noreferrer';
-      link.textContent = 'Lấy API key tại đây';
+      link.innerHTML = icon('external', { size: 12 });
+      link.appendChild(document.createTextNode('Lấy API key tại đây'));
       site.appendChild(link);
       card.appendChild(site);
     }
@@ -725,21 +735,19 @@ function renderTemplates() {
     row.appendChild(radio);
     row.appendChild(el('span', 'tpl-name', tpl.name));
 
-    const edit = el('button', '', 'Sửa');
-    edit.type = 'button';
+    const edit = iconButton('row-action', 'edit', 'Sửa', { size: 13 });
     edit.title = 'Sửa template này';
     edit.addEventListener('click', () => {
       editingTemplateId = tpl.id;
       $('#tplName').value = tpl.name;
       $('#tplPrompt').value = tpl.prompt;
-      $('#tplSave').textContent = 'Cập nhật template';
+      $('#tplSave').lastChild.nodeValue = 'Cập nhật template';
       $('#tplCancel').hidden = false;
       $('#tplName').focus();
     });
     row.appendChild(edit);
 
-    const remove = el('button', '', 'Xoá');
-    remove.type = 'button';
+    const remove = iconButton('row-action row-action-danger', 'trash', 'Xoá', { size: 13 });
     remove.title = 'Xoá template này';
     remove.addEventListener('click', async () => {
       templates = templates.filter(item => item.id !== tpl.id);
@@ -779,7 +787,7 @@ function resetTemplateForm() {
   editingTemplateId = null;
   $('#tplName').value = '';
   $('#tplPrompt').value = '';
-  $('#tplSave').textContent = 'Lưu template';
+  $('#tplSave').lastChild.nodeValue = 'Lưu template';
   $('#tplCancel').hidden = true;
 }
 
@@ -839,10 +847,9 @@ function renderGlossary() {
   glossary.forEach((entry, index) => {
     const row = el('div', 'key-row glossary-row');
     row.appendChild(el('span', 'glossary-source', entry.source));
-    row.appendChild(el('span', 'glossary-arrow', '→'));
+    row.insertAdjacentHTML('beforeend', icon('chevron', { size: 13, className: 'glossary-arrow' }));
     row.appendChild(el('span', 'glossary-target', entry.target));
-    const remove = el('button', '', 'Xoá');
-    remove.type = 'button';
+    const remove = iconButton('row-action row-action-danger', 'trash', 'Xoá', { size: 13 });
     remove.title = 'Xoá cặp từ này';
     remove.addEventListener('click', async () => {
       glossary.splice(index, 1);
@@ -1163,6 +1170,8 @@ document.addEventListener('visibilitychange', () => {
 (async () => {
   try {
     $('#versionPill').textContent = `v${chrome.runtime.getManifest().version}`;
+  $('#brandLogo').innerHTML = globalThis.NPT_ICONS.logo(34);
+  globalThis.NPT_ICONS.hydrate();
     const hash = location.hash.replace('#', '');
     if (document.querySelector(`.tab[data-tab="${CSS.escape(hash)}"]`)) selectTab(hash);
 

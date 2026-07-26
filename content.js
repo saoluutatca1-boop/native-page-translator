@@ -788,17 +788,21 @@
 
   const IS_TOP_FRAME = window === window.top;
 
-  // Icon SVG inline: stroke 1.6-1.8, round cap/join, currentColor — không emoji, không asset ngoài.
-  const NPT_ICONS = {
-    undo: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
-    globe: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a3.9 9 0 0 1 0 18 3.9 9 0 0 1 0-18"/></svg>',
-    copy: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
-    close: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
-    image: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 4.5-4.5 3 3L16 13l3 3"/></svg>',
+  /* Icon của panel trên trang lấy từ icons.js (manifest nạp trước content.js),
+   * nên nút nổi ngoài trang và popup/Cài đặt dùng đúng một bộ nét. */
+  const ICON = globalThis.NPT_ICONS;
+  const NPT_PANEL_ICONS = {
+    undo: ICON.svg('revert', { size: 12 }),
+    globe: ICON.svg('globe', { size: 14 }),
+    translate: ICON.svg('translate', { size: 14 }),
+    copy: ICON.svg('copy', { size: 12 }),
+    close: ICON.svg('close', { size: 11 }),
+    image: ICON.svg('image', { size: 14 }),
+    speak: ICON.svg('volume', { size: 13 }),
   };
-  const NPT_SELECTION_FAB_LABEL = `${NPT_ICONS.globe}<span>Dịch</span>`;
-  const NPT_SELECTION_COPY_LABEL = `${NPT_ICONS.copy}<span>Sao chép</span>`;
-  const NPT_SELECTION_COPIED_LABEL = `${NPT_ICONS.copy}<span>Đã sao chép</span>`;
+  const NPT_SELECTION_FAB_LABEL = `${NPT_PANEL_ICONS.translate}<span>Dịch</span>`;
+  const NPT_SELECTION_COPY_LABEL = `${NPT_PANEL_ICONS.copy}<span>Sao chép</span>`;
+  const NPT_SELECTION_COPIED_LABEL = `${NPT_PANEL_ICONS.copy}<span>Đã sao chép</span>`;
 
   /* ------------------------------------------------------------------
    * Style dùng chung cho MỌI shadow root của extension (FAB, toast, panel ảnh,
@@ -845,6 +849,11 @@
     root.appendChild(style);
     return root;
   }
+
+  /* Khối "nút ✨ EN" là một IIFE riêng phía dưới file, không thấy được hàm này
+   * -> shadow root của nó ném ReferenceError và nút không bao giờ dựng xong.
+   * Treo lên global để cả hai khối dùng chung đúng một bản style. */
+  globalThis.NPT_SHADOW_STYLE = { css: NPT_SHARED_SHADOW_CSS, apply: applySharedShadowStyle };
 
   function getExtensionShadowRoot(element) {
     if (!(element instanceof Element)) return null;
@@ -1924,12 +1933,12 @@
     const wrapper = document.createElement('div');
     wrapper.className = 'stage';
     wrapper.innerHTML = `
-      <button type="button" class="fab" title="Nhấp: dịch / tắt dịch · Chuột phải: menu · Kéo: di chuyển">${NPT_ICONS.globe}<span class="fab-lang"></span></button>
+      <button type="button" class="fab" title="Nhấp: dịch / tắt dịch · Chuột phải: menu · Kéo: di chuyển">${NPT_PANEL_ICONS.globe}<span class="fab-lang"></span></button>
       <div class="menu" hidden>
         <div class="buttons">
           <button type="button" data-language="vi" title="Dịch sang tiếng Việt">VI</button>
           <button type="button" data-language="en" title="Translate to English">EN</button>
-          <button type="button" data-language="original" title="Khôi phục bản gốc">${NPT_ICONS.undo}Gốc</button>
+          <button type="button" data-language="original" title="Khôi phục bản gốc">${NPT_PANEL_ICONS.undo}Gốc</button>
         </div>
         <div class="foot">
           <span class="brand-dot" aria-hidden="true"></span>
@@ -2554,7 +2563,7 @@
       </style>
       <div class="panel" data-tm-no-translate>
         <div class="head" title="Kéo để di chuyển">
-          <span class="title">${NPT_ICONS.image}Dịch ảnh</span>
+          <span class="title">${NPT_PANEL_ICONS.image}Dịch ảnh</span>
           <button type="button" class="overlay-toggle" hidden>Ẩn chữ đè</button>
           <button type="button" class="copy" hidden>Sao chép</button>
           <button type="button" class="close" title="Đóng">✕</button>
@@ -2934,7 +2943,7 @@
         <div class="actions">
           <button type="button" class="speak" title="Đọc bản dịch" hidden>🔊</button>
           <button type="button" class="copy">${NPT_SELECTION_COPY_LABEL}</button>
-          <button type="button" class="close" title="Đóng">${NPT_ICONS.close}</button>
+          <button type="button" class="close" title="Đóng">${NPT_PANEL_ICONS.close}</button>
         </div>
       </div>
     `;
@@ -3437,7 +3446,7 @@
         <div class="actions">
           <button type="button" class="speak" title="Đọc tóm tắt" hidden>🔊</button>
           <button type="button" class="copy" title="Sao chép tóm tắt" hidden>📋</button>
-          <button type="button" class="close" title="Đóng">${NPT_ICONS.close}</button>
+          <button type="button" class="close" title="Đóng">${NPT_PANEL_ICONS.close}</button>
         </div>
       </div>
     `;
@@ -3647,15 +3656,18 @@
     return Number.isFinite(dx) && Number.isFinite(dy) ? { dx, dy } : { dx: 0, dy: 0 };
   }
 
-  // Icon SVG inline: stroke 1.6-1.8, round cap/join, currentColor — không emoji, không asset ngoài.
+  /* Khối này là IIFE riêng: mọi thứ dùng chung với phần dịch trang đều phải
+   * lấy lại qua global (icon + style shadow), không thấy được biến cục bộ. */
+  const ICON = globalThis.NPT_ICONS;
+  const applySharedShadowStyle = root => globalThis.NPT_SHADOW_STYLE.apply(root);
   const NPT_INPUT_ICONS = {
-    spark: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5 13.9 10l5.6 2-5.6 2L12 19.5 10.1 14l-5.6-2 5.6-2z"/></svg>',
-    sparkLarge: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5 13.9 10l5.6 2-5.6 2L12 19.5 10.1 14l-5.6-2 5.6-2z"/></svg>',
-    chevron: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
-    bolt: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2.5 4.5 13.5H11l-1 8L18.5 10.5H12z"/></svg>',
-    chat: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>',
-    gear: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.4M12 18.6V21M3 12h2.4M18.6 12H21M5.6 5.6l1.7 1.7M16.7 16.7l1.7 1.7M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7"/></svg>',
-    reset: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
+    spark: ICON.svg('sparkles', { size: 12 }),
+    sparkLarge: ICON.svg('sparkles', { size: 13 }),
+    chevron: ICON.svg('chevron', { size: 10, strokeWidth: 2 }),
+    bolt: ICON.svg('zap', { size: 13 }),
+    chat: ICON.svg('book', { size: 13 }),
+    gear: ICON.svg('gear', { size: 13 }),
+    reset: ICON.svg('revert', { size: 13 }),
   };
   const NPT_MAIN_LABEL = `${NPT_INPUT_ICONS.spark}<span>EN</span>`;
 

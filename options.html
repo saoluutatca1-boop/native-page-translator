@@ -9,34 +9,27 @@
 <body class="options-page">
   <main>
     <header class="brand">
-      <svg class="brand-logo" width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
-        <defs>
-          <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#6366f1"/>
-            <stop offset="1" stop-color="#3b82f6"/>
-          </linearGradient>
-        </defs>
-        <rect width="30" height="30" rx="7" fill="url(#brandGrad)"/>
-        <path d="M9 11.5h9.5m0 0-2.8-2.8m2.8 2.8-2.8 2.8M21 18.5h-9.5m0 0 2.8-2.8m-2.8 2.8 2.8 2.8" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-      <h1>Native Translator</h1>
+      <span id="brandLogo" class="brand-logo-slot"></span>
+      <div class="brand-text">
+        <h1>Native Translator</h1>
+        <span class="brand-sub">Nhiều API key · DeepL · Gemini · OpenAI-compatible</span>
+      </div>
       <span id="versionPill" class="version-pill">v—</span>
     </header>
-    <p class="sub">Nhiều API key: DeepL · Google AI Studio (Gemini) · OpenAI-compatible.</p>
 
     <!-- Thanh điều hướng + lưu bám dính đầu trang: bản cũ xếp 8 mục không liên
          quan vào một cột dài ~2000px với nút Lưu nằm tận đáy. -->
     <div class="options-bar">
       <nav class="tabs tabs-wide" role="tablist" aria-label="Nhóm cài đặt">
-        <button class="tab" role="tab" type="button" data-tab="page" aria-selected="true" aria-controls="tab-page" id="tabbtn-page">Dịch trang</button>
-        <button class="tab" role="tab" type="button" data-tab="input" aria-selected="false" aria-controls="tab-input" id="tabbtn-input">Nút ✨ EN</button>
-        <button class="tab" role="tab" type="button" data-tab="api" aria-selected="false" aria-controls="tab-api" id="tabbtn-api">API &amp; key</button>
-        <button class="tab" role="tab" type="button" data-tab="terms" aria-selected="false" aria-controls="tab-terms" id="tabbtn-terms">Template &amp; glossary</button>
-        <button class="tab" role="tab" type="button" data-tab="misc" aria-selected="false" aria-controls="tab-misc" id="tabbtn-misc">Khác</button>
+        <button class="tab" role="tab" type="button" data-tab="page" aria-selected="true" aria-controls="tab-page" id="tabbtn-page"><i class="ico" data-icon="page" data-icon-size="15"></i>Dịch trang</button>
+        <button class="tab" role="tab" type="button" data-tab="input" aria-selected="false" aria-controls="tab-input" id="tabbtn-input"><i class="ico" data-icon="wand" data-icon-size="15"></i>Nút EN</button>
+        <button class="tab" role="tab" type="button" data-tab="api" aria-selected="false" aria-controls="tab-api" id="tabbtn-api"><i class="ico" data-icon="key" data-icon-size="15"></i>API &amp; key</button>
+        <button class="tab" role="tab" type="button" data-tab="terms" aria-selected="false" aria-controls="tab-terms" id="tabbtn-terms"><i class="ico" data-icon="book" data-icon-size="15"></i>Template &amp; glossary</button>
+        <button class="tab" role="tab" type="button" data-tab="misc" aria-selected="false" aria-controls="tab-misc" id="tabbtn-misc"><i class="ico" data-icon="sliders" data-icon-size="15"></i>Khác</button>
       </nav>
       <div class="save-row">
         <span id="dirtyPill" class="pill pill-muted" hidden>Có thay đổi chưa lưu</span>
-        <button id="save" class="primary save-button" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11l4 4v12a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20V5.5A1.5 1.5 0 0 1 5.5 4Z"/><path d="M8 4v5h7V4M8 21v-7h8v7"/></svg>Lưu cài đặt</button>
+        <button id="save" class="primary save-button" type="button"><i class="ico" data-icon="save"></i>Lưu cài đặt</button>
       </div>
       <p id="status" role="status" aria-live="polite"></p>
     </div>
@@ -44,7 +37,7 @@
     <!-- ================= Dịch trang ================= -->
     <div id="tab-page" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-page">
       <section>
-        <h2>Hành vi dịch trang</h2>
+        <h2><i class="ico" data-icon="page" data-icon-size="15"></i>Hành vi dịch trang</h2>
         <label class="check"><input id="pageUseProvider" type="checkbox"> Dịch cả trang bằng API riêng (tốn quota DeepL/Gemini)</label>
         <label class="check"><input id="pageFreeFallback" type="checkbox"> Fallback miễn phí khi provider riêng lỗi (Google/MyMemory — nội dung gửi bên thứ ba)</label>
         <label class="check"><input id="selectionTranslate" type="checkbox"> Dịch đoạn bôi đen (hiện nút nổi khi chọn chữ)</label>
@@ -53,7 +46,7 @@
       </section>
 
       <section>
-        <h2>Hiển thị &amp; văn phong</h2>
+        <h2><i class="ico" data-icon="sparkles" data-icon-size="15"></i>Hiển thị &amp; văn phong</h2>
         <label for="pageDisplayMode" class="small-label">Chế độ hiển thị</label>
         <select id="pageDisplayMode">
           <option value="replace">Chỉ hiện bản dịch</option>
@@ -84,7 +77,7 @@
       </section>
 
       <section>
-        <h2>Nội dung bỏ qua &amp; hiệu năng</h2>
+        <h2><i class="ico" data-icon="gauge" data-icon-size="15"></i>Nội dung bỏ qua &amp; hiệu năng</h2>
         <label class="check"><input id="pageSkipCode" type="checkbox"> Không dịch code (code block, editor)</label>
         <label class="check"><input id="pageSkipUsernames" type="checkbox"> Không dịch username/handle</label>
         <p class="note">Nhận diện theo selector phổ biến (class chứa username/nickname, handle @abc, u/abc) — có thể bổ sung theo site.</p>
@@ -94,7 +87,7 @@
       </section>
 
       <section>
-        <h2>Trang tài liệu kỹ thuật</h2>
+        <h2><i class="ico" data-icon="doc" data-icon-size="15"></i>Trang tài liệu kỹ thuật</h2>
         <label for="docMode" class="small-label">Chế độ</label>
         <select id="docMode">
           <option value="auto">Tự động nhận diện</option>
@@ -108,7 +101,7 @@
     <!-- ================= Nút ✨ EN ================= -->
     <div id="tab-input" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-input" hidden>
       <section>
-        <h2>Nút ✨ EN cạnh ô nhập</h2>
+        <h2><i class="ico" data-icon="wand" data-icon-size="15"></i>Nút ✨ EN cạnh ô nhập</h2>
         <label class="check"><input id="inputHelper" type="checkbox"> Hiện nút ✨ EN cạnh ô nhập liệu</label>
         <label for="defaultMode" class="small-label">Nút EN mặc định dùng</label>
         <select id="defaultMode">
@@ -131,8 +124,8 @@
     <div id="tab-api" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-api" hidden>
       <section>
         <div class="section-title">
-          <h2>Provider ưu tiên</h2>
-          <button id="refreshDeeplUsage" type="button" class="link-button">Làm mới quota</button>
+          <h2><i class="ico" data-icon="key" data-icon-size="15"></i>Provider ưu tiên</h2>
+          <button id="refreshDeeplUsage" type="button" class="link-button"><i class="ico" data-icon="refresh" data-icon-size="13"></i>Làm mới quota</button>
         </div>
         <div id="deeplUsage"></div>
         <select id="preferred" aria-label="Provider ưu tiên"></select>
@@ -142,11 +135,11 @@
         <p class="note">Dán key của nhiều nhà cung cấp cùng lúc cũng được: key nhận ra được định dạng (<code>AIza…</code> → Gemini, <code>uuid:fx</code> → DeepL, <code>sk-…</code>/<code>gsk_…</code> → OpenAI-compatible) sẽ <b>tự về đúng thẻ</b>, dán ở thẻ nào cũng vậy.</p>
         <div id="providers"></div>
         <div class="row action-row">
-          <button id="addCustomProvider" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Thêm API tùy chỉnh</button>
+          <button id="addCustomProvider" type="button"><i class="ico" data-icon="plus"></i>Thêm API tùy chỉnh</button>
         </div>
         <p class="note">Mỗi "API tùy chỉnh" là một endpoint OpenAI-compatible riêng (Groq, OpenRouter, API tự host…) với URL/model/key riêng — tất cả cùng nằm trong vòng xoay key, hết provider này tự sang provider kế.</p>
         <div class="row two action-row">
-          <button id="testApi" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 5 13h5l-1 9 8-11h-5l1-9Z"/></svg>Test API</button>
+          <button id="testApi" type="button"><i class="ico" data-icon="zap"></i>Test API</button>
         </div>
         <p class="note">API key chỉ lưu trong <b>chrome.storage.local</b> của extension — gỡ extension là xoá sạch toàn bộ dữ liệu. Key không gửi đi đâu khác ngoài chính API của provider.</p>
       </section>
@@ -156,7 +149,7 @@
     <div id="tab-terms" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-terms" hidden>
       <section>
         <div class="section-title">
-          <h2>Prompt Templates</h2>
+          <h2><i class="ico" data-icon="layers" data-icon-size="15"></i>Prompt Templates</h2>
         </div>
         <div id="templateList" class="key-list"></div>
         <label class="small-label" for="tplName">Tên template</label>
@@ -164,27 +157,27 @@
         <label class="small-label" for="tplPrompt">Prompt hướng dẫn dịch</label>
         <textarea id="tplPrompt" rows="3" spellcheck="false" placeholder="Ví dụ: Dịch theo phong cách văn học, giàu hình ảnh…"></textarea>
         <div class="row two action-row">
-          <button id="tplSave" class="primary" type="button">Lưu template</button>
-          <button id="tplCancel" type="button" hidden>Huỷ sửa</button>
+          <button id="tplSave" class="primary" type="button"><i class="ico" data-icon="save"></i>Lưu template</button>
+          <button id="tplCancel" type="button" hidden><i class="ico" data-icon="close"></i>Huỷ sửa</button>
         </div>
         <p class="note">Chọn radio <strong>Đang dùng</strong> để áp dụng template khi dịch. Chọn nhanh ngay trong popup.</p>
       </section>
 
       <section>
         <div class="section-title">
-          <h2>Glossary thuật ngữ</h2>
+          <h2><i class="ico" data-icon="book" data-icon-size="15"></i>Glossary thuật ngữ</h2>
           <span id="glossaryCount" class="badge">0 từ</span>
         </div>
         <div id="glossaryList" class="key-list"></div>
         <div class="glossary-add-row">
           <input id="glossarySource" type="text" spellcheck="false" placeholder="Thuật ngữ gốc (source)" aria-label="Thuật ngữ gốc">
           <input id="glossaryTarget" type="text" spellcheck="false" placeholder="Bản dịch cố định (target)" aria-label="Bản dịch cố định">
-          <button id="glossaryAdd" type="button">Thêm</button>
+          <button id="glossaryAdd" type="button"><i class="ico" data-icon="plus"></i>Thêm</button>
         </div>
         <div class="row three action-row">
-          <button id="glossaryImport" type="button">Import file…</button>
-          <button id="glossaryExportJson" type="button">Xuất JSON</button>
-          <button id="glossaryExportCsv" type="button">Xuất CSV</button>
+          <button id="glossaryImport" type="button"><i class="ico" data-icon="upload"></i>Import file…</button>
+          <button id="glossaryExportJson" type="button"><i class="ico" data-icon="download"></i>Xuất JSON</button>
+          <button id="glossaryExportCsv" type="button"><i class="ico" data-icon="download"></i>Xuất CSV</button>
         </div>
         <input id="glossaryFile" type="file" accept=".json,.csv,.tsv,.txt" hidden>
         <p class="note">Import hỗ trợ .json / .csv / .tsv / .txt (định dạng "gốc =&gt; dịch"). Trùng source sẽ tự gộp, không nhân đôi.</p>
@@ -194,7 +187,7 @@
     <!-- ================= Khác ================= -->
     <div id="tab-misc" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-misc" hidden>
       <section>
-        <h2>Giao diện</h2>
+        <h2><i class="ico" data-icon="moon" data-icon-size="15"></i>Giao diện</h2>
         <label for="uiTheme" class="small-label">Bảng màu popup &amp; trang cài đặt</label>
         <select id="uiTheme">
           <option value="auto">Tự động theo hệ thống</option>
@@ -204,7 +197,7 @@
       </section>
 
       <section>
-        <h2>Đọc bản dịch (TTS)</h2>
+        <h2><i class="ico" data-icon="volume" data-icon-size="15"></i>Đọc bản dịch (TTS)</h2>
         <label class="check"><input id="ttsEnabled" type="checkbox"> Bật nút đọc bản dịch bằng giọng nói</label>
         <label class="small-label" for="ttsRate">Tốc độ đọc: <span id="ttsRateValue">1</span>x</label>
         <input id="ttsRate" type="range" min="0.5" max="2" step="0.25" value="1">
@@ -212,28 +205,29 @@
 
       <section>
         <div class="section-title">
-          <h2>Cache bản dịch</h2>
+          <h2><i class="ico" data-icon="database" data-icon-size="15"></i>Cache bản dịch</h2>
           <span id="cacheCount" class="badge">— mục</span>
         </div>
         <label class="check"><input id="translationCache" type="checkbox"> Nhớ bản dịch đã có (dùng chung mọi tab, sống qua lần khởi động lại)</label>
         <p class="note">Tiết kiệm quota rất nhiều khi mở lại cùng một trang hoặc nhiều tab cùng site. <strong>Lưu ý riêng tư:</strong> phần đoạn gốc chỉ lưu dưới dạng mã băm, nhưng <strong>bản dịch được lưu nguyên văn</strong> trong bộ nhớ của extension — tức phần chữ đọc được của trang có tồn tại trên máy. Tab ẩn danh không bao giờ được ghi vào cache. Tắt toggle này hoặc bấm Xoá là sạch; gỡ extension cũng mất theo. Đổi provider/model hay văn phong sẽ tự dùng khoá cache khác.</p>
         <div class="row two action-row">
-          <button id="cacheClear" class="danger-button" type="button">Xoá cache bản dịch</button>
+          <button id="cacheClear" class="danger-button" type="button"><i class="ico" data-icon="trash"></i>Xoá cache bản dịch</button>
         </div>
       </section>
 
       <section>
-        <h2>Sao lưu &amp; khôi phục</h2>
+        <h2><i class="ico" data-icon="shield" data-icon-size="15"></i>Sao lưu &amp; khôi phục</h2>
         <p class="note">Xuất toàn bộ cài đặt (kèm glossary, template, blacklist). <strong>API key không nằm trong file xuất</strong> — nhập lại thủ công sau khi khôi phục.</p>
         <div class="row three action-row">
-          <button id="settingsExport" type="button">Xuất cài đặt</button>
-          <button id="settingsImport" type="button">Nhập cài đặt…</button>
-          <button id="settingsReset" class="danger-button" type="button">Về mặc định</button>
+          <button id="settingsExport" type="button"><i class="ico" data-icon="download"></i>Xuất cài đặt</button>
+          <button id="settingsImport" type="button"><i class="ico" data-icon="upload"></i>Nhập cài đặt…</button>
+          <button id="settingsReset" class="danger-button" type="button"><i class="ico" data-icon="reset"></i>Về mặc định</button>
         </div>
         <input id="settingsFile" type="file" accept=".json" hidden>
       </section>
     </div>
   </main>
+  <script src="icons.js"></script>
   <script src="providers.js"></script>
   <script src="glossary.js"></script>
   <script src="options.js"></script>

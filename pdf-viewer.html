@@ -196,15 +196,58 @@
       text-align: center;
       font-size: 13px;
     }
+    /* Icon dùng chung với popup/options: nét theo currentColor, canh giữa dòng. */
+    .ico {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    h1 {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .brand-logo-slot {
+      display: inline-flex;
+      flex: none;
+    }
+
+    .brand-logo-slot svg {
+      border-radius: 9px;
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.38);
+    }
+
+    .file-btn,
+    .source-name,
+    button {
+      display: inline-flex;
+      gap: 7px;
+      align-items: center;
+    }
+
+    .hint {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .hint .ico {
+      color: var(--faint);
+      opacity: 0.75;
+    }
   </style>
 </head>
 <body data-view="bilingual">
   <header>
-    <h1>Dịch PDF</h1>
+    <h1><span id="brandLogo" class="brand-logo-slot"></span>Dịch PDF</h1>
     <p class="disclaimer">Bản dịch dạng văn bản — không giữ nguyên layout/font/hình ảnh của PDF gốc.</p>
     <div class="controls">
-      <label class="file-btn">Chọn file PDF…<input id="fileInput" type="file" accept="application/pdf,.pdf" hidden></label>
-      <span id="sourceName" class="source-name">Chưa có nguồn</span>
+      <label class="file-btn"><i class="ico" data-icon="file" data-icon-size="15"></i>Chọn file PDF…<input id="fileInput" type="file" accept="application/pdf,.pdf" hidden></label>
+      <span id="sourceName" class="source-name"><i class="ico" data-icon="doc" data-icon-size="13"></i>Chưa có nguồn</span>
       <select id="targetLang" title="Ngôn ngữ đích">
         <option value="vi">Dịch sang Tiếng Việt</option>
         <option value="en">Dịch sang Tiếng Anh</option>
@@ -221,14 +264,15 @@
   <div id="banner" class="banner" hidden></div>
   <div id="errorBox" class="error" hidden>
     <p id="errorText"></p>
-    <button id="btnGrant" type="button" hidden>Cấp quyền truy cập</button>
-    <button id="btnOpenSettings" type="button" hidden>Mở trang Cài đặt</button>
+    <button id="btnGrant" type="button" hidden><i class="ico" data-icon="shield"></i>Cấp quyền truy cập</button>
+    <button id="btnOpenSettings" type="button" hidden><i class="ico" data-icon="sliders"></i>Mở trang Cài đặt</button>
   </div>
   <main id="content">
-    <p id="emptyHint" class="hint">Chọn một file PDF từ máy, hoặc mở trang này từ nút "Dịch PDF này" trong popup khi đang xem PDF.</p>
+    <p id="emptyHint" class="hint"><i class="ico" data-icon="doc" data-icon-size="26"></i>Chọn một file PDF từ máy, hoặc mở trang này từ nút "Dịch PDF này" trong popup khi đang xem PDF.</p>
   </main>
   <!-- pdf.js 4.x là ESM: không cần <script> riêng cho thư viện,
        pdf-viewer.js import './vendor/pdfjs/pdf.min.mjs' trực tiếp. -->
+  <script src="icons.js"></script>
   <script type="module" src="pdf-viewer.js"></script>
 </body>
 </html>

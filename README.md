@@ -37,6 +37,18 @@ Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini
    - Lỗi "Could not load manifest" gần như luôn do chọn sai cấp thư mục.
 4. Tải lại toàn bộ tab web đang mở sau khi cài/nâng cấp.
 
+## Giao diện & bộ icon riêng
+
+Toàn bộ icon của extension nằm trong **`icons.js`** — một nguồn duy nhất, không dùng font icon hay asset ngoài:
+
+- **53 icon** vẽ tay trên cùng lưới 24×24, nét 1.7, bo tròn đầu nét, tô bằng `currentColor` nên tự đổi màu theo theme sáng/tối và theo trạng thái của nút.
+- Dùng chung cho **mọi bề mặt**: popup, trang Cài đặt, trang Dịch PDF, và cả panel nổi trên trang web (nút dịch trang, nút dịch đoạn bôi đen, nút ✨ EN cạnh ô nhập) — trước đây mỗi file tự chép một đoạn `<svg>` riêng, mỗi nơi một độ dày nét.
+- **Nhãn provider** là ô gradient + glyph: DeepL, Gemini, OpenAI-compatible; mỗi slot API tùy chỉnh tự đổi màu theo số thứ tự nên Groq / OpenRouter / API nhà nhìn là phân biệt được.
+- **Logo app dùng đúng một dấu hiệu** cho icon trên thanh công cụ (`icons/icon.svg` + 4 file PNG) và header của popup/Cài đặt/PDF.
+- Markup tĩnh chỉ cần `<i class="ico" data-icon="key"></i>`; `NPT_ICONS.hydrate()` điền phần còn lại. Test `tests/icons.test.js` bắt lỗi gõ sai tên icon — thứ mà trên giao diện chỉ hiện ra dưới dạng "chỗ đó trống trơn".
+
+Kèm theo là một lượt chỉnh giao diện: tab có icon + nền gradient khi đang mở, thanh trạng thái đổi icon theo kết quả (xong / lỗi / đang chạy, có spinner quay), thẻ provider sáng viền khi bật, hàng key hiện nút xoá khi rê chuột, và nút "Xem thêm N key" xoay mũi tên khi mở.
+
 ## Nhiều API key (v4.1)
 
 Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options**):

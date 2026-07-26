@@ -38,10 +38,21 @@ let progressTimer = null;
 const $ = selector => document.querySelector(selector);
 const statusElement = $('#status');
 
+// Icon theo sắc thái: xong / lỗi / đang chạy — nhìn là biết ngay, khỏi đọc chữ.
+const STATUS_ICONS = { ok: 'success', error: 'alert', busy: 'spinner' };
+
 function setStatus(text, tone = 'ok') {
-  statusElement.textContent = text;
-  if (text) statusElement.dataset.tone = tone;
-  else delete statusElement.dataset.tone;
+  statusElement.textContent = '';
+  if (!text) {
+    delete statusElement.dataset.tone;
+    return;
+  }
+  statusElement.dataset.tone = tone;
+  statusElement.insertAdjacentHTML('afterbegin', globalThis.NPT_ICONS.svg(
+    STATUS_ICONS[tone] || 'info',
+    { size: 14, className: tone === 'busy' ? 'status-ico status-spin' : 'status-ico' },
+  ));
+  statusElement.appendChild(document.createTextNode(text));
 }
 
 function setError(error) {
@@ -313,7 +324,8 @@ async function loadQuota() {
     const label = document.createElement('div');
     label.className = 'quota-label';
     const left = document.createElement('span');
-    left.textContent = `DeepL ${usage.keyMasked}`;
+    left.innerHTML = globalThis.NPT_ICONS.svg('gauge', { size: 12 });
+    left.appendChild(document.createTextNode(` DeepL ${usage.keyMasked}`));
     const right = document.createElement('span');
     right.textContent = `${percent}% · còn ${(usage.limit - usage.count).toLocaleString('vi-VN')} ký tự`;
     label.append(left, right);
@@ -474,6 +486,8 @@ async function boot() {
   applyTheme(themeValue[THEME_KEY]);
 
   $('#versionPill').textContent = `v${chrome.runtime.getManifest().version}`;
+  $('#brandLogo').innerHTML = globalThis.NPT_ICONS.logo(32);
+  globalThis.NPT_ICONS.hydrate();
 
   activeTab = await getActiveTab();
   initTabContext();
