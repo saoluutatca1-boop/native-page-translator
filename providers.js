@@ -98,6 +98,203 @@
 
   const TONES = ['natural', 'professional', 'casual'];
 
+  /* ------------------------------------------------------------------
+   * Nhập key theo lô.
+   *
+   * Ngưởi dùng thường có cả chục key và dán một lượt, từ đủ kiểu nguồn:
+   * mỗi dòng một key, ngăn bằng dấu phẩy, mảng JSON copy từ code, danh
+   * sách có số thứ tự, dòng .env kiểu GEMINI_API_KEY=..., kèm chú thích
+   * trong ngoặc. Ô nhập cũ lấy NGUYÊN chuỗi làm MỘT key nên dán nhiều key
+   * là hỏng sạch — thêm được đúng một "key" rác rồi provider từ chối hết.
+   * parseKeysInput() bóc mọi dạng đó ra danh sách key sạch, đã lọc trùng.
+   * ------------------------------------------------------------------ */
+
+  const MIN_KEY_LENGTH = 6;
+  // Ký tự có thể có trong API key thật: chữ, số và - _ . : + / = ~
+  const KEY_CHARS_RE = /^[A-Za-z0-9][A-Za-z0-9_.:+/=~-]*$/;
+  // Chữ hay bị dán kèm quanh key — chắc chắn không phải key.
+  const KEY_NOISE = new Set([
+    'key', 'keys', 'api', 'apikey', 'api-key', 'api_key', 'token', 'secret',
+    'null', 'undefined', 'none', 'true', 'false', 'your-api-key', 'your_api_key',
+  ]);
+  // Nhãn lấy từ dòng .env (GEMINI_API_KEY=...) chỉ là tên biến — không đáng lưu.
+  const LABEL_NOISE_RE = /^[A-Z0-9_]+$|\b(?:api|key|token|secret)\b/i;
+
+  // Bóc dấu nháy / ngoặc / cú pháp JSON bọc ngoài và dấu câu cuối mẩu.
+  function stripKeyWrappers(token) {
+    let value = String(token || '').trim();
+    for (let round = 0; round < 5; round++) {
+      const before = value;
+      value = value
+        .replace(/^[\s"'`<([{«‹]+/, '')
+        .replace(/[\s"'`>)\]}»›,;]+$/, '')
+        .trim();
+      if (value === before) break;
+    }
+    return value;
+  }
+
+  // Nhận key rộng tay: chỉ loại những mẩu chắc chắn không phải key.
+  function looksLikeKey(value) {
+    const key = String(value || '');
+    if (key.length < MIN_KEY_LENGTH) return false;
+    if (KEY_NOISE.has(key.toLowerCase())) return false;
+    if (key.includes('://')) return false;                   // URL dán kèm
+    if (/^\d+$/.test(key) && key.length < 12) return false;  // số thứ tự / quota
+    return KEY_CHARS_RE.test(key);
+  }
+
+  /* Phần đứng trước dấu "=" hoặc ":" chỉ được coi là NHÃN khi nó trông như
+   * nhãn thật: có khoảng trắng ("acc 2"), là tên biến .env (GEMINI_API_KEY),
+   * hoặc là một từ ngắn ("acc", "key3"). Key DeepL "uuid:fx" hay key base64
+   * có "=" ở giữa vì vậy không bị cắt mất đầu. */
+  function looksLikeKeyLabel(name) {
+    if (/\s/.test(name)) return true;
+    if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(name)) return true;
+    return /^[A-Za-z]{1,12}\d{0,3}$/.test(name);
+  }
+
+  function keyTokensOf(text) {
+    return String(text).split(/[\s,;|]+/).map(stripKeyWrappers).filter(Boolean);
+  }
+
+  // Tiền tố key quen mặt của các provider phổ biến.
+  const KEY_PREFIX_RE = /AIza|AQ\.|sk-|gsk_|xai-|hf_|ya29\./g;
+  // Một key thật ngắn nhất trong các dạng dưới đây vẫn dài hơn con số này.
+  const MIN_RUN_PIECE = 24;
+
+  /* Dán nhiều key vào ô MỘT dòng (bản cũ) là mất hết newline: các key bị nối
+   * liền thành một chuỗi dài, không còn dấu phân tách nào. Nếu thấy đuôi ":fx"
+   * của DeepL lặp lại hoặc tiền tố key lặp lại thì cắt lại đúng chỗ. Chỉ làm
+   * khi chuỗi dài gấp đôi một key bình thường và MỌI mảnh cắt ra đều đủ dài —
+   * để không bao giờ xé một key thật thành hai. */
+  function splitRunTogetherKeys(token) {
+    if (token.length < 2 * MIN_RUN_PIECE + 12) return [token];
+
+    const fxParts = token.split(/(?<=:fx)/i);
+    if (fxParts.length > 1 && fxParts.every(part => part.length >= MIN_RUN_PIECE)) return fxParts;
+
+    const marks = [...token.matchAll(KEY_PREFIX_RE)].map(match => match.index);
+    if (marks.length < 2) return [token];
+    const pieces = marks.map((start, index) => token.slice(start, marks[index + 1]));
+    if (marks[0] > 0) pieces.unshift(token.slice(0, marks[0]));
+    return pieces.every(piece => piece.length >= MIN_RUN_PIECE) ? pieces : [token];
+  }
+
+  // Bóc nhãn (nếu có) và các mẩu key của MỘT dòng.
+  function splitKeyLine(line) {
+    let text = String(line);
+    let label = '';
+
+    // Đầu dòng kiểu danh sách: "1. key", "2) key", "- key", "• key".
+    text = text.replace(/^\s*(?:[-*•+>]+|\(?\d{1,3}[.)])\s+/, '');
+
+    // Chú thích cuối dòng: "key # acc 2", "key // acc 2".
+    const comment = /(?:^|\s)(?:#|\/\/)\s*([^\s#][^#]{0,59})$/.exec(text);
+    if (comment) {
+      label = comment[1].trim();
+      text = text.slice(0, comment.index);
+    }
+
+    // Nhãn trong ngoặc cuối dòng: "key (tài khoản 2)".
+    const paren = /\(([^()]{1,60})\)\s*$/.exec(text);
+    if (paren) {
+      label = label || paren[1].trim();
+      text = text.slice(0, paren.index);
+    }
+
+    let tokens = keyTokensOf(text);
+
+    /* Nhãn đứng trước: "acc 2 = key", "GEMINI_API_KEY: key". Chỉ nhận khi
+     * phần sau đủ dài, bắt đầu như một key thật ("https://..." không bị hiểu
+     * là nhãn "https" + key) và cách hiểu đó KHÔNG làm mất key nào. */
+    const prefixed = /^\s*([A-Za-z][\w .-]{0,31}?)\s*[=:]\s*(\S.*)$/.exec(text);
+    const rest = prefixed ? stripKeyWrappers(prefixed[2]) : '';
+    if (rest.length >= 12 && /^[A-Za-z0-9]/.test(rest) && looksLikeKeyLabel(prefixed[1].trim())) {
+      const restTokens = keyTokensOf(prefixed[2]);
+      if (restTokens.filter(looksLikeKey).length >= tokens.filter(looksLikeKey).length) {
+        const name = prefixed[1].trim();
+        if (!label && !LABEL_NOISE_RE.test(name)) label = name;
+        tokens = restTokens;
+      }
+    }
+
+    return { label: label.slice(0, 40), tokens };
+  }
+
+  /* Bóc key từ một chuỗi dán tự do. Trả về:
+   *   entries    : [{ key, label }] theo đúng thứ tự dán, đã lọc trùng
+   *   duplicates : số mẩu trùng (trùng nhau trong input hoặc trùng options.existing)
+   *   invalid    : các mẩu không nhận ra được — để UI báo lại cho người dùng
+   */
+  function parseKeysInput(input, options = {}) {
+    const existing = Array.isArray(options.existing) ? options.existing : [];
+    const seen = new Set(existing
+      .map(entry => String((typeof entry === 'string' ? entry : entry?.key) || '').trim())
+      .filter(Boolean));
+
+    const entries = [];
+    const invalid = [];
+    let duplicates = 0;
+
+    const text = String(input || '')
+      // Ký tự vô hình dán kèm từ web (ZWSP, BOM, soft hyphen) — xoá hẳn, nếu
+      // đổi thành khoảng trắng thì một key thật lại bị xé làm hai mẩu rác.
+      .replace(/[\u00ad\u200b-\u200d\u2060\ufeff]/g, '')
+      .replace(/[\u00a0\u2000-\u200a\u202f\u3000]/g, ' ')
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[\u201c\u201d]/g, '"');
+
+    for (const rawLine of text.split(/\r\n|\r|\n/)) {
+      const line = rawLine.trim();
+      if (!line || /^(?:#|\/\/)/.test(line)) continue; // dòng trống / dòng chú thích
+
+      const { label, tokens } = splitKeyLine(line);
+      const found = [];
+      for (const token of tokens.flatMap(splitRunTogetherKeys)) {
+        if (!looksLikeKey(token)) {
+          invalid.push(token.length > 28 ? `${token.slice(0, 28)}…` : token);
+          continue;
+        }
+        if (seen.has(token)) {
+          duplicates++;
+          continue;
+        }
+        seen.add(token);
+        found.push(token);
+      }
+      // Nhãn chỉ có nghĩa khi dòng đó cho đúng một key.
+      for (const key of found) entries.push({ key, label: found.length === 1 ? label : '' });
+    }
+
+    return { entries, duplicates, invalid };
+  }
+
+  /* Cảnh báo mềm khi key trông sai định dạng của provider: KHÔNG chặn lưu
+   * (API tự host / proxy có thể dùng key kiểu khác), chỉ nhắc để người dùng
+   * biết trước vì sao key đó sẽ bị từ chối. */
+  function keyFormatWarning(providerId, key) {
+    const value = String(key || '');
+    if (providerId === 'gemini' && !value.startsWith('AIza')) {
+      return 'Key Gemini chuẩn bắt đầu bằng "AIza". Key dạng "AQ." là key bị Google giới hạn — Gemini API sẽ từ chối. Hãy tạo key "AIza" bằng project/tài khoản Google khác, hoặc tạo trong Google Cloud Console.';
+    }
+    return '';
+  }
+
+  // Chấp nhận cả entry dạng chuỗi ("key") lẫn { key, label }; bỏ rỗng và trùng.
+  function normalizeKeyList(list) {
+    const seen = new Set();
+    const entries = [];
+    for (const entry of Array.isArray(list) ? list : []) {
+      const isText = typeof entry === 'string';
+      const key = String((isText ? entry : entry?.key) || '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ key, label: String((isText ? '' : entry?.label) || '').trim() });
+    }
+    return entries;
+  }
+
   function normalizeConfig(raw) {
     const config = {
       preferred: PROVIDER_ORDER.includes(raw?.preferred) ? raw.preferred : PROVIDER_ORDER[0],
@@ -107,17 +304,16 @@
     for (const id of PROVIDER_ORDER) {
       const base = emptyProviderConfig(id);
       const incoming = raw?.providers?.[id] || {};
-      const keys = Array.isArray(incoming.keys) ? incoming.keys : [];
+      // keys có thể là mảng {key,label}, mảng chuỗi, hoặc (config nhập tay/
+      // import) cả một chuỗi nhiều key — bóc hết về danh sách chuẩn.
+      const keys = typeof incoming.keys === 'string'
+        ? parseKeysInput(incoming.keys).entries
+        : incoming.keys;
       config.providers[id] = {
         ...base,
         ...incoming,
         enabled: incoming.enabled !== undefined ? Boolean(incoming.enabled) : base.enabled,
-        keys: keys
-          .map(entry => ({
-            key: String(entry?.key || '').trim(),
-            label: String(entry?.label || '').trim(),
-          }))
-          .filter(entry => entry.key),
+        keys: normalizeKeyList(keys),
       };
     }
     return config;
@@ -1156,6 +1352,9 @@
     PROVIDER_DEFS,
     TONES,
     normalizeConfig,
+    normalizeKeyList,
+    parseKeysInput,
+    keyFormatWarning,
     orderedProviderIds,
     usableProviders,
     maskKey,

@@ -6,6 +6,8 @@ const {
   PROVIDER_ORDER,
   PROVIDER_DEFS,
   normalizeConfig,
+  parseKeysInput,
+  keyFormatWarning,
   maskKey,
 } = globalThis.NPT_PROVIDERS;
 
@@ -119,8 +121,42 @@ function renderPreferredSelect() {
   select.value = config.preferred;
 }
 
+/* Danh sách 30-50 key sẽ đẩy phần cấu hình provider ra khỏi màn hình, nên chỉ
+ * hiện KEY_PREVIEW_LIMIT key đầu; phần còn lại gập lại (nhớ theo provider). */
+const KEY_PREVIEW_LIMIT = 8;
+const expandedKeyLists = new Set();
+// Nội dung đang gõ/dán trong ô thêm key — renderProviders() vẽ lại toàn bộ card
+// nên phải giữ lại, không thì thao tác ở provider khác là mất cả mớ key vừa dán.
+const keyDrafts = new Map();
+// Ô nhập bị thay bằng element mới sau khi vẽ lại -> trả con trỏ về đúng ô đó,
+// nhờ vậy gõ key rồi Enter liên tục vẫn chạy như bản cũ.
+let pendingKeyFocus = '';
+
+/* Bản cũ nhận cả chuỗi dán gộp làm MỘT key. Nếu config còn sót "key" kiểu đó
+ * thì tách lại giúp, thay vì buộc người dùng xoá rồi dán tay từng cái. */
+function splitPastedKeys(providerId) {
+  const provider = config.providers[providerId];
+  const before = provider.keys.length;
+  const rebuilt = [];
+  for (const entry of provider.keys) {
+    const parsed = parseKeysInput(entry.key, { existing: rebuilt });
+    if (!parsed.entries.length) {
+      // Không bóc ra được key nào -> giữ nguyên, không âm thầm làm mất key.
+      if (!rebuilt.some(item => item.key === entry.key)) rebuilt.push(entry);
+      continue;
+    }
+    for (const item of parsed.entries) rebuilt.push({ key: item.key, label: item.label || entry.label });
+  }
+  provider.keys = rebuilt;
+  expandedKeyLists.add(providerId);
+  renderProviders();
+  markDirty();
+  setStatus(`Đã tách ${before} mục thành ${rebuilt.length} key — nhớ bấm Lưu cài đặt`);
+}
+
 function renderKeyList(card, providerId) {
   const provider = config.providers[providerId];
+  const def = PROVIDER_DEFS[providerId];
   const list = el('div', 'key-list');
 
   if (!provider.keys.length) {
@@ -129,16 +165,26 @@ function renderKeyList(card, providerId) {
       : 'Chưa có key nào.'));
   }
 
-  provider.keys.forEach((entry, index) => {
+  const expanded = expandedKeyLists.has(providerId);
+  const visibleCount = expanded ? provider.keys.length : Math.min(provider.keys.length, KEY_PREVIEW_LIMIT);
+
+  provider.keys.slice(0, visibleCount).forEach((entry, index) => {
     const row = el('div', 'key-row');
-    row.insertAdjacentHTML('afterbegin', KEY_ICON);
+    row.appendChild(el('span', 'key-index', String(index + 1)));
+    row.insertAdjacentHTML('beforeend', KEY_ICON);
     row.appendChild(el('span', 'key-text', maskKey(entry.key)));
     if (entry.label) row.appendChild(el('span', 'key-label', entry.label));
+    const warning = keyFormatWarning(providerId, entry.key);
+    if (warning) {
+      const flag = el('span', 'key-warn', '⚠');
+      flag.title = warning;
+      row.appendChild(flag);
+    }
     const remove = el('button', '', 'Xoá');
     remove.type = 'button';
     remove.title = 'Xoá key này';
     remove.addEventListener('click', () => {
-      if (!confirm(`Xoá key ${maskKey(entry.key)} của ${PROVIDER_DEFS[providerId].label}?\nKhông khôi phục lại được.`)) return;
+      if (!confirm(`Xoá key ${maskKey(entry.key)} của ${def.label}?\nKhông khôi phục lại được.`)) return;
       provider.keys.splice(index, 1);
       renderProviders();
       markDirty();
@@ -148,38 +194,129 @@ function renderKeyList(card, providerId) {
     list.appendChild(row);
   });
 
-  const addRow = el('div', 'add-key-row');
-  const input = document.createElement('input');
-  input.type = 'password';
+  const tools = el('div', 'key-tools');
+  if (provider.keys.length > KEY_PREVIEW_LIMIT) {
+    const toggle = el('button', 'key-link', expanded
+      ? 'Thu gọn'
+      : `Xem thêm ${provider.keys.length - KEY_PREVIEW_LIMIT} key`);
+    toggle.type = 'button';
+    toggle.addEventListener('click', () => {
+      if (expanded) expandedKeyLists.delete(providerId);
+      else expandedKeyLists.add(providerId);
+      renderProviders();
+    });
+    tools.appendChild(toggle);
+  }
+  if (provider.keys.length >= 2) {
+    const clearAll = el('button', 'key-link key-link-danger', `Xoá hết ${provider.keys.length} key`);
+    clearAll.type = 'button';
+    clearAll.addEventListener('click', () => {
+      if (!confirm(`Xoá toàn bộ ${provider.keys.length} key của ${def.label}?\nKhông khôi phục lại được.`)) return;
+      provider.keys = [];
+      expandedKeyLists.delete(providerId);
+      renderProviders();
+      markDirty();
+      setStatus(`Đã xoá hết key của ${def.label} — nhớ bấm Lưu cài đặt`);
+    });
+    tools.appendChild(clearAll);
+  }
+  if (tools.children.length) list.appendChild(tools);
+
+  const blobs = provider.keys.filter(entry => parseKeysInput(entry.key).entries.length > 1);
+  if (blobs.length) {
+    const fixRow = el('div', 'key-fix');
+    fixRow.appendChild(el('span', '', `${blobs.length} mục trông như nhiều key bị dán gộp thành một.`));
+    const fix = el('button', 'key-link', 'Tách ra');
+    fix.type = 'button';
+    fix.addEventListener('click', () => splitPastedKeys(providerId));
+    fixRow.appendChild(fix);
+    list.appendChild(fixRow);
+  }
+
+  /* Ô thêm key là textarea (không còn <input> một dòng): dán bao nhiêu key
+   * cũng được, mỗi dòng một key hoặc ngăn bằng phẩy/space — parseKeysInput()
+   * lo phần bóc tách, số key nhận ra hiện ngay trên nút. */
+  const box = el('div', 'add-key-box');
+  const input = document.createElement('textarea');
+  input.className = 'key-input';
+  input.rows = 2;
   input.autocomplete = 'off';
   input.spellcheck = false;
-  input.placeholder = PROVIDER_DEFS[providerId].keyPlaceholder;
+  input.placeholder = `${def.keyPlaceholder}\nDán nhiều key một lượt: mỗi dòng 1 key, hoặc ngăn bằng dấu phẩy / khoảng trắng.`;
+  input.value = keyDrafts.get(providerId) || '';
+
+  const foot = el('div', 'add-key-row');
+  const hint = el('div', 'key-hint');
   const addButton = el('button', '', 'Thêm key');
   addButton.type = 'button';
-  const addKey = () => {
-    const value = input.value.trim();
-    if (!value) return;
-    if (provider.keys.some(entry => entry.key === value)) {
-      setStatus('Key này đã có trong danh sách', true);
+  foot.append(hint, addButton);
+
+  const refresh = () => {
+    const { entries, duplicates, invalid } = parseKeysInput(input.value, { existing: provider.keys });
+    input.rows = Math.min(12, Math.max(2, input.value.split('\n').length));
+    addButton.textContent = entries.length > 1 ? `Thêm ${entries.length} key` : 'Thêm key';
+    if (!input.value.trim()) {
+      hint.textContent = '';
+      delete hint.dataset.tone;
       return;
     }
-    provider.keys.push({ key: value, label: '' });
+    const parts = [`nhận diện ${entries.length} key mới`];
+    if (duplicates) parts.push(`${duplicates} trùng`);
+    if (invalid.length) parts.push(`${invalid.length} mẩu bỏ qua`);
+    hint.textContent = parts.join(' · ');
+    hint.dataset.tone = entries.length ? 'ok' : 'warn';
+  };
+
+  const addKeys = () => {
+    const { entries, duplicates, invalid } = parseKeysInput(input.value, { existing: provider.keys });
+    if (!entries.length) {
+      setStatus(duplicates
+        ? `Toàn bộ ${duplicates} key vừa dán đã có trong danh sách`
+        : 'Không tìm thấy key nào trong nội dung vừa dán', true);
+      return;
+    }
+
+    provider.keys.push(...entries);
+    keyDrafts.delete(providerId);
+    if (provider.keys.length > KEY_PREVIEW_LIMIT) expandedKeyLists.add(providerId);
+    pendingKeyFocus = providerId;
     renderProviders();
     markDirty();
-    if (providerId === 'gemini' && !value.startsWith('AIza')) {
-      setStatus('Đã thêm key, nhưng lưu ý: key Gemini chuẩn bắt đầu bằng "AIza". Key dạng "AQ." là key bị Google giới hạn — Gemini API sẽ từ chối. Hãy tạo key "AIza" bằng project/tài khoản Google khác, hoặc tạo trong Google Cloud Console.', true);
-      return;
-    }
-    setStatus('Đã thêm key — nhớ bấm Lưu cài đặt');
+
+    const notes = [];
+    if (duplicates) notes.push(`bỏ ${duplicates} key trùng`);
+    if (invalid.length) notes.push(`bỏ qua ${invalid.length} mẩu không giống key (${invalid.slice(0, 3).join(', ')})`);
+    const suspicious = entries.filter(entry => keyFormatWarning(providerId, entry.key));
+    if (suspicious.length) notes.push(`${suspicious.length} key trông sai định dạng: ${keyFormatWarning(providerId, suspicious[0].key)}`);
+    setStatus(
+      `Đã thêm ${entries.length} key cho ${def.label}${notes.length ? ` — ${notes.join(' · ')}` : ''} — nhớ bấm Lưu cài đặt`,
+      Boolean(invalid.length || suspicious.length),
+    );
   };
-  addButton.addEventListener('click', addKey);
-  input.addEventListener('keydown', event => {
-    if (event.key === 'Enter') addKey();
+
+  addButton.addEventListener('click', addKeys);
+  input.addEventListener('input', () => {
+    keyDrafts.set(providerId, input.value);
+    refresh();
   });
-  addRow.append(input, addButton);
-  list.appendChild(addRow);
+  input.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    // Gõ tay 1 key rồi Enter -> thêm luôn (như bản cũ). Khi đã dán nhiều dòng
+    // thì Enter là xuống dòng bình thường, phải Ctrl/Cmd+Enter mới thêm.
+    if (input.value.includes('\n') && !(event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    addKeys();
+  });
+
+  box.append(input, foot);
+  list.appendChild(box);
+  refresh();
 
   card.appendChild(list);
+  if (pendingKeyFocus === providerId) {
+    pendingKeyFocus = '';
+    input.focus();
+  }
 }
 
 function renderProviderFields(card, providerId) {

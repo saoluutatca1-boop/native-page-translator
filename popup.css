@@ -34,6 +34,7 @@
   --accent-2: #3b82f6;
   --accent-soft: rgba(99, 102, 241, 0.16);
   --danger: #f87171;
+  --warning: #fbbf24;
   --ok: #7dd3fc;
   --option-bg: #14171f;
   --glow-1: rgba(99, 102, 241, 0.14);
@@ -63,6 +64,7 @@
     --accent-2: #2563eb;
     --accent-soft: rgba(79, 70, 229, 0.12);
     --danger: #c81e1e;
+    --warning: #9a5b06;
     --ok: #0b6d9e;
     --option-bg: #ffffff;
     --glow-1: rgba(99, 102, 241, 0.12);
@@ -88,6 +90,7 @@
   --accent-2: #2563eb;
   --accent-soft: rgba(79, 70, 229, 0.12);
   --danger: #c81e1e;
+  --warning: #9a5b06;
   --ok: #0b6d9e;
   --option-bg: #ffffff;
   --glow-1: rgba(99, 102, 241, 0.12);
@@ -561,10 +564,76 @@ a:focus-visible,
   font-size: 11px;
 }
 
+.key-row .key-index {
+  flex: none;
+  min-width: 14px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Key trông sai định dạng provider (VD Gemini không bắt đầu bằng AIza) — vẫn
+ * lưu, chỉ gắn cờ kèm title giải thích. */
+.key-row .key-warn {
+  flex: none;
+  color: var(--warning);
+  font-size: 11px;
+  cursor: help;
+}
+
+.key-tools,
+.key-fix {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 1px 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+button.key-link {
+  width: auto;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+button.key-link:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+
+button.key-link-danger {
+  margin-left: auto;
+  color: var(--danger);
+}
+
+/* Thêm key theo lô: textarea trên, dòng đếm + nút ở dưới. */
+.add-key-box {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.add-key-box .key-input {
+  min-height: 46px;
+  font: 500 11.5px/1.5 ui-monospace, "Cascadia Mono", SFMono-Regular, Menlo, monospace;
+}
+
+.add-key-box .key-input::placeholder {
+  font: inherit;
+  color: var(--text-faint);
+}
+
 .add-key-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 7px;
+  align-items: center;
   margin-top: 2px;
 }
 
@@ -572,6 +641,20 @@ a:focus-visible,
   width: auto;
   padding: 9px 13px;
   white-space: nowrap;
+}
+
+.key-hint {
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.key-hint[data-tone='ok'] {
+  color: var(--accent);
+}
+
+.key-hint[data-tone='warn'] {
+  color: var(--warning);
 }
 
 .provider-fields {

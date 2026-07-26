@@ -48,6 +48,29 @@ Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options
   - Với model dòng 2.5, extension tự tắt "thinking" để tiết kiệm token.
 - **OpenAI-compatible** — endpoint tùy ý (OpenAI, LibreTranslate, API tự host...), có thể không cần key.
 
+### Dán nhiều key một lượt
+
+Ô thêm key nhận **cả một mớ key trong một lần dán** — không phải thêm từng cái. Cứ dán y nguyên như bạn đang có, extension tự bóc tách:
+
+| Dạng dán | Ví dụ |
+| --- | --- |
+| Mỗi dòng 1 key | `AIza...1`⏎`AIza...2`⏎`AIza...3` |
+| Ngăn bằng phẩy / space / chấm phẩy / gạch dọc | `AIza...1, AIza...2 AIza...3` |
+| Copy từ code | `["AIza...1", "AIza...2"]` |
+| Danh sách có số thứ tự / gạch đầu dòng | `1. AIza...1` · `- AIza...2` |
+| Dòng .env | `GEMINI_API_KEY=AIza...1` |
+| Kèm nhãn | `AIza...1 (acc phụ)` · `acc 2: AIza...2` · `AIza...3 # acc 3` |
+| Key bị nối liền do dán vào ô một dòng của bản cũ | `AIza...1AIza...2` |
+
+- Số key nhận diện được hiện ngay trên nút (**"Thêm 12 key"**) trước khi bấm.
+- **Key trùng tự bỏ** (trùng nhau trong nội dung dán, hoặc trùng key đã lưu) — báo lại bao nhiêu cái bị bỏ.
+- Mẩu rác dán kèm (URL, chữ "API KEY", số thứ tự) bị loại và báo rõ, **không** làm hỏng cả lượt dán.
+- Ký tự vô hình / nháy cong / NBSP copy từ web được dọn sạch trước khi lưu.
+- Key trông sai định dạng provider (VD Gemini không bắt đầu bằng `AIza`) vẫn được lưu, chỉ gắn cờ ⚠ kèm giải thích.
+- Danh sách dài chỉ hiện 8 key đầu, còn lại gập sau nút "Xem thêm"; có **"Xoá hết N key"** để dọn nhanh.
+- Nếu config cũ còn "key" là cả một chuỗi dán gộp, thẻ provider hiện nút **"Tách ra"** để cắt lại thành từng key.
+- Bàn phím: Enter thêm nhanh khi đang gõ 1 key, Ctrl/⌘+Enter khi đã dán nhiều dòng.
+
 Mỗi provider thêm được **nhiều key**. Khi dịch:
 
 1. Thử **provider ưu tiên** trước (chọn trong Cài đặt).
