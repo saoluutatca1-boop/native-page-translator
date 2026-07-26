@@ -53,6 +53,63 @@
   };
 
   /* ------------------------------------------------------------------
+   * Nhiều endpoint OpenAI-compatible chạy song song.
+   *
+   * PROVIDER_DEFS chỉ mô tả BA KIỂU provider (deepl / gemini / openai), còn
+   * kiểu openai được phép có nhiều bản: 'openai' là slot đầu, các slot sau
+   * mang id 'openai-2', 'openai-3'... mỗi slot có url/model/format/key riêng
+   * nên Groq + OpenRouter + API tự host cùng nằm trong một vòng xoay key.
+   * Mọi chỗ dựng request làm việc theo KIỂU (providerKind); chỉ UI và thông
+   * báo lỗi mới cần id/tên cụ thể của từng slot.
+   * ------------------------------------------------------------------ */
+  const CUSTOM_PROVIDER_RE = /^openai-(\d+)$/;
+  const MAX_CUSTOM_PROVIDERS = 20;
+
+  function isCustomProvider(id) {
+    return CUSTOM_PROVIDER_RE.test(String(id || ''));
+  }
+
+  function providerKind(id) {
+    return isCustomProvider(id) ? 'openai' : String(id || '');
+  }
+
+  function providerDefOf(id) {
+    return PROVIDER_DEFS[providerKind(id)] || null;
+  }
+
+  // Tên hiển thị: mọi slot OpenAI-compatible đều đặt tên được (Groq, OpenRouter…);
+  // chưa đặt thì slot đầu giữ nhãn mặc định, các slot sau đánh số.
+  function providerLabelOf(id, providerConfig) {
+    const name = String(providerConfig?.name || '').trim();
+    if (name) return name;
+    const custom = CUSTOM_PROVIDER_RE.exec(String(id || ''));
+    if (custom) return `API tùy chỉnh ${custom[1]}`;
+    return providerDefOf(id)?.label || String(id || '');
+  }
+
+  // Thứ tự hiển thị: ba provider dựng sẵn, rồi tới các slot tùy chỉnh theo số.
+  function customProviderIds(source) {
+    return Object.keys(source?.providers || {})
+      .filter(isCustomProvider)
+      .sort((a, b) => Number(CUSTOM_PROVIDER_RE.exec(a)[1]) - Number(CUSTOM_PROVIDER_RE.exec(b)[1]))
+      .slice(0, MAX_CUSTOM_PROVIDERS);
+  }
+
+  function providerIdsOf(config) {
+    return [...PROVIDER_ORDER, ...customProviderIds(config)];
+  }
+
+  // Id còn trống cho slot tùy chỉnh mới ('' nếu đã kịch trần).
+  function nextCustomProviderId(config) {
+    const used = new Set(Object.keys(config?.providers || {}));
+    for (let index = 2; index <= MAX_CUSTOM_PROVIDERS + 1; index++) {
+      const id = `openai-${index}`;
+      if (!used.has(id)) return id;
+    }
+    return '';
+  }
+
+  /* ------------------------------------------------------------------
    * Ngôn ngữ đích của dịch trang: chỉ VI/EN.
    *  - deepl:       mã target_lang của DeepL
    *  - englishName: tên tiếng Anh đưa vào prompt LLM
@@ -87,10 +144,12 @@
    * ------------------------------------------------------------------ */
 
   function emptyProviderConfig(id) {
-    const def = PROVIDER_DEFS[id];
+    const def = providerDefOf(id);
     return {
       enabled: false,
       keys: [],
+      // Chỉ kiểu OpenAI-compatible mới cần tên riêng: có nhiều slot cùng kiểu.
+      ...(def.needsUrl ? { name: '' } : {}),
       ...(def.needsModel ? { model: def.defaultModel } : {}),
       ...(def.needsUrl ? { url: def.defaultUrl, format: 'auto' } : {}),
     };
@@ -98,34 +157,251 @@
 
   const TONES = ['natural', 'professional', 'casual'];
 
+  /* ------------------------------------------------------------------
+   * Nhập key theo lô.
+   *
+   * Ngưởi dùng thường có cả chục key và dán một lượt, từ đủ kiểu nguồn:
+   * mỗi dòng một key, ngăn bằng dấu phẩy, mảng JSON copy từ code, danh
+   * sách có số thứ tự, dòng .env kiểu GEMINI_API_KEY=..., kèm chú thích
+   * trong ngoặc. Ô nhập cũ lấy NGUYÊN chuỗi làm MỘT key nên dán nhiều key
+   * là hỏng sạch — thêm được đúng một "key" rác rồi provider từ chối hết.
+   * parseKeysInput() bóc mọi dạng đó ra danh sách key sạch, đã lọc trùng.
+   * ------------------------------------------------------------------ */
+
+  const MIN_KEY_LENGTH = 6;
+  // Ký tự có thể có trong API key thật: chữ, số và - _ . : + / = ~
+  const KEY_CHARS_RE = /^[A-Za-z0-9][A-Za-z0-9_.:+/=~-]*$/;
+  // Chữ hay bị dán kèm quanh key — chắc chắn không phải key.
+  const KEY_NOISE = new Set([
+    'key', 'keys', 'api', 'apikey', 'api-key', 'api_key', 'token', 'secret',
+    'null', 'undefined', 'none', 'true', 'false', 'your-api-key', 'your_api_key',
+  ]);
+  // Nhãn lấy từ dòng .env (GEMINI_API_KEY=...) chỉ là tên biến — không đáng lưu.
+  const LABEL_NOISE_RE = /^[A-Z0-9_]+$|\b(?:api|key|token|secret)\b/i;
+
+  // Bóc dấu nháy / ngoặc / cú pháp JSON bọc ngoài và dấu câu cuối mẩu.
+  function stripKeyWrappers(token) {
+    let value = String(token || '').trim();
+    for (let round = 0; round < 5; round++) {
+      const before = value;
+      value = value
+        .replace(/^[\s"'`<([{«‹]+/, '')
+        .replace(/[\s"'`>)\]}»›,;]+$/, '')
+        .trim();
+      if (value === before) break;
+    }
+    return value;
+  }
+
+  // Nhận key rộng tay: chỉ loại những mẩu chắc chắn không phải key.
+  function looksLikeKey(value) {
+    const key = String(value || '');
+    if (key.length < MIN_KEY_LENGTH) return false;
+    if (KEY_NOISE.has(key.toLowerCase())) return false;
+    if (key.includes('://')) return false;                   // URL dán kèm
+    if (/^\d+$/.test(key) && key.length < 12) return false;  // số thứ tự / quota
+    return KEY_CHARS_RE.test(key);
+  }
+
+  /* Phần đứng trước dấu "=" hoặc ":" chỉ được coi là NHÃN khi nó trông như
+   * nhãn thật: có khoảng trắng ("acc 2"), là tên biến .env (GEMINI_API_KEY),
+   * hoặc là một từ ngắn ("acc", "key3"). Key DeepL "uuid:fx" hay key base64
+   * có "=" ở giữa vì vậy không bị cắt mất đầu. */
+  function looksLikeKeyLabel(name) {
+    if (/\s/.test(name)) return true;
+    if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(name)) return true;
+    return /^[A-Za-z]{1,12}\d{0,3}$/.test(name);
+  }
+
+  function keyTokensOf(text) {
+    return String(text).split(/[\s,;|]+/).map(stripKeyWrappers).filter(Boolean);
+  }
+
+  // Tiền tố key quen mặt của các provider phổ biến.
+  const KEY_PREFIX_RE = /AIza|AQ\.|sk-|gsk_|xai-|hf_|ya29\./g;
+  // Một key thật ngắn nhất trong các dạng dưới đây vẫn dài hơn con số này.
+  const MIN_RUN_PIECE = 24;
+
+  /* Dán nhiều key vào ô MỘT dòng (bản cũ) là mất hết newline: các key bị nối
+   * liền thành một chuỗi dài, không còn dấu phân tách nào. Nếu thấy đuôi ":fx"
+   * của DeepL lặp lại hoặc tiền tố key lặp lại thì cắt lại đúng chỗ. Chỉ làm
+   * khi chuỗi dài gấp đôi một key bình thường và MỌI mảnh cắt ra đều đủ dài —
+   * để không bao giờ xé một key thật thành hai. */
+  function splitRunTogetherKeys(token) {
+    if (token.length < 2 * MIN_RUN_PIECE + 12) return [token];
+
+    const fxParts = token.split(/(?<=:fx)/i);
+    if (fxParts.length > 1 && fxParts.every(part => part.length >= MIN_RUN_PIECE)) return fxParts;
+
+    const marks = [...token.matchAll(KEY_PREFIX_RE)].map(match => match.index);
+    if (marks.length < 2) return [token];
+    const pieces = marks.map((start, index) => token.slice(start, marks[index + 1]));
+    if (marks[0] > 0) pieces.unshift(token.slice(0, marks[0]));
+    return pieces.every(piece => piece.length >= MIN_RUN_PIECE) ? pieces : [token];
+  }
+
+  // Bóc nhãn (nếu có) và các mẩu key của MỘT dòng.
+  function splitKeyLine(line) {
+    let text = String(line);
+    let label = '';
+
+    // Đầu dòng kiểu danh sách: "1. key", "2) key", "- key", "• key".
+    text = text.replace(/^\s*(?:[-*•+>]+|\(?\d{1,3}[.)])\s+/, '');
+
+    // Chú thích cuối dòng: "key # acc 2", "key // acc 2".
+    const comment = /(?:^|\s)(?:#|\/\/)\s*([^\s#][^#]{0,59})$/.exec(text);
+    if (comment) {
+      label = comment[1].trim();
+      text = text.slice(0, comment.index);
+    }
+
+    // Nhãn trong ngoặc cuối dòng: "key (tài khoản 2)".
+    const paren = /\(([^()]{1,60})\)\s*$/.exec(text);
+    if (paren) {
+      label = label || paren[1].trim();
+      text = text.slice(0, paren.index);
+    }
+
+    let tokens = keyTokensOf(text);
+
+    /* Nhãn đứng trước: "acc 2 = key", "GEMINI_API_KEY: key". Chỉ nhận khi
+     * phần sau đủ dài, bắt đầu như một key thật ("https://..." không bị hiểu
+     * là nhãn "https" + key) và cách hiểu đó KHÔNG làm mất key nào. */
+    const prefixed = /^\s*([A-Za-z][\w .-]{0,31}?)\s*[=:]\s*(\S.*)$/.exec(text);
+    const rest = prefixed ? stripKeyWrappers(prefixed[2]) : '';
+    if (rest.length >= 12 && /^[A-Za-z0-9]/.test(rest) && looksLikeKeyLabel(prefixed[1].trim())) {
+      const restTokens = keyTokensOf(prefixed[2]);
+      if (restTokens.filter(looksLikeKey).length >= tokens.filter(looksLikeKey).length) {
+        const name = prefixed[1].trim();
+        if (!label && !LABEL_NOISE_RE.test(name)) label = name;
+        tokens = restTokens;
+      }
+    }
+
+    return { label: label.slice(0, 40), tokens };
+  }
+
+  /* Bóc key từ một chuỗi dán tự do. Trả về:
+   *   entries    : [{ key, label }] theo đúng thứ tự dán, đã lọc trùng
+   *   duplicates : số mẩu trùng (trùng nhau trong input hoặc trùng options.existing)
+   *   invalid    : các mẩu không nhận ra được — để UI báo lại cho người dùng
+   */
+  function parseKeysInput(input, options = {}) {
+    const existing = Array.isArray(options.existing) ? options.existing : [];
+    const seen = new Set(existing
+      .map(entry => String((typeof entry === 'string' ? entry : entry?.key) || '').trim())
+      .filter(Boolean));
+
+    const entries = [];
+    const invalid = [];
+    let duplicates = 0;
+
+    const text = String(input || '')
+      // Ký tự vô hình dán kèm từ web (ZWSP, BOM, soft hyphen) — xoá hẳn, nếu
+      // đổi thành khoảng trắng thì một key thật lại bị xé làm hai mẩu rác.
+      .replace(/[\u00ad\u200b-\u200d\u2060\ufeff]/g, '')
+      .replace(/[\u00a0\u2000-\u200a\u202f\u3000]/g, ' ')
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[\u201c\u201d]/g, '"');
+
+    for (const rawLine of text.split(/\r\n|\r|\n/)) {
+      const line = rawLine.trim();
+      if (!line || /^(?:#|\/\/)/.test(line)) continue; // dòng trống / dòng chú thích
+
+      const { label, tokens } = splitKeyLine(line);
+      const found = [];
+      for (const token of tokens.flatMap(splitRunTogetherKeys)) {
+        if (!looksLikeKey(token)) {
+          invalid.push(token.length > 28 ? `${token.slice(0, 28)}…` : token);
+          continue;
+        }
+        if (seen.has(token)) {
+          duplicates++;
+          continue;
+        }
+        seen.add(token);
+        found.push(token);
+      }
+      // Nhãn chỉ có nghĩa khi dòng đó cho đúng một key.
+      for (const key of found) entries.push({ key, label: found.length === 1 ? label : '' });
+    }
+
+    return { entries, duplicates, invalid };
+  }
+
+  /* Đoán key thuộc KIỂU provider nào, để dán một mớ key trộn lẫn của nhiều
+   * nhà cung cấp là tự chia về đúng thẻ. Chỉ trả lời khi chắc chắn — key lạ
+   * (API tự host, proxy) trả '' và được giữ nguyên ở chỗ người dùng đang dán.
+   *   AIza… / AQ.…            -> gemini
+   *   uuid hoặc uuid:fx       -> deepl
+   *   sk-… gsk_… xai-… hf_…   -> openai (OpenAI, OpenRouter, Groq, xAI, HF)
+   */
+  function detectProviderForKey(key) {
+    const value = String(key || '').trim();
+    if (!value) return '';
+    if (/^AIza[\w-]{10,}$/.test(value) || /^AQ\./.test(value)) return 'gemini';
+    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?::[a-z]{2})?$/i.test(value)) return 'deepl';
+    if (/^(?:sk|gsk|xai|hf|or|pk)[-_]/i.test(value)) return 'openai';
+    return '';
+  }
+
+  /* Cảnh báo mềm khi key trông sai định dạng của provider: KHÔNG chặn lưu
+   * (API tự host / proxy có thể dùng key kiểu khác), chỉ nhắc để người dùng
+   * biết trước vì sao key đó sẽ bị từ chối. */
+  function keyFormatWarning(providerId, key) {
+    const value = String(key || '');
+    if (providerKind(providerId) === 'gemini' && !value.startsWith('AIza')) {
+      return 'Key Gemini chuẩn bắt đầu bằng "AIza". Key dạng "AQ." là key bị Google giới hạn — Gemini API sẽ từ chối. Hãy tạo key "AIza" bằng project/tài khoản Google khác, hoặc tạo trong Google Cloud Console.';
+    }
+    return '';
+  }
+
+  // Chấp nhận cả entry dạng chuỗi ("key") lẫn { key, label }; bỏ rỗng và trùng.
+  function normalizeKeyList(list) {
+    const seen = new Set();
+    const entries = [];
+    for (const entry of Array.isArray(list) ? list : []) {
+      const isText = typeof entry === 'string';
+      const key = String((isText ? entry : entry?.key) || '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ key, label: String((isText ? '' : entry?.label) || '').trim() });
+    }
+    return entries;
+  }
+
   function normalizeConfig(raw) {
+    // Ba provider dựng sẵn luôn có mặt; slot tùy chỉnh lấy theo đúng những id
+    // đang nằm trong config (người dùng thêm/xoá bao nhiêu cũng được).
+    const ids = [...PROVIDER_ORDER, ...customProviderIds(raw)];
     const config = {
-      preferred: PROVIDER_ORDER.includes(raw?.preferred) ? raw.preferred : PROVIDER_ORDER[0],
+      preferred: ids.includes(raw?.preferred) ? raw.preferred : PROVIDER_ORDER[0],
       tone: TONES.includes(raw?.tone) ? raw.tone : 'natural',
       providers: {},
     };
-    for (const id of PROVIDER_ORDER) {
+    for (const id of ids) {
       const base = emptyProviderConfig(id);
       const incoming = raw?.providers?.[id] || {};
-      const keys = Array.isArray(incoming.keys) ? incoming.keys : [];
+      // keys có thể là mảng {key,label}, mảng chuỗi, hoặc (config nhập tay/
+      // import) cả một chuỗi nhiều key — bóc hết về danh sách chuẩn.
+      const keys = typeof incoming.keys === 'string'
+        ? parseKeysInput(incoming.keys).entries
+        : incoming.keys;
       config.providers[id] = {
         ...base,
         ...incoming,
         enabled: incoming.enabled !== undefined ? Boolean(incoming.enabled) : base.enabled,
-        keys: keys
-          .map(entry => ({
-            key: String(entry?.key || '').trim(),
-            label: String(entry?.label || '').trim(),
-          }))
-          .filter(entry => entry.key),
+        keys: normalizeKeyList(keys),
+        ...(base.name !== undefined ? { name: String(incoming.name || '').trim().slice(0, 40) } : {}),
       };
     }
     return config;
   }
 
   function orderedProviderIds(config) {
-    const rest = PROVIDER_ORDER.filter(id => id !== config.preferred);
-    return [config.preferred, ...rest];
+    const all = providerIdsOf(config);
+    const rest = all.filter(id => id !== config.preferred);
+    return all.includes(config.preferred) ? [config.preferred, ...rest] : rest;
   }
 
   function usableProviders(config) {
@@ -133,7 +409,7 @@
       const provider = config.providers[id];
       if (!provider?.enabled) return false;
       // OpenAI-compatible cho phép không cần key (API free tự host).
-      if (id === 'openai') return true;
+      if (providerKind(id) === 'openai') return true;
       return provider.keys.length > 0;
     });
   }
@@ -263,10 +539,11 @@
   }
 
   function buildRequest({ providerId, providerConfig, apiKey, source, context, tone }) {
+    const kind = providerKind(providerId);
     const instructions = buildNativeInstructions(tone);
     const prompt = buildPrompt(source, context);
 
-    if (providerId === 'deepl') {
+    if (kind === 'deepl') {
       return {
         url: PROVIDER_DEFS.deepl.endpointFor(apiKey),
         method: 'POST',
@@ -282,7 +559,7 @@
       };
     }
 
-    if (providerId === 'gemini') {
+    if (kind === 'gemini') {
       const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
       // Dịch thuật không cần suy luận: tắt thinking để tiết kiệm token.
       // Chỉ gửi cho dòng 2.5 (đã kiểm chứng field hợp lệ); dòng 3.x mặc định
@@ -306,7 +583,7 @@
       };
     }
 
-    if (providerId === 'openai') {
+    if (kind === 'openai') {
       const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
 
       let payload;
@@ -403,8 +680,8 @@
   }
 
   // Phân loại lỗi theo HTTP status (dùng chung single + batch). 2xx -> null.
-  function classifyHttpError({ providerId, status, bodyText, retryAfterMs }) {
-    const def = PROVIDER_DEFS[providerId];
+  function classifyHttpError({ providerId, providerLabel, status, bodyText, retryAfterMs }) {
+    const def = { label: providerLabel || providerLabelOf(providerId) };
 
     if (status === 0) {
       return { kind: 'providerFailed', message: `${def.label}: lỗi mạng/timeout` };
@@ -459,9 +736,10 @@
     return null;
   }
 
-  function classifyResponse({ providerId, openaiFormat, status, bodyText, retryAfterMs }) {
-    const def = PROVIDER_DEFS[providerId];
-    const httpError = classifyHttpError({ providerId, status, bodyText, retryAfterMs });
+  function classifyResponse({ providerId, providerLabel, openaiFormat, status, bodyText, retryAfterMs }) {
+    const kind = providerKind(providerId);
+    const def = { label: providerLabel || providerLabelOf(providerId) };
+    const httpError = classifyHttpError({ providerId, providerLabel: def.label, status, bodyText, retryAfterMs });
     if (httpError) return httpError;
 
     let data;
@@ -472,9 +750,9 @@
     }
 
     let text = '';
-    if (providerId === 'deepl') {
+    if (kind === 'deepl') {
       text = String(data?.translations?.[0]?.text || '').trim();
-    } else if (providerId === 'gemini') {
+    } else if (kind === 'gemini') {
       const parts = data?.candidates?.[0]?.content?.parts || [];
       text = parts.map(part => part?.text || '').join('').trim();
     } else {
@@ -594,11 +872,12 @@
   }
 
   function buildBatchRequest({ providerId, providerConfig, apiKey, texts, sourceLanguage, targetLanguage, pageOptions }) {
+    const kind = providerKind(providerId);
     // Ngôn ngữ đích chỉ hỗ trợ VI/EN.
     const target = findBatchTarget(targetLanguage);
     if (!target) throw new Error('Ngôn ngữ đích không hỗ trợ');
 
-    if (providerId === 'deepl') {
+    if (kind === 'deepl') {
       // DeepL hỗ trợ mảng text trong 1 request duy nhất.
       return {
         url: PROVIDER_DEFS.deepl.endpointFor(apiKey),
@@ -619,7 +898,7 @@
     const instructions = buildBatchInstructions(sourceLanguage, target.englishName, pageOptions);
     const prompt = JSON.stringify(texts);
 
-    if (providerId === 'gemini') {
+    if (kind === 'gemini') {
       const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
       const generationConfig = { temperature: 0.3 };
       if (/2\.5/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -640,7 +919,7 @@
       };
     }
 
-    if (providerId === 'openai') {
+    if (kind === 'openai') {
       const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
 
       let payload;
@@ -684,9 +963,10 @@
 
   // Nhánh classify cho batch: lỗi HTTP dùng chung classifyHttpError,
   // body 2xx phải parse ra mảng bản dịch CÙNG ĐỘ DÀI với texts gửi đi.
-  function classifyBatchResponse({ providerId, openaiFormat, status, bodyText, expectedLength, retryAfterMs }) {
-    const def = PROVIDER_DEFS[providerId];
-    const httpError = classifyHttpError({ providerId, status, bodyText, retryAfterMs });
+  function classifyBatchResponse({ providerId, providerLabel, openaiFormat, status, bodyText, expectedLength, retryAfterMs }) {
+    const kind = providerKind(providerId);
+    const def = { label: providerLabel || providerLabelOf(providerId) };
+    const httpError = classifyHttpError({ providerId, providerLabel: def.label, status, bodyText, retryAfterMs });
     if (httpError) return httpError;
 
     let data;
@@ -698,13 +978,13 @@
     }
 
     let translations = null;
-    if (providerId === 'deepl') {
+    if (kind === 'deepl') {
       if (Array.isArray(data?.translations)) {
         translations = data.translations.map(item => String(item?.text ?? ''));
       }
     } else {
       let text = '';
-      if (providerId === 'gemini') {
+      if (kind === 'gemini') {
         const parts = data?.candidates?.[0]?.content?.parts || [];
         text = parts.map(part => part?.text || '').join('').trim();
       } else {
@@ -762,6 +1042,8 @@
 
     for (const providerId of providerIds) {
       const providerConfig = config.providers[providerId];
+      // Nhiều slot tùy chỉnh cùng kiểu 'openai' -> lỗi phải gọi đúng tên slot.
+      const providerLabel = providerLabelOf(providerId, providerConfig);
       // OpenAI-compatible không bắt buộc key: cho phép 1 lượt không key.
       const keyPool = providerConfig.keys.length ? providerConfig.keys : [{ key: '', label: '' }];
 
@@ -784,9 +1066,9 @@
         let buildFailed = false;
         for (let transientAttempt = 0; ; transientAttempt++) {
           try {
-            ({ verdict } = await attempt({ providerId, providerConfig, apiKey: entry.key }));
+            ({ verdict } = await attempt({ providerId, providerConfig, providerLabel, apiKey: entry.key }));
           } catch (error) {
-            errors.push(`${PROVIDER_DEFS[providerId].label}: ${error?.message || error}`);
+            errors.push(`${providerLabel}: ${error?.message || error}`);
             buildFailed = true;
             break;
           }
@@ -803,7 +1085,7 @@
           return {
             verdict,
             provider: providerId,
-            providerLabel: PROVIDER_DEFS[providerId].label,
+            providerLabel,
             keyMasked: entry.key ? maskKey(entry.key) : '',
           };
         }
@@ -834,7 +1116,7 @@
       keyState,
       now,
       sleep,
-      attempt: async ({ providerId, providerConfig, apiKey }) => {
+      attempt: async ({ providerId, providerConfig, providerLabel, apiKey }) => {
         const request = buildRequest({
           providerId,
           providerConfig,
@@ -846,6 +1128,7 @@
         const response = await fetchText(request);
         const verdict = classifyResponse({
           providerId,
+          providerLabel,
           openaiFormat: request?.openaiFormat,
           status: response.status,
           bodyText: response.bodyText,
@@ -879,7 +1162,7 @@
       keyState,
       now,
       sleep,
-      attempt: async ({ providerId, providerConfig, apiKey }) => {
+      attempt: async ({ providerId, providerConfig, providerLabel, apiKey }) => {
         const request = buildBatchRequest({
           providerId,
           providerConfig,
@@ -897,6 +1180,7 @@
           const response = await fetchText(request);
           const verdict = classifyBatchResponse({
             providerId,
+            providerLabel,
             openaiFormat: request?.openaiFormat,
             status: response.status,
             bodyText: response.bodyText,
@@ -944,12 +1228,13 @@
   function buildSummaryRequest({ providerId, providerConfig, apiKey, text, targetLanguage, maxBullets }) {
     const targetName = SUMMARY_TARGET[String(targetLanguage || '').toLowerCase()];
     if (!targetName) throw new Error('Ngôn ngữ đích không hỗ trợ');
-    if (providerId === 'deepl') throw new Error('SUMMARIZE_REQUIRES_LLM');
+    const kind = providerKind(providerId);
+    if (kind === 'deepl') throw new Error('SUMMARIZE_REQUIRES_LLM');
 
     const instructions = buildSummaryInstructions(targetName, clampSummaryBullets(maxBullets));
     const prompt = String(text || '');
 
-    if (providerId === 'gemini') {
+    if (kind === 'gemini') {
       const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
       const generationConfig = { temperature: 0.3 };
       if (/2\.5/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -970,7 +1255,7 @@
       };
     }
 
-    if (providerId === 'openai') {
+    if (kind === 'openai') {
       const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
 
       let payload;
@@ -1004,16 +1289,19 @@
     const target = String(targetLanguage || '').toLowerCase();
     if (!SUMMARY_TARGET[target]) throw new Error('Ngôn ngữ đích không hỗ trợ');
 
+    // Mọi provider LLM đang bật (Gemini + tất cả slot OpenAI-compatible).
     const llmProviders = {};
-    for (const id of ['gemini', 'openai']) {
+    for (const id of providerIdsOf(config)) {
+      if (providerKind(id) === 'deepl') continue;
       const provider = config?.providers?.[id];
       if (provider?.enabled) llmProviders[id] = provider;
     }
-    if (!Object.keys(llmProviders).length) throw new Error('SUMMARIZE_REQUIRES_LLM');
+    const llmIds = Object.keys(llmProviders);
+    if (!llmIds.length) throw new Error('SUMMARIZE_REQUIRES_LLM');
     const llmConfig = {
       ...config,
       // preferred 'deepl' không còn trong providers -> về LLM đầu tiên khả dụng.
-      preferred: llmProviders[config?.preferred] ? config.preferred : (llmProviders.gemini ? 'gemini' : 'openai'),
+      preferred: llmProviders[config?.preferred] ? config.preferred : llmIds[0],
       providers: llmProviders,
     };
 
@@ -1022,7 +1310,7 @@
       keyState,
       now,
       sleep,
-      attempt: async ({ providerId, providerConfig, apiKey }) => {
+      attempt: async ({ providerId, providerConfig, providerLabel, apiKey }) => {
         const request = buildSummaryRequest({
           providerId,
           providerConfig,
@@ -1034,6 +1322,7 @@
         const response = await fetchText(request);
         const verdict = classifyResponse({
           providerId,
+          providerLabel,
           openaiFormat: request?.openaiFormat,
           status: response.status,
           bodyText: response.bodyText,
@@ -1156,6 +1445,18 @@
     PROVIDER_DEFS,
     TONES,
     normalizeConfig,
+    normalizeKeyList,
+    parseKeysInput,
+    detectProviderForKey,
+    keyFormatWarning,
+    emptyProviderConfig,
+    isCustomProvider,
+    providerKind,
+    providerDefOf,
+    providerLabelOf,
+    providerIdsOf,
+    nextCustomProviderId,
+    MAX_CUSTOM_PROVIDERS,
     orderedProviderIds,
     usableProviders,
     maskKey,

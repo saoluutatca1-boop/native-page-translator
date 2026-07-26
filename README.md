@@ -37,6 +37,18 @@ Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini
    - Lỗi "Could not load manifest" gần như luôn do chọn sai cấp thư mục.
 4. Tải lại toàn bộ tab web đang mở sau khi cài/nâng cấp.
 
+## Giao diện & bộ icon riêng
+
+Toàn bộ icon của extension nằm trong **`icons.js`** — một nguồn duy nhất, không dùng font icon hay asset ngoài:
+
+- **53 icon** vẽ tay trên cùng lưới 24×24, nét 1.7, bo tròn đầu nét, tô bằng `currentColor` nên tự đổi màu theo theme sáng/tối và theo trạng thái của nút.
+- Dùng chung cho **mọi bề mặt**: popup, trang Cài đặt, trang Dịch PDF, và cả panel nổi trên trang web (nút dịch trang, nút dịch đoạn bôi đen, nút ✨ EN cạnh ô nhập) — trước đây mỗi file tự chép một đoạn `<svg>` riêng, mỗi nơi một độ dày nét.
+- **Nhãn provider** là ô gradient + glyph: DeepL, Gemini, OpenAI-compatible; mỗi slot API tùy chỉnh tự đổi màu theo số thứ tự nên Groq / OpenRouter / API nhà nhìn là phân biệt được.
+- **Logo app dùng đúng một dấu hiệu** cho icon trên thanh công cụ (`icons/icon.svg` + 4 file PNG) và header của popup/Cài đặt/PDF.
+- Markup tĩnh chỉ cần `<i class="ico" data-icon="key"></i>`; `NPT_ICONS.hydrate()` điền phần còn lại. Test `tests/icons.test.js` bắt lỗi gõ sai tên icon — thứ mà trên giao diện chỉ hiện ra dưới dạng "chỗ đó trống trơn".
+
+Kèm theo là một lượt chỉnh giao diện: tab có icon + nền gradient khi đang mở, thanh trạng thái đổi icon theo kết quả (xong / lỗi / đang chạy, có spinner quay), thẻ provider sáng viền khi bật, hàng key hiện nút xoá khi rê chuột, và nút "Xem thêm N key" xoay mũi tên khi mở.
+
 ## Nhiều API key (v4.1)
 
 Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options**):
@@ -47,6 +59,42 @@ Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options
   - **Key chuẩn phải bắt đầu bằng `AIza`.** Nếu AI Studio trả về key dạng `AQ.`, tài khoản Google của bạn đang bị giới hạn — Gemini API sẽ từ chối key đó. Cách xử lý: tạo key trong project mới, dùng tài khoản Google khác, hoặc tạo API key tại [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (bật Generative Language API).
   - Với model dòng 2.5, extension tự tắt "thinking" để tiết kiệm token.
 - **OpenAI-compatible** — endpoint tùy ý (OpenAI, LibreTranslate, API tự host...), có thể không cần key.
+
+### Nhiều nhà cung cấp chạy song song
+
+Ba provider trên bật **đồng thời** được, mỗi cái giữ danh sách key riêng. Ngoài ra bấm **"Thêm API tùy chỉnh"** để tạo thêm bao nhiêu endpoint OpenAI-compatible cũng được (tối đa 20): Groq, OpenRouter, Together, API tự host… — **mỗi slot có URL / model / định dạng / key riêng** và tự đặt tên để nhận ra trong ô "Provider ưu tiên" lẫn trong thông báo lỗi.
+
+Tất cả nằm chung một vòng xoay: hết key của provider này thì tự sang provider kế, đúng thứ tự bạn chọn. Ví dụ một cấu hình chạy được ngay: DeepL 5 key → Gemini 30 key → Groq 3 key → OpenRouter 2 key.
+
+- Quyền truy cập từng endpoint tùy chỉnh được xin **gộp một lần** khi bấm Lưu cài đặt.
+- Extension chỉ cho phép gọi ra đúng origin của những endpoint đang cấu hình — origin lạ vẫn bị `isRemoteAllowed` chặn.
+- Xoá một slot bằng nút **"Xoá provider"** ngay trên thẻ.
+
+### Dán nhiều key một lượt
+
+Ô thêm key nhận **cả một mớ key trong một lần dán** — không phải thêm từng cái. Cứ dán y nguyên như bạn đang có, extension tự bóc tách:
+
+| Dạng dán | Ví dụ |
+| --- | --- |
+| Mỗi dòng 1 key | `AIza...1`⏎`AIza...2`⏎`AIza...3` |
+| Ngăn bằng phẩy / space / chấm phẩy / gạch dọc | `AIza...1, AIza...2 AIza...3` |
+| Copy từ code | `["AIza...1", "AIza...2"]` |
+| Danh sách có số thứ tự / gạch đầu dòng | `1. AIza...1` · `- AIza...2` |
+| Dòng .env | `GEMINI_API_KEY=AIza...1` |
+| Kèm nhãn | `AIza...1 (acc phụ)` · `acc 2: AIza...2` · `AIza...3 # acc 3` |
+| Key bị nối liền do dán vào ô một dòng của bản cũ | `AIza...1AIza...2` |
+| **Trộn lẫn key của nhiều nhà cung cấp** | `AIza...1`⏎`uuid:fx`⏎`sk-...` |
+
+- **Dán mớ key trộn lẫn ở thẻ nào cũng được**: key nhận ra được định dạng tự về đúng thẻ — `AIza…`/`AQ.` → Gemini, `uuid` hoặc `uuid:fx` → DeepL, `sk-…`/`gsk_…`/`xai-…`/`hf_…` → OpenAI-compatible. Key lạ (API tự host) ở lại đúng thẻ bạn đang dán, và key kiểu OpenAI dán ở slot tùy chỉnh nào thì ở yên slot đó.
+- Provider vừa nhận key đầu tiên được **bật tự động** — key nằm trong provider đang tắt thì vô dụng.
+- Số key nhận diện được hiện ngay trên nút (**"Thêm 12 key"**) trước khi bấm, kèm dòng chia key (`7 → Gemini · 3 → DeepL`).
+- **Key trùng tự bỏ** (trùng nhau trong nội dung dán, hoặc trùng key đã lưu) — báo lại bao nhiêu cái bị bỏ.
+- Mẩu rác dán kèm (URL, chữ "API KEY", số thứ tự) bị loại và báo rõ, **không** làm hỏng cả lượt dán.
+- Ký tự vô hình / nháy cong / NBSP copy từ web được dọn sạch trước khi lưu.
+- Key trông sai định dạng provider (VD Gemini không bắt đầu bằng `AIza`) vẫn được lưu, chỉ gắn cờ ⚠ kèm giải thích.
+- Danh sách dài chỉ hiện 8 key đầu, còn lại gập sau nút "Xem thêm"; có **"Xoá hết N key"** để dọn nhanh.
+- Nếu config cũ còn "key" là cả một chuỗi dán gộp, thẻ provider hiện nút **"Tách ra"** để cắt lại thành từng key.
+- Bàn phím: Enter thêm nhanh khi đang gõ 1 key, Ctrl/⌘+Enter khi đã dán nhiều dòng.
 
 Mỗi provider thêm được **nhiều key**. Khi dịch:
 

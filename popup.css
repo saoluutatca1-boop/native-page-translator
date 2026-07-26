@@ -34,6 +34,7 @@
   --accent-2: #3b82f6;
   --accent-soft: rgba(99, 102, 241, 0.16);
   --danger: #f87171;
+  --warning: #fbbf24;
   --ok: #7dd3fc;
   --option-bg: #14171f;
   --glow-1: rgba(99, 102, 241, 0.14);
@@ -63,6 +64,7 @@
     --accent-2: #2563eb;
     --accent-soft: rgba(79, 70, 229, 0.12);
     --danger: #c81e1e;
+    --warning: #9a5b06;
     --ok: #0b6d9e;
     --option-bg: #ffffff;
     --glow-1: rgba(99, 102, 241, 0.12);
@@ -88,6 +90,7 @@
   --accent-2: #2563eb;
   --accent-soft: rgba(79, 70, 229, 0.12);
   --danger: #c81e1e;
+  --warning: #9a5b06;
   --ok: #0b6d9e;
   --option-bg: #ffffff;
   --glow-1: rgba(99, 102, 241, 0.12);
@@ -269,6 +272,22 @@ button:active {
   transform: scale(0.97);
 }
 
+/* Hàng 2 nút mà một nút đang ẩn (VD chỉ có "Tóm tắt" khi trang không phải PDF)
+ * thì nút còn lại trải hết chiều ngang thay vì đứng lệch nửa hàng. */
+.row.two:has(> button[hidden]) {
+  grid-template-columns: 1fr;
+}
+
+/* Nút hành động chính trong hàng: nhích lên 1px khi hover cho có chiều sâu. */
+.action-row button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+
+.action-row button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
 /* outline:none ở khối control phía trên xoá luôn vòng focus mặc định, mà chỉ
  * input/select mới có style thay thế — nút bấm thì không còn dấu hiệu nào cho
  * ngưởi dùng bàn phím. Trả lại bằng focus-visible (không hiện khi click chuột). */
@@ -292,13 +311,14 @@ a:focus-visible,
 .primary:hover {
   background: linear-gradient(135deg, #7073f2 0%, #4a8cf7 100%);
   border: 0;
+  box-shadow: 0 10px 26px rgba(79, 102, 241, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
 
 /* ---------- Toggle switches ---------- */
 
 .check {
   display: flex;
-  gap: 9px;
+  gap: 8px;
   align-items: center;
   margin-top: 11px;
   font-size: 12.5px;
@@ -366,6 +386,8 @@ a:focus-visible,
 }
 
 #status:empty {
+  min-height: 0;
+  margin: 0;
   padding: 0;
   border: 0;
 }
@@ -476,8 +498,18 @@ a:focus-visible,
   background: #fff;
 }
 
+/* Tên provider đẩy phần còn lại về mép phải, nhờ vậy badge số key và nút
+ * "Xoá provider" (thẻ tùy chỉnh) đứng dính nhau thay vì mỗi cái một góc. */
+.provider-head .provider-title {
+  margin-right: auto;
+}
+
+.provider-head .key-link {
+  flex: none;
+  margin-left: 0;
+}
+
 .provider-head .badge {
-  margin-left: auto;
   padding: 3px 9px;
   border: 1px solid var(--hairline-soft);
   border-radius: 99px;
@@ -541,6 +573,9 @@ a:focus-visible,
 }
 
 .key-row button {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
   width: auto;
   margin-left: auto;
   padding: 3px 9px;
@@ -555,16 +590,112 @@ a:focus-visible,
   background: rgba(248, 113, 113, 0.12);
 }
 
+/* Hàng template/glossary có 2 nút (Sửa + Xoá): chỉ nút xoá mang màu cảnh báo. */
+.key-row button.row-action {
+  margin-left: 0;
+  color: var(--text-dim);
+}
+
+.key-row button.row-action:first-of-type {
+  margin-left: auto;
+}
+
+.key-row button.row-action:hover {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.key-row button.row-action-danger {
+  color: var(--danger);
+}
+
+.key-row button.row-action-danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--danger);
+}
+
+/* Mũi tên nguồn → đích trong glossary: dùng icon chevron xoay ngang. */
+.glossary-arrow {
+  transform: rotate(-90deg);
+  color: var(--text-faint);
+}
+
 .key-empty {
   padding: 3px 1px 5px;
   color: var(--text-faint);
   font-size: 11px;
 }
 
+.key-row .key-index {
+  flex: none;
+  min-width: 14px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Key trông sai định dạng provider (VD Gemini không bắt đầu bằng AIza) — vẫn
+ * lưu, chỉ gắn cờ kèm title giải thích. */
+.key-row .key-warn {
+  flex: none;
+  color: var(--warning);
+  font-size: 11px;
+  cursor: help;
+}
+
+.key-tools,
+.key-fix {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 1px 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+button.key-link {
+  width: auto;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+button.key-link:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+
+button.key-link-danger {
+  margin-left: auto;
+  color: var(--danger);
+}
+
+/* Thêm key theo lô: textarea trên, dòng đếm + nút ở dưới. */
+.add-key-box {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.add-key-box .key-input {
+  min-height: 46px;
+  font: 500 11.5px/1.5 ui-monospace, "Cascadia Mono", SFMono-Regular, Menlo, monospace;
+}
+
+.add-key-box .key-input::placeholder {
+  font: inherit;
+  color: var(--text-faint);
+}
+
 .add-key-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 7px;
+  align-items: center;
   margin-top: 2px;
 }
 
@@ -572,6 +703,20 @@ a:focus-visible,
   width: auto;
   padding: 9px 13px;
   white-space: nowrap;
+}
+
+.key-hint {
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.key-hint[data-tone='ok'] {
+  color: var(--accent);
+}
+
+.key-hint[data-tone='warn'] {
+  color: var(--warning);
 }
 
 .provider-fields {
@@ -582,21 +727,90 @@ a:focus-visible,
   margin-top: 3px;
 }
 
-/* ---------- Brand refresh: header, icon SVG, micro-motion ---------- */
+/* ==========================================================================
+ * Hệ icon (icons.js) + header thương hiệu
+ * Mọi icon là <svg> stroke theo currentColor, nằm trong <i class="ico">, nên
+ * đổi màu chữ của nút/nhãn là icon đổi theo — không cần biến thể màu riêng.
+ * ========================================================================== */
+
+.ico {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  vertical-align: -2.5px;
+}
+
+/* Chưa hydrate xong thì vẫn chiếm chỗ, tránh chữ nhảy khi icon xuất hiện. */
+.ico:empty {
+  width: 16px;
+  height: 16px;
+}
+
+.note .ico,
+.small-label .ico,
+label .ico {
+  margin-right: 6px;
+  color: var(--text-faint);
+}
+
+h2 .ico {
+  margin-right: 7px;
+  color: var(--accent);
+}
+
+button .ico {
+  opacity: 0.9;
+}
+
+.primary .ico,
+.seg button[aria-pressed="true"] .ico {
+  opacity: 1;
+}
+
+/* Icon trong toggle: đứng giữa công tắc và chữ, mờ đi khi tắt. */
+.check-ico {
+  color: var(--text-faint);
+  transition: color 0.3s var(--spring);
+}
+
+.check input:checked ~ .check-ico {
+  color: var(--accent);
+}
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
 }
 
-.brand-logo {
+.brand-logo-slot {
+  display: inline-flex;
   flex: none;
-  border-radius: 8px;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.brand-logo-slot svg {
+  border-radius: 9px;
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.brand-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.brand-sub {
+  overflow: hidden;
+  color: var(--text-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 500;
 }
 
 .version-pill {
+  flex: none;
   margin-left: auto;
   padding: 2px 8px;
   border: 1px solid var(--hairline-soft);
@@ -608,28 +822,25 @@ a:focus-visible,
   letter-spacing: 0.05em;
 }
 
-/* Icon SVG inline: stroke currentColor, size cố định trong nút/label */
-.ico {
-  width: 14px;
-  height: 14px;
-  flex: none;
-}
-
-label .ico {
-  margin-right: 6px;
-  vertical-align: -2.5px;
-}
-
-/* Provider badge 22px đứng trước tên provider */
+/* Nhãn thương hiệu provider (gradient + glyph) đứng trước tên provider. */
 .provider-badge {
   flex: none;
-  border-radius: 6px;
+  border-radius: 6.5px;
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 /* Key-row: icon chìa khóa nhỏ đầu dòng */
 .key-ico {
   flex: none;
   color: var(--text-faint);
+}
+
+/* Cờ cảnh báo key sai định dạng + icon trong hàng "dán gộp". */
+.key-warn,
+.key-fix > .ico {
+  display: inline-flex;
+  flex: none;
+  color: var(--warning);
 }
 
 /* Micro-animation fadeIn cho provider-card khi load */
@@ -645,17 +856,24 @@ label .ico {
   from { opacity: 0; transform: translateY(4px); }
 }
 
-/* Chấm trạng thái đầu thanh status (màu theo currentColor — đổi theo lỗi/ok) */
-#status:not(:empty)::before {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 7px;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 8px currentColor;
-  vertical-align: 1px;
+/* Thanh trạng thái: icon dẫn đầu (xong / lỗi / đang chạy) thay cho chấm tròn. */
+#status:not(:empty) {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.status-ico {
+  margin-top: 1px;
+  filter: drop-shadow(0 0 6px currentColor);
+}
+
+.status-spin {
+  animation: nptSpin 0.85s linear infinite;
+}
+
+@keyframes nptSpin {
+  to { transform: rotate(360deg); }
 }
 
 /* ---------- Templates, glossary & TTS (options) / popup additions ---------- */
@@ -808,11 +1026,24 @@ input[type="range"]:focus {
 }
 
 /* Segmented VI / EN / Gốc — nút đang áp dụng được tô rõ, không còn phải đoán. */
+.seg button {
+  font-weight: 700;
+}
+
 .seg button[aria-pressed="true"] {
   border-color: transparent;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  box-shadow: 0 6px 16px rgba(79, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: 0 8px 20px rgba(79, 102, 241, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.24);
   color: #fff;
+}
+
+.seg button[aria-pressed="true"] .ico {
+  color: #fff;
+}
+
+/* Host của trang hiện tại: icon quả địa cầu nhạt đứng trước tên miền. */
+.site-ico {
+  color: var(--text-faint);
 }
 
 .progress {
@@ -856,6 +1087,10 @@ input[type="range"]:focus {
 }
 
 .tab {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
   width: auto;
   padding: 7px 6px;
   border: 0;
@@ -872,9 +1107,24 @@ input[type="range"]:focus {
   color: var(--text);
 }
 
+/* Tab đang mở: nền gradient nhạt + viền trong, đủ rõ mà không ồn. */
 .tab[aria-selected="true"] {
-  background: var(--accent-soft);
+  background: linear-gradient(140deg, rgba(99, 102, 241, 0.2), rgba(59, 130, 246, 0.11));
+  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.32);
   color: var(--text);
+}
+
+.tab[aria-selected="true"] .ico {
+  color: var(--accent);
+}
+
+.tab .ico {
+  opacity: 0.75;
+}
+
+.tab[aria-selected="true"] .ico,
+.tab:hover .ico {
+  opacity: 1;
 }
 
 .tabpanel {
@@ -971,8 +1221,15 @@ main {
 }
 
 .tabs-wide {
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   margin-top: 0;
+}
+
+/* 5 tab kèm icon: giữ mỗi tab đúng một dòng, thà chữ nhỏ hơn còn hơn gãy dòng. */
+.tabs-wide .tab {
+  padding: 8px 4px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .save-row {
@@ -999,7 +1256,9 @@ main {
 /* Tiêu đề mục trước đây là <label> không gắn với control nào — trình đọc màn
  * hình đọc ra "nhãn" rồi im, và bấm vào nhãn không focus được gì cả. */
 h2 {
-  margin: 0 0 9px;
+  display: flex;
+  align-items: center;
+  margin: 0 0 10px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.09em;
@@ -1042,4 +1301,121 @@ textarea:focus {
 .danger-button:hover {
   border-color: var(--danger);
   background: rgba(248, 113, 113, 0.1);
+}
+
+/* ==========================================================================
+ * Tinh chỉnh v4.4 — thẻ provider, danh sách key, trạng thái rỗng
+ * ========================================================================== */
+
+/* Thẻ provider đang bật: viền accent + quầng sáng nhẹ, tắt thì lùi hẳn về sau. */
+.provider-card {
+  background: linear-gradient(180deg, var(--panel-strong), var(--panel));
+}
+
+.provider-card[data-enabled="true"] {
+  border-color: rgba(99, 102, 241, 0.38);
+  box-shadow: 0 10px 26px rgba(15, 17, 23, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.provider-card[data-enabled="false"] {
+  opacity: 0.6;
+}
+
+.provider-card:hover {
+  border-color: rgba(99, 102, 241, 0.5);
+}
+
+.provider-head {
+  padding-bottom: 4px;
+}
+
+.provider-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-site a {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+/* Hàng key: đánh số mảnh, chữ key dạng mono, hover mới hiện rõ nút xoá. */
+.key-row {
+  transition: border-color 0.25s var(--spring), background 0.25s var(--spring);
+}
+
+.key-row:hover {
+  border-color: var(--hairline);
+  background: var(--panel-strong);
+}
+
+.key-row button {
+  opacity: 0.75;
+  transition: opacity 0.2s var(--spring), background 0.25s var(--spring);
+}
+
+.key-row:hover button,
+.key-row button:focus-visible {
+  opacity: 1;
+}
+
+/* Nút "Xem thêm N key" xoay mũi tên khi đang mở. */
+button.key-link .ico {
+  transition: transform 0.3s var(--spring);
+}
+
+button.key-link[data-expanded="true"] .ico {
+  transform: rotate(180deg);
+}
+
+button.key-link {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+/* Ô dán key theo lô: viền nhấn khi có nội dung hợp lệ. */
+.add-key-box .key-input:focus {
+  border-color: var(--accent);
+}
+
+.add-key-button {
+  min-width: 104px;
+}
+
+/* Trạng thái rỗng: chữ mờ, thụt vào cho ra dáng placeholder chứ không như lỗi. */
+.key-empty {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  padding: 7px 2px 6px;
+}
+
+.key-fix {
+  padding: 6px 8px;
+  border: 1px dashed rgba(251, 191, 36, 0.4);
+  border-radius: var(--radius-sm);
+  background: rgba(251, 191, 36, 0.07);
+  color: var(--text-dim);
+}
+
+/* Hộp quota DeepL trong popup: nhãn có icon đồng hồ đo. */
+.quota-label span:first-child {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+/* Card trang hiện tại nổi lên một chút so với nền. */
+.current-site {
+  padding: 12px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 16px;
+  background: linear-gradient(180deg, var(--panel-strong), transparent 85%);
+}
+
+.current-site .check:last-child {
+  margin-bottom: 2px;
 }

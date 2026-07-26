@@ -276,6 +276,44 @@ async function main() {
   assert.equal(blocked.ok, false);
   assert.match(blocked.networkError, /chưa được cấp quyền/);
 
+  /* 7b. Whitelist phải tính TẤT CẢ slot OpenAI-compatible, không chỉ slot đầu:
+   * thêm hai endpoint tùy chỉnh -> cả hai origin đều qua cửa isRemoteAllowed,
+   * origin lạ vẫn bị chặn. */
+  {
+    const cfg = storageData.get('tm-multi-provider-config');
+    cfg.providers['openai-2'] = {
+      enabled: true, name: 'Groq', keys: [{ key: 'gsk_abc', label: '' }],
+      url: 'https://api.groq.com/openai/v1/chat/completions', format: 'auto', model: 'llama',
+    };
+    cfg.providers['openai-3'] = {
+      enabled: true, name: 'OpenRouter', keys: [{ key: 'sk-or-v1-abc', label: '' }],
+      url: 'https://openrouter.ai/api/v1/chat/completions', format: 'auto', model: 'llama',
+    };
+    await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+    await new Promise(resolve => setTimeout(resolve, 20)); // đợi onChanged xoá cache config
+
+    for (const url of ['https://api.groq.com/openai/v1/chat/completions', 'https://openrouter.ai/api/v1/chat/completions']) {
+      const result = await sendMessage({ type: 'proxyFetch', payload: { method: 'GET', url, timeout: 5000 } });
+      // Không cần mạng thật: chỉ cần KHÔNG bị chặn vì thiếu quyền.
+      assert.ok(
+        !/chưa được cấp quyền/.test(result.networkError || ''),
+        `${url} bị chặn oan: ${result.networkError}`,
+      );
+    }
+    const stillBlocked = await sendMessage({
+      type: 'proxyFetch',
+      payload: { method: 'GET', url: 'https://khong-cau-hinh.example/api', timeout: 5000 },
+    });
+    assert.equal(stillBlocked.ok, false);
+    assert.match(stillBlocked.networkError, /chưa được cấp quyền/);
+
+    // Trả config về như cũ cho các mục sau (chúng giả định chỉ có DeepL).
+    delete cfg.providers['openai-2'];
+    delete cfg.providers['openai-3'];
+    await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+
   // 8. Dịch ảnh qua context menu: fetch ảnh -> gemini vision -> sendMessage kết quả
   {
     // onInstalled (mục 2) phải tạo menu chuột phải

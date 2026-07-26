@@ -1052,6 +1052,288 @@ async function run() {
     assert.equal(hits, 2);
   }
 
+  // 56. parseKeysInput: dán mỗi dòng 1 key -> nhận đủ, giữ thứ tự
+  {
+    const { entries, duplicates, invalid } = P.parseKeysInput([
+      'AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1',
+      'AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2',
+      '   ',
+      'AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3',
+    ].join('\n'));
+    assert.equal(entries.length, 3);
+    assert.equal(entries[2].key, 'AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3');
+    assert.equal(duplicates, 0);
+    assert.deepEqual(invalid, []);
+  }
+
+  // 57. Mọi kiểu phân tách trên cùng một dòng: phẩy, space, chấm phẩy, gạch dọc
+  {
+    const one = P.parseKeysInput('key-aaaaaa1, key-aaaaaa2 key-aaaaaa3;key-aaaaaa4|key-aaaaaa5');
+    assert.equal(one.entries.length, 5);
+    assert.deepEqual(one.entries.map(e => e.key), [
+      'key-aaaaaa1', 'key-aaaaaa2', 'key-aaaaaa3', 'key-aaaaaa4', 'key-aaaaaa5',
+    ]);
+  }
+
+  // 58. Mảng JSON copy từ code, danh sách có số thứ tự, dòng .env
+  {
+    const json = P.parseKeysInput('["sk-aaaaaaaaaa1", "sk-aaaaaaaaaa2",\n "sk-aaaaaaaaaa3"]');
+    assert.deepEqual(json.entries.map(e => e.key), ['sk-aaaaaaaaaa1', 'sk-aaaaaaaaaa2', 'sk-aaaaaaaaaa3']);
+
+    const numbered = P.parseKeysInput('1. sk-bbbbbbbbb1\n2) sk-bbbbbbbbb2\n- sk-bbbbbbbbb3\n• sk-bbbbbbbbb4');
+    assert.deepEqual(numbered.entries.map(e => e.key), ['sk-bbbbbbbbb1', 'sk-bbbbbbbbb2', 'sk-bbbbbbbbb3', 'sk-bbbbbbbbb4']);
+
+    // Tên biến .env không được thành label; dòng chú thích bị bỏ.
+    const env = P.parseKeysInput('# key cua acc chinh\nGEMINI_API_KEY=AIzaCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC1');
+    assert.equal(env.entries.length, 1);
+    assert.equal(env.entries[0].key, 'AIzaCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC1');
+    assert.equal(env.entries[0].label, '');
+  }
+
+  // 59. Key DeepL ":fx" không bị cắt ở dấu hai chấm, kể cả khi có nhãn đứng trước
+  {
+    const plain = P.parseKeysInput('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx');
+    assert.deepEqual(plain.entries.map(e => e.key), ['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx']);
+
+    const labelled = P.parseKeysInput('acc 2: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef:fx');
+    assert.equal(labelled.entries.length, 1);
+    assert.equal(labelled.entries[0].key, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef:fx');
+    assert.equal(labelled.entries[0].label, 'acc 2');
+  }
+
+  // 60. Nhãn từ ngoặc / chú thích cuối dòng; nhiều key một dòng thì bỏ nhãn
+  {
+    const paren = P.parseKeysInput('AIzaDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD1 (tài khoản phụ)');
+    assert.equal(paren.entries[0].label, 'tài khoản phụ');
+
+    const comment = P.parseKeysInput('AIzaDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD2 # acc 3');
+    assert.equal(comment.entries[0].label, 'acc 3');
+
+    const shared = P.parseKeysInput('acc x: AIzaEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE1 AIzaEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE2');
+    assert.equal(shared.entries.length, 2);
+    assert.deepEqual(shared.entries.map(e => e.label), ['', '']);
+  }
+
+  // 61. Trùng nhau trong input và trùng key đã lưu -> đếm riêng, không nhân bản
+  {
+    const result = P.parseKeysInput('sk-dupdupdup1\nsk-dupdupdup1\nsk-dupdupdup2', {
+      existing: [{ key: 'sk-dupdupdup2' }, 'sk-dupdupdup3'],
+    });
+    assert.deepEqual(result.entries.map(e => e.key), ['sk-dupdupdup1']);
+    assert.equal(result.duplicates, 2);
+  }
+
+  // 62. Rác dán kèm bị loại (URL, chữ "api key", số thứ tự trần) — key vẫn nhận
+  {
+    const result = P.parseKeysInput('API KEY: sk-realrealreal1\nhttps://api.openai.com/v1 123 sk-realrealreal2');
+    assert.deepEqual(result.entries.map(e => e.key), ['sk-realrealreal1', 'sk-realrealreal2']);
+    assert.ok(result.invalid.includes('https://api.openai.com/v1'));
+    assert.ok(result.invalid.includes('123'));
+  }
+
+  // 63. Ký tự vô hình / nháy cong / NBSP copy từ web không làm hỏng key
+  {
+    const one = `AIza${'F'.repeat(34)}1`;
+    const two = `AIza${'G'.repeat(34)}2`;
+    // Nháy cong bọc ngoài, ZWSP lọt giữa key, NBSP làm dấu phân tách.
+    const pasted = `\u201c${one.slice(0, 12)}\u200b${one.slice(12)}\u201d\u00a0\u201c${two}\u201d`;
+    const result = P.parseKeysInput(pasted);
+    assert.deepEqual(result.entries.map(e => e.key), [one, two]);
+  }
+
+  // 63b. Key bị nối liền không còn dấu phân tách (dán vào ô 1 dòng của bản cũ)
+  {
+    const g1 = `AIza${'H'.repeat(34)}1`;
+    const g2 = `AIza${'H'.repeat(34)}2`;
+    const glued = P.parseKeysInput(g1 + g2);
+    assert.deepEqual(glued.entries.map(e => e.key), [g1, g2], 'phải cắt lại 2 key Gemini bị nối liền');
+
+    const d1 = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx';
+    const d2 = 'ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee:fx';
+    assert.deepEqual(P.parseKeysInput(d1 + d2).entries.map(e => e.key), [d1, d2]);
+
+    // Một key thật KHÔNG bao giờ bị xé, dù dài và có tiền tố lặp bên trong.
+    const long = `sk-proj-${'x'.repeat(60)}`;
+    assert.deepEqual(P.parseKeysInput(long).entries.map(e => e.key), [long]);
+    const single = `AIza${'K'.repeat(35)}`;
+    assert.deepEqual(P.parseKeysInput(single).entries.map(e => e.key), [single]);
+  }
+
+  // 64. normalizeConfig: nhận entry dạng chuỗi, cả chuỗi nhiều key, và lọc trùng
+  {
+    const cfg = P.normalizeConfig({
+      providers: {
+        gemini: { enabled: true, keys: ['AIza-one-one-one', { key: 'AIza-two-two' }, 'AIza-one-one-one'] },
+        deepl: { enabled: true, keys: 'aaaa-1111:fx, bbbb-2222:fx' },
+      },
+    });
+    assert.deepEqual(cfg.providers.gemini.keys, [
+      { key: 'AIza-one-one-one', label: '' },
+      { key: 'AIza-two-two', label: '' },
+    ]);
+    assert.deepEqual(cfg.providers.deepl.keys.map(e => e.key), ['aaaa-1111:fx', 'bbbb-2222:fx']);
+  }
+
+  // 65. keyFormatWarning: cảnh báo mềm cho key Gemini không phải "AIza"
+  {
+    assert.equal(P.keyFormatWarning('gemini', 'AIzaSyABC'), '');
+    assert.match(P.keyFormatWarning('gemini', 'AQ.Ab8RN6xyz'), /AIza/);
+    assert.equal(P.keyFormatWarning('deepl', 'bat-ky-key-nao:fx'), '');
+  }
+
+  // 66. Dán 60 key một lượt: nhận hết, rotation dùng đủ từng key
+  {
+    const many = Array.from({ length: 60 }, (_, i) => `AIzaKEY${String(i).padStart(33, '0')}`);
+    const parsed = P.parseKeysInput(many.join('\n'));
+    assert.equal(parsed.entries.length, 60);
+
+    const cfg = P.normalizeConfig({
+      preferred: 'gemini',
+      providers: { gemini: { enabled: true, keys: parsed.entries } },
+    });
+    assert.equal(cfg.providers.gemini.keys.length, 60);
+
+    // 59 key đầu bị 429 -> phải xoay hết rồi thành công ở key cuối.
+    const usedKeys = [];
+    const fetchText = async (request) => {
+      const key = request.headers['x-goog-api-key'] || new URL(request.url).searchParams.get('key') || '';
+      usedKeys.push(key);
+      return usedKeys.length < 60
+        ? { status: 429, bodyText: '{}' }
+        : { status: 200, bodyText: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }) };
+    };
+    const result = await P.translateWithRotation({
+      config: cfg, source: 'xin chào', context: '',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.text, 'ok');
+    assert.equal(new Set(usedKeys).size, 60, `chỉ dùng ${new Set(usedKeys).size}/60 key`);
+  }
+
+  // 67. detectProviderForKey: đoán đúng nhà cung cấp, key lạ thì chịu
+  {
+    assert.equal(P.detectProviderForKey(`AIza${'x'.repeat(35)}`), 'gemini');
+    assert.equal(P.detectProviderForKey('AQ.Ab8RN6abcdef'), 'gemini');
+    assert.equal(P.detectProviderForKey('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx'), 'deepl');
+    assert.equal(P.detectProviderForKey('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'), 'deepl');
+    assert.equal(P.detectProviderForKey('sk-proj-abcdefghij'), 'openai');
+    assert.equal(P.detectProviderForKey('sk-or-v1-abcdefghij'), 'openai');
+    assert.equal(P.detectProviderForKey('gsk_abcdefghijklmnop'), 'openai');
+    assert.equal(P.detectProviderForKey('xai-abcdefghijklmnop'), 'openai');
+    assert.equal(P.detectProviderForKey('key-cua-api-tu-host'), '');
+  }
+
+  // 68. normalizeConfig giữ nguyên các slot OpenAI-compatible thêm vào
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'openai-3',
+      providers: {
+        gemini: { enabled: true, keys: [`AIza${'g'.repeat(35)}`] },
+        'openai-2': { enabled: true, name: '  Groq  ', url: 'https://api.groq.com/openai/v1/chat/completions', keys: ['gsk_aaaaaaaaaa'] },
+        'openai-3': { enabled: true, name: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', keys: ['sk-or-v1-bbbbbbbb'] },
+      },
+    });
+    assert.deepEqual(P.providerIdsOf(cfg), ['deepl', 'gemini', 'openai', 'openai-2', 'openai-3']);
+    assert.equal(cfg.providers['openai-2'].name, 'Groq');
+    assert.equal(cfg.providers['openai-2'].model, P.PROVIDER_DEFS.openai.defaultModel, 'slot tùy chỉnh phải có model mặc định');
+    assert.equal(P.providerLabelOf('openai-2', cfg.providers['openai-2']), 'Groq');
+    assert.equal(P.providerLabelOf('openai-3', { name: '' }), 'API tùy chỉnh 3');
+    assert.equal(P.providerKind('openai-3'), 'openai');
+    assert.equal(P.nextCustomProviderId(cfg), 'openai-4');
+    // preferred là slot tùy chỉnh -> được xếp đầu vòng xoay
+    assert.equal(P.orderedProviderIds(cfg)[0], 'openai-3');
+    assert.deepEqual(P.usableProviders(cfg), ['openai-3', 'gemini', 'openai-2']);
+
+    // preferred trỏ vào slot không tồn tại -> về provider đầu tiên
+    assert.equal(P.normalizeConfig({ preferred: 'openai-9' }).preferred, 'deepl');
+  }
+
+  // 69. Mỗi slot tùy chỉnh dựng request bằng url/model/key CỦA CHÍNH NÓ
+  {
+    const cfg = P.normalizeConfig({
+      providers: {
+        'openai-2': { enabled: true, name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', model: 'llama-3.3-70b', keys: ['gsk_aaa'] },
+      },
+    });
+    const req = P.buildRequest({
+      providerId: 'openai-2', providerConfig: cfg.providers['openai-2'], apiKey: 'gsk_aaa',
+      source: 'xin chào', context: '',
+    });
+    assert.equal(req.url, 'https://api.groq.com/openai/v1/chat/completions');
+    assert.equal(req.headers.Authorization, 'Bearer gsk_aaa');
+    assert.equal(JSON.parse(req.body).model, 'llama-3.3-70b');
+
+    // Lỗi phải gọi đúng TÊN slot, không phải nhãn chung của kiểu openai.
+    const verdict = P.classifyResponse({ providerId: 'openai-2', providerLabel: 'Groq', status: 401, bodyText: '{}' });
+    assert.match(verdict.message, /^Groq: /);
+  }
+
+  // 70. Xoay vòng qua nhiều provider khác nhau: DeepL -> Gemini -> 2 slot tùy chỉnh
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'deepl',
+      providers: {
+        deepl: { enabled: true, keys: ['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx'] },
+        gemini: { enabled: true, keys: [`AIza${'g'.repeat(35)}`] },
+        'openai-2': { enabled: true, name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', keys: ['gsk_aaa'] },
+        'openai-3': { enabled: true, name: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', keys: ['sk-or-v1-bbb'] },
+      },
+    });
+
+    const hosts = [];
+    const fetchText = async (request) => {
+      const host = new URL(request.url).host;
+      hosts.push(host);
+      // Ba provider đầu cạn quota, chỉ OpenRouter trả lời.
+      if (host !== 'openrouter.ai') return { status: 429, bodyText: '{}' };
+      return { status: 200, bodyText: JSON.stringify({ choices: [{ message: { content: 'hello' } }] }) };
+    };
+    const result = await P.translateWithRotation({
+      config: cfg, source: 'xin chào', context: '',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.text, 'hello');
+    assert.equal(result.provider, 'openai-3');
+    assert.equal(result.providerLabel, 'OpenRouter');
+    // Slot 'openai' mặc định đang tắt nên không bị gọi; ba cái còn lại đúng thứ tự.
+    assert.deepEqual(hosts, [
+      'api-free.deepl.com',
+      'generativelanguage.googleapis.com',
+      'api.groq.com',
+      'openrouter.ai',
+    ], `thứ tự gọi: ${hosts.join(' -> ')}`);
+  }
+
+  // 71. Tóm tắt: mọi slot tùy chỉnh đều được coi là provider LLM
+  {
+    const cfg = P.normalizeConfig({
+      preferred: 'deepl',
+      providers: {
+        deepl: { enabled: true, keys: ['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:fx'] },
+        'openai-2': { enabled: true, name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', keys: ['gsk_aaa'] },
+      },
+    });
+    const { fetchText, calls } = fakeFetch([
+      () => ({ status: 200, bodyText: JSON.stringify({ choices: [{ message: { content: '- một\n- hai' } }] }) }),
+    ]);
+    const result = await P.summarizeWithRotation({
+      config: cfg, text: 'nội dung dài cần tóm tắt', targetLanguage: 'vi',
+      fetchText, keyState: P.createKeyState(), sleep: noSleep,
+    });
+    assert.equal(result.provider, 'openai-2');
+    assert.equal(new URL(calls[0].url).host, 'api.groq.com');
+    assert.ok(result.text.includes('một'));
+
+    // Chỉ có DeepL -> vẫn báo cần LLM
+    await assert.rejects(
+      () => P.summarizeWithRotation({
+        config: P.normalizeConfig({ providers: { deepl: { enabled: true, keys: ['a-b:fx'] } } }),
+        text: 'abc', targetLanguage: 'vi', fetchText, keyState: P.createKeyState(), sleep: noSleep,
+      }),
+      /SUMMARIZE_REQUIRES_LLM/,
+    );
+  }
+
   console.log('Tất cả test providers.js đều PASS ✔');
 }
 

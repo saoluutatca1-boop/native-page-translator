@@ -16,6 +16,7 @@ const TESTS_DIR = __dirname;
 // Cú pháp toàn bộ source phải parse được, kể cả file không có test riêng.
 const SYNTAX_CHECK_FILES = [
   'background.js',
+  'icons.js',
   'content.js',
   'providers.js',
   'popup.js',

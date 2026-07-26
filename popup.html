@@ -9,17 +9,11 @@
 <body>
   <main>
     <header class="brand">
-      <svg class="brand-logo" width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
-        <defs>
-          <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#6366f1"/>
-            <stop offset="1" stop-color="#3b82f6"/>
-          </linearGradient>
-        </defs>
-        <rect width="30" height="30" rx="7" fill="url(#brandGrad)"/>
-        <path d="M9 11.5h9.5m0 0-2.8-2.8m2.8 2.8-2.8 2.8M21 18.5h-9.5m0 0 2.8-2.8m-2.8 2.8 2.8 2.8" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-      <h1>Native Translator</h1>
+      <span id="brandLogo" class="brand-logo-slot"></span>
+      <div class="brand-text">
+        <h1>Native Translator</h1>
+        <span class="brand-sub">VI ⇄ EN · dịch bản địa</span>
+      </div>
       <span id="versionPill" class="version-pill">v—</span>
     </header>
 
@@ -31,46 +25,47 @@
          không đoán theo lần bấm trước. -->
     <section class="current-site">
       <div class="site-head">
+        <i class="ico site-ico" data-icon="globe" data-icon-size="15"></i>
         <span id="siteHost" class="site-host">Đang đọc trang…</span>
         <span id="siteState" class="pill pill-muted">—</span>
       </div>
       <div class="row three seg" role="group" aria-label="Ngôn ngữ trang">
-        <button data-lang="vi" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/></svg>VI</button>
-        <button data-lang="en" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3c.7 4.5 2.3 6.1 6.8 6.8-4.5.7-6.1 2.3-6.8 6.8-.7-4.5-2.3-6.1-6.8-6.8C9.7 9.1 11.3 7.5 12 3Z"/><path d="M18.5 15.5c.35 2.2 1.1 3 3.3 3.35-2.2.35-2.95 1.15-3.3 3.35-.35-2.2-1.1-3-3.3-3.35 2.2-.35 2.95-1.15 3.3-3.35Z"/></svg>EN</button>
-        <button data-lang="original" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h9a5 5 0 0 1 0 10h-3"/><path d="M7.5 5.5 4 9l3.5 3.5"/></svg>Gốc</button>
+        <button data-lang="vi" type="button"><i class="ico" data-icon="translate"></i>VI</button>
+        <button data-lang="en" type="button"><i class="ico" data-icon="languages"></i>EN</button>
+        <button data-lang="original" type="button"><i class="ico" data-icon="revert"></i>Gốc</button>
       </div>
       <div id="progressWrap" class="progress" hidden>
         <div id="progressBar" class="progress-bar"></div>
       </div>
       <div class="row two action-row">
-        <button id="btnSummarize" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 11h16M4 16h10M4 21h7"/></svg>Tóm tắt &amp; dịch</button>
-        <button id="btnTranslatePdf" type="button" hidden><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 13h6M9 17h4"/></svg>Dịch PDF này</button>
+        <button id="btnSummarize" type="button"><i class="ico" data-icon="summary"></i>Tóm tắt &amp; dịch</button>
+        <button id="btnTranslatePdf" type="button" hidden><i class="ico" data-icon="file"></i>Dịch PDF này</button>
       </div>
-      <label class="check"><input id="siteAuto" type="checkbox"> Tự dịch site này mỗi lần mở</label>
-      <label class="check"><input id="siteBlocked" type="checkbox"> Không bao giờ dịch site này</label>
+      <label class="check"><input id="siteAuto" type="checkbox"><i class="ico check-ico" data-icon="bookmark" data-icon-size="14"></i>Tự dịch site này mỗi lần mở</label>
+      <label class="check"><input id="siteBlocked" type="checkbox"><i class="ico check-ico" data-icon="ban" data-icon-size="14"></i>Không bao giờ dịch site này</label>
     </section>
 
     <nav class="tabs" role="tablist" aria-label="Nhóm cài đặt nhanh">
-      <button class="tab" role="tab" type="button" data-tab="page" aria-selected="true" aria-controls="tab-page" id="tabbtn-page">Dịch trang</button>
-      <button class="tab" role="tab" type="button" data-tab="input" aria-selected="false" aria-controls="tab-input" id="tabbtn-input">Nút ✨ EN</button>
-      <button class="tab" role="tab" type="button" data-tab="api" aria-selected="false" aria-controls="tab-api" id="tabbtn-api">API</button>
+      <button class="tab" role="tab" type="button" data-tab="page" aria-selected="true" aria-controls="tab-page" id="tabbtn-page"><i class="ico" data-icon="page" data-icon-size="15"></i>Dịch trang</button>
+      <button class="tab" role="tab" type="button" data-tab="input" aria-selected="false" aria-controls="tab-input" id="tabbtn-input"><i class="ico" data-icon="wand" data-icon-size="15"></i>Nút EN</button>
+      <button class="tab" role="tab" type="button" data-tab="api" aria-selected="false" aria-controls="tab-api" id="tabbtn-api"><i class="ico" data-icon="key" data-icon-size="15"></i>API</button>
     </nav>
 
     <section id="tab-page" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-page">
-      <label class="check"><input id="pageUseProvider" type="checkbox"> Dịch cả trang bằng API riêng (tốn quota)</label>
+      <label class="check"><input id="pageUseProvider" type="checkbox"><i class="ico check-ico" data-icon="zap" data-icon-size="14"></i>Dịch cả trang bằng API riêng (tốn quota)</label>
 
-      <label for="templateSwitch" class="small-label">Prompt template</label>
+      <label for="templateSwitch" class="small-label"><i class="ico" data-icon="layers" data-icon-size="13"></i>Prompt template</label>
       <select id="templateSwitch">
         <option value="">Mặc định</option>
       </select>
 
-      <label for="pageDisplayMode" class="small-label">Chế độ hiển thị</label>
+      <label for="pageDisplayMode" class="small-label"><i class="ico" data-icon="page" data-icon-size="13"></i>Chế độ hiển thị</label>
       <select id="pageDisplayMode">
         <option value="replace">Chỉ hiện bản dịch</option>
         <option value="bilingual">Song ngữ (gốc + dịch)</option>
       </select>
 
-      <label for="pageStyle" class="small-label">Văn phong bản dịch</label>
+      <label for="pageStyle" class="small-label"><i class="ico" data-icon="sparkles" data-icon-size="13"></i>Văn phong bản dịch</label>
       <select id="pageStyle">
         <option value="natural">Tự nhiên</option>
         <option value="casual">Trò chuyện thân mật</option>
@@ -80,60 +75,61 @@
         <option value="formal">Lịch sự, trang trọng</option>
       </select>
 
-      <label for="pageDialect" class="small-label">Phương ngữ (chỉ khi đích là tiếng Anh)</label>
+      <label for="pageDialect" class="small-label"><i class="ico" data-icon="globe" data-icon-size="13"></i>Phương ngữ (chỉ khi đích là tiếng Anh)</label>
       <select id="pageDialect">
         <option value="us">Tiếng Anh Mỹ</option>
         <option value="uk">Tiếng Anh Anh</option>
       </select>
 
-      <label for="pageTranslateMode" class="small-label">Chế độ dịch</label>
+      <label for="pageTranslateMode" class="small-label"><i class="ico" data-icon="translate" data-icon-size="13"></i>Chế độ dịch</label>
       <select id="pageTranslateMode">
         <option value="natural">Dịch tự nhiên</option>
         <option value="literal">Dịch sát chữ</option>
       </select>
 
-      <label class="check"><input id="pageGrammarFix" type="checkbox"> Sửa ngữ pháp sau khi dịch</label>
-      <p class="note">Văn phong &amp; template chỉ áp dụng với Gemini/OpenAI — DeepL và bản miễn phí bỏ qua.</p>
+      <label class="check"><input id="pageGrammarFix" type="checkbox"><i class="ico check-ico" data-icon="check" data-icon-size="14"></i>Sửa ngữ pháp sau khi dịch</label>
+      <p class="note"><i class="ico" data-icon="info" data-icon-size="13"></i>Văn phong &amp; template chỉ áp dụng với Gemini/OpenAI — DeepL và bản miễn phí bỏ qua.</p>
     </section>
 
     <section id="tab-input" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-input" hidden>
-      <label class="check"><input id="inputHelper" type="checkbox"> Hiện nút ✨ EN cạnh ô nhập liệu</label>
+      <label class="check"><input id="inputHelper" type="checkbox"><i class="ico check-ico" data-icon="wand" data-icon-size="14"></i>Hiện nút ✨ EN cạnh ô nhập liệu</label>
 
-      <label for="defaultMode" class="small-label">Nút EN mặc định dùng</label>
+      <label for="defaultMode" class="small-label"><i class="ico" data-icon="zap" data-icon-size="13"></i>Nút EN mặc định dùng</label>
       <select id="defaultMode">
         <option value="native">API riêng — tự nhiên (DeepL/Gemini/OpenAI)</option>
         <option value="quick">Free fallback — nhanh</option>
       </select>
 
-      <label for="tone" class="small-label">Phong cách dịch bản địa</label>
+      <label for="tone" class="small-label"><i class="ico" data-icon="sparkles" data-icon-size="13"></i>Phong cách dịch bản địa</label>
       <select id="tone">
         <option value="natural">Tự nhiên — bám văn phong gốc</option>
         <option value="professional">Trang trọng — email, công việc</option>
         <option value="casual">Thân mật — chat, bạn bè</option>
       </select>
 
-      <label class="check"><input id="fallbackQuick" type="checkbox"> Tự dịch miễn phí khi API riêng lỗi</label>
-      <p class="note">Phím tắt: Alt+Shift+E (API riêng) · Alt+Shift+G (miễn phí). Đổi phím tại <code>chrome://extensions/shortcuts</code>.</p>
+      <label class="check"><input id="fallbackQuick" type="checkbox"><i class="ico check-ico" data-icon="refresh" data-icon-size="14"></i>Tự dịch miễn phí khi API riêng lỗi</label>
+      <p class="note"><i class="ico" data-icon="info" data-icon-size="13"></i>Phím tắt: Alt+Shift+E (API riêng) · Alt+Shift+G (miễn phí). Đổi phím tại <code>chrome://extensions/shortcuts</code>.</p>
     </section>
 
     <section id="tab-api" class="tabpanel" role="tabpanel" aria-labelledby="tabbtn-api" hidden>
       <p id="providerStatus" class="note">Đang tải…</p>
       <div id="quotaBox" class="quota-box" hidden></div>
       <div class="row two action-row">
-        <button id="testApi" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 5 13h5l-1 9 8-11h-5l1-9Z"/></svg>Test API</button>
-        <button id="openOptions" class="primary" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 12h2M10 12h10M4 17h9M17 17h3"/><circle cx="15" cy="7" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="15" cy="17" r="2"/></svg>Quản lý key</button>
+        <button id="testApi" type="button"><i class="ico" data-icon="zap"></i>Test API</button>
+        <button id="openOptions" class="primary" type="button"><i class="ico" data-icon="sliders"></i>Quản lý key</button>
       </div>
 
-      <label for="uiTheme" class="small-label">Giao diện</label>
+      <label for="uiTheme" class="small-label"><i class="ico" data-icon="moon" data-icon-size="13"></i>Giao diện</label>
       <select id="uiTheme">
         <option value="auto">Tự động theo hệ thống</option>
         <option value="dark">Luôn tối</option>
         <option value="light">Luôn sáng</option>
       </select>
 
-      <p class="note">Mặc định là <strong>DeepL Free</strong> (key dùng chung, quota chia sẻ). Thêm key riêng trong <strong>Quản lý key</strong> để ổn định và riêng tư hơn. Key chỉ lưu trong extension — gỡ extension là xoá sạch.</p>
+      <p class="note"><i class="ico" data-icon="shield" data-icon-size="13"></i>Mặc định là <strong>DeepL Free</strong> (key dùng chung, quota chia sẻ). Thêm key riêng trong <strong>Quản lý key</strong> để ổn định và riêng tư hơn. Key chỉ lưu trong extension — gỡ extension là xoá sạch.</p>
     </section>
   </main>
+  <script src="icons.js"></script>
   <script src="providers.js"></script>
   <script src="popup.js"></script>
 </body>

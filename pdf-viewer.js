@@ -21,6 +21,10 @@ const Y_TOLERANCE = 2;           // gom item cùng dòng theo toạ độ y.
 
 const $ = selector => document.querySelector(selector);
 
+// icons.js nạp trước ở dạng script thường -> logo/icon lấy từ global chung.
+$('#brandLogo').innerHTML = globalThis.NPT_ICONS?.logo(28) || '';
+globalThis.NPT_ICONS?.hydrate();
+
 // Kết quả giữ trong bộ nhớ để đổi chế độ hiển thị không cần dịch lại.
 // pages = [{ pageNumber, paragraphs: [{ original, translation }] }]
 let pages = [];

@@ -61,7 +61,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["fancy-text.js", "glossary.js", "doc-detect.js", "tts.js", "content.js"],
+      "js": ["icons.js", "fancy-text.js", "glossary.js", "doc-detect.js", "tts.js", "content.js"],
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true,
