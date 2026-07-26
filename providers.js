@@ -384,8 +384,26 @@
    *  - keyFailed:        key hỏng/hết quota -> thử key khác
    *  - providerFailed:   provider chết/request sai -> thử provider khác
    * ------------------------------------------------------------------ */
+  // Status đáng thử lại NGAY trên cùng key: nghẽn tạm thời phía provider, không
+  // phải lỗi key. Trước đây tất cả rơi vào 'providerFailed' nên một cú 503 chớp
+  // nhoáng của Gemini là mất luôn provider cho request đó.
+  const TRANSIENT_STATUSES = new Set([408, 425, 500, 502, 503, 504]);
+  const MAX_TRANSIENT_RETRIES = 2;
+  const TRANSIENT_BACKOFF_MS = 800;
+  const MAX_RETRY_AFTER_MS = 30 * 60 * 1000;
+
+  // Retry-After: giây hoặc HTTP-date. Trả về ms, null nếu không đọc được.
+  function parseRetryAfter(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return null;
+    if (/^\d+$/.test(raw)) return Math.min(Number(raw) * 1000, MAX_RETRY_AFTER_MS);
+    const when = Date.parse(raw);
+    if (Number.isNaN(when)) return null;
+    return Math.max(0, Math.min(when - Date.now(), MAX_RETRY_AFTER_MS));
+  }
+
   // Phân loại lỗi theo HTTP status (dùng chung single + batch). 2xx -> null.
-  function classifyHttpError({ providerId, status, bodyText }) {
+  function classifyHttpError({ providerId, status, bodyText, retryAfterMs }) {
     const def = PROVIDER_DEFS[providerId];
 
     if (status === 0) {
@@ -396,8 +414,29 @@
       return { kind: 'keyFailed', message: `${def.label}: key bị từ chối (HTTP ${status})`, cooldownMs: 30 * 60 * 1000 };
     }
 
-    if (status === 429 || status === 456) {
-      return { kind: 'keyFailed', message: `${def.label}: hết quota hoặc bị giới hạn (HTTP ${status})`, cooldownMs: 2 * 60 * 1000 };
+    // DeepL 456 = cạn quota của cả CHU KỲ THANH TOÁN (thường là hết tháng).
+    // Cooldown 2 phút như 429 nghĩa là cứ 2 phút lại đốt một request chắc chắn
+    // hỏng cho tới hết tháng.
+    if (status === 456) {
+      return {
+        kind: 'keyFailed',
+        message: `${def.label}: đã dùng hết quota của chu kỳ (HTTP 456)`,
+        cooldownMs: 6 * 60 * 60 * 1000,
+      };
+    }
+
+    if (status === 429) {
+      // Provider nói rõ chờ bao lâu thì nghe theo, đừng đoán 2 phút.
+      const cooldownMs = Math.max(5000, Math.min(retryAfterMs || 0, MAX_RETRY_AFTER_MS)) || 2 * 60 * 1000;
+      return { kind: 'keyFailed', message: `${def.label}: bị giới hạn tốc độ (HTTP 429)`, cooldownMs };
+    }
+
+    if (TRANSIENT_STATUSES.has(status)) {
+      return {
+        kind: 'retry',
+        message: `${def.label}: provider tạm lỗi (HTTP ${status})`,
+        retryDelayMs: retryAfterMs || 0,
+      };
     }
 
     if (status === 400 || status === 404 || status === 422) {
@@ -419,9 +458,9 @@
     return null;
   }
 
-  function classifyResponse({ providerId, openaiFormat, status, bodyText }) {
+  function classifyResponse({ providerId, openaiFormat, status, bodyText, retryAfterMs }) {
     const def = PROVIDER_DEFS[providerId];
-    const httpError = classifyHttpError({ providerId, status, bodyText });
+    const httpError = classifyHttpError({ providerId, status, bodyText, retryAfterMs });
     if (httpError) return httpError;
 
     let data;
@@ -644,9 +683,9 @@
 
   // Nhánh classify cho batch: lỗi HTTP dùng chung classifyHttpError,
   // body 2xx phải parse ra mảng bản dịch CÙNG ĐỘ DÀI với texts gửi đi.
-  function classifyBatchResponse({ providerId, openaiFormat, status, bodyText, expectedLength }) {
+  function classifyBatchResponse({ providerId, openaiFormat, status, bodyText, expectedLength, retryAfterMs }) {
     const def = PROVIDER_DEFS[providerId];
-    const httpError = classifyHttpError({ providerId, status, bodyText });
+    const httpError = classifyHttpError({ providerId, status, bodyText, retryAfterMs });
     if (httpError) return httpError;
 
     let data;
@@ -737,12 +776,25 @@
         // sau thởi điểm này sẽ lấy key kế tiếp — tránh dồn request vào 1 key.
         if (keyPool.length > 1) state.pointers.set(providerId, (index + 1) % keyPool.length);
 
+        /* Nghẽn tạm thời phía provider (5xx/408/425) thì thử lại NGAY trên cùng
+         * key với backoff, tôn trọng Retry-After nếu có. Hết lượt mới hạ xuống
+         * keyFailed với cooldown ngắn để rotation sang key khác. */
         let verdict;
-        try {
-          ({ verdict } = await attempt({ providerId, providerConfig, apiKey: entry.key }));
-        } catch (error) {
-          errors.push(`${PROVIDER_DEFS[providerId].label}: ${error?.message || error}`);
-          break; // Không dựng được request -> sang provider khác.
+        let buildFailed = false;
+        for (let transientAttempt = 0; ; transientAttempt++) {
+          try {
+            ({ verdict } = await attempt({ providerId, providerConfig, apiKey: entry.key }));
+          } catch (error) {
+            errors.push(`${PROVIDER_DEFS[providerId].label}: ${error?.message || error}`);
+            buildFailed = true;
+            break;
+          }
+          if (verdict.kind !== 'retry' || transientAttempt >= MAX_TRANSIENT_RETRIES) break;
+          await wait(verdict.retryDelayMs || TRANSIENT_BACKOFF_MS * (transientAttempt + 1));
+        }
+        if (buildFailed) break; // Không dựng được request -> sang provider khác.
+        if (verdict.kind === 'retry') {
+          verdict = { kind: 'keyFailed', message: verdict.message, cooldownMs: 15000 };
         }
 
         if (verdict.kind === 'ok') {
@@ -796,6 +848,7 @@
           openaiFormat: request?.openaiFormat,
           status: response.status,
           bodyText: response.bodyText,
+          retryAfterMs: response.retryAfterMs,
         });
         return { verdict };
       },
@@ -846,6 +899,7 @@
             openaiFormat: request?.openaiFormat,
             status: response.status,
             bodyText: response.bodyText,
+            retryAfterMs: response.retryAfterMs,
             expectedLength: list.length,
           });
           if (verdict.kind === 'providerFailed' && verdict.parseFailure && !retriedParse) {
@@ -982,6 +1036,7 @@
           openaiFormat: request?.openaiFormat,
           status: response.status,
           bodyText: response.bodyText,
+          retryAfterMs: response.retryAfterMs,
         });
         return { verdict };
       },
@@ -1080,6 +1135,7 @@
           providerId: 'gemini',
           status: response.status,
           bodyText: response.bodyText,
+          retryAfterMs: response.retryAfterMs,
         });
         return { verdict };
       },
@@ -1121,6 +1177,7 @@
     parseVisionLines,
     translateVisionWithRotation,
     createKeyState,
+    parseRetryAfter,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

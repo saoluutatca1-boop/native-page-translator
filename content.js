@@ -67,12 +67,25 @@
     return STORAGE_WHITELIST.includes(key) || key.startsWith('tm-page-translator-language:');
   }
 
+  /* Mọi cache dẫn xuất từ settings (style signature, snapshot quét DOM, selector
+   * skip...) đăng ký hàm huỷ ở đây. Settings đổi → tất cả invalidate cùng lúc,
+   * không nơi nào đọc trúng giá trị cũ. */
+  const settingsInvalidators = [];
+  function onSettingsChanged(callback) {
+    settingsInvalidators.push(callback);
+  }
+
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
+    let touched = false;
     for (const [key, change] of Object.entries(changes)) {
       if (!isAllowedStorageKey(key)) continue;
+      touched = true;
       if ('newValue' in change) storageCache[key] = change.newValue;
       else delete storageCache[key];
+    }
+    if (touched) {
+      for (const invalidate of settingsInvalidators) invalidate();
     }
   });
 
@@ -203,6 +216,20 @@
     };
   }
 
+  /* Băm chuỗi ngắn gọn (hai vòng FNV-1a + độ dài ≈ 64 bit) — dùng làm muối cache
+   * thay cho việc nhét nguyên JSON options vào từng khoá. */
+  function hashString(value) {
+    const text = String(value);
+    let h1 = 0x811c9dc5;
+    let h2 = 0xc2b2ae35;
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      h1 = Math.imul(h1 ^ code, 0x01000193);
+      h2 = Math.imul(h2 ^ code, 0x85ebca6b);
+    }
+    return `${(h1 >>> 0).toString(36)}.${(h2 >>> 0).toString(36)}.${text.length.toString(36)}`;
+  }
+
   // position:fixed bị "bẻ" thành tương đối với ancestor khi html/body có transform/filter/perspective.
   function hasTransformedRoot() {
     try {
@@ -245,7 +272,7 @@
     const PAGE_MODE_VALUES = new Set(['natural', 'literal']);
 
     // Sanitize nhẹ: style/dialect/mode sai → về default; boolean chỉ tắt khi === false.
-    function readPageOptions() {
+    function computePageOptions() {
       const style = GM_getValue('tm-page-style', PAGE_OPTION_DEFAULTS.style);
       const dialect = GM_getValue('tm-page-dialect', PAGE_OPTION_DEFAULTS.dialect);
       const mode = GM_getValue('tm-page-translate-mode', PAGE_OPTION_DEFAULTS.mode);
@@ -259,9 +286,38 @@
       };
     }
 
+    /* readPageOptions/styleCacheSalt bị gọi cho MỌI lần translate + mọi batch.
+     * Bên trong có toPromptText(glossary) (dựng lại cả chuỗi glossary) và
+     * JSON.stringify — trang lớn nghĩa là hàng trăm lần dựng chuỗi giống hệt
+     * nhau. Memo hoá theo (settings, URL): settings đổi → invalidate qua
+     * onSettingsChanged, URL đổi (SPA) → docMode có thể khác nên so lại href. */
+    let pageOptionsCache = null;
+    let pageOptionsCacheUrl = '';
+    let styleSaltCache = '';
+
+    function invalidatePageOptionsCache() {
+      pageOptionsCache = null;
+      styleSaltCache = '';
+    }
+    onSettingsChanged(invalidatePageOptionsCache);
+
+    function readPageOptions() {
+      if (!pageOptionsCache || pageOptionsCacheUrl !== location.href) {
+        pageOptionsCacheUrl = location.href;
+        pageOptionsCache = computePageOptions();
+        /* Muối cache là BĂM của options, không phải JSON đầy đủ. JSON đó chứa
+         * cả glossary (tới 8000 ký tự) lẫn custom prompt (2000) — nhét nguyên
+         * vào khoá cache nghĩa là mỗi entry cõng thêm ~10KB, 5000 entry thành
+         * hàng chục MB chuỗi chỉ để phân biệt style. */
+        styleSaltCache = hashString(JSON.stringify(pageOptionsCache));
+      }
+      return pageOptionsCache;
+    }
+
     // Muối cache theo style signature: đổi style → cache key khác → tự miss, khỏi clear cache.
     function styleCacheSalt() {
-      return JSON.stringify(readPageOptions());
+      readPageOptions();
+      return styleSaltCache;
     }
 
     function sleep(ms) {
@@ -539,13 +595,27 @@
       return preserveWhitespace(original, styledFancy ? FANCY.applyStyleToText(output, styledFancy.style) : output);
     }
 
-    function makeBatches(items, maxChars = 2800, maxItems = 28) {
+    /* Trần batch phụ thuộc đường đi:
+     *  - Provider riêng (DeepL/Gemini/OpenAI): background chấp nhận tới 64 đoạn
+     *    / 20000 ký tự mỗi request. Bản cũ luôn gom 2800/28 nên một trang dài
+     *    tốn gấp nhiều lần số round-trip cần thiết — và với LLM là gấp bấy nhiêu
+     *    lần token system instruction bị gửi lặp.
+     *  - Fallback miễn phí: nhồi cả batch vào MỘT chuỗi kèm token phân đoạn rồi
+     *    đẩy qua query string → bắt buộc giữ nhỏ. */
+    const FREE_BATCH_LIMITS = { maxChars: 2800, maxItems: 28 };
+    const PROVIDER_BATCH_LIMITS = { maxChars: 15000, maxItems: 48 };
+
+    function providerPathEnabled() {
+      return GM_getValue('tm-page-use-provider', true) !== false;
+    }
+
+    function makeBatches(items, limits = FREE_BATCH_LIMITS) {
       const batches = [];
       let current = [];
       let size = 0;
       for (const item of items) {
         const addition = item.text.length + 50;
-        if (current.length && (current.length >= maxItems || size + addition > maxChars)) {
+        if (current.length && (current.length >= limits.maxItems || size + addition > limits.maxChars)) {
           batches.push(current);
           current = [];
           size = 0;
@@ -580,6 +650,27 @@
       }
 
       assertFreeFallbackAllowed(providerTranslations);
+
+      /* Batch gom theo trần provider vượt xa giới hạn đường miễn phí → cắt nhỏ
+       * lại trước khi fallback, không đẩy nguyên khối 15k ký tự qua Google. */
+      if (batch.length > FREE_BATCH_LIMITS.maxItems
+        || batch.reduce((sum, item) => sum + item.text.length, 0) > FREE_BATCH_LIMITS.maxChars) {
+        const results = [];
+        for (const part of makeBatches(batch, FREE_BATCH_LIMITS)) {
+          results.push(...await translateBundleFree(part, sourceLanguage, targetLanguage, usePageOptions, salt));
+        }
+        return results;
+      }
+
+      return translateBundleFree(batch, sourceLanguage, targetLanguage, usePageOptions, salt);
+    }
+
+    // Đường miễn phí: gói batch thành 1 chuỗi có token phân đoạn; hỏng thì dịch lẻ.
+    // Provider riêng đã thất bại trước khi tới đây nên luôn skipProvider.
+    async function translateBundleFree(batch, sourceLanguage, targetLanguage, usePageOptions, salt) {
+      if (batch.length === 1) {
+        return [{ index: batch[0].index, text: await translate(batch[0].text, sourceLanguage, targetLanguage, usePageOptions, true) }];
+      }
 
       const seed = Math.random().toString(36).slice(2, 8).toUpperCase();
       const tokens = batch.map((_, index) => `__NPT_${seed}_${index}__`);
@@ -635,15 +726,31 @@
         const trail = raw.match(/\s*$/u)?.[0] || '';
         return { index, text: `${lead}${styled.text}${trail}`, styled };
       });
-      const byScript = new Map();
+      const results = new Array(items.length);
+
+      /* Tra cache TRƯỚC khi gom batch. Bản cũ chỉ tra cache trong translate()
+       * — tức chỉ khi batch còn đúng 1 phần tử — nên mọi lần dịch lại (đổi
+       * display mode, quay về gốc rồi dịch tiếp, SPA render lại cùng nội dung,
+       * footer/menu lặp trên nhiều trang) đều gửi lại toàn bộ cho API. */
+      const salt = usePageOptions ? styleCacheSalt() : '';
+      const pending = [];
       for (const item of items) {
+        const trimmed = item.text.trim();
+        const hit = trimmed ? cache.get(`${sourceLanguage || 'auto'}\u0000${targetLanguage}\u0000${trimmed}\u0000${salt}`) : null;
+        if (typeof hit === 'string') results[item.index] = { index: item.index, text: preserveWhitespace(item.text, hit) };
+        else pending.push(item);
+      }
+
+      const byScript = new Map();
+      for (const item of pending) {
         const cls = detectScriptClass(item.text);
         if (!byScript.has(cls)) byScript.set(cls, []);
         byScript.get(cls).push(item);
       }
+      // Provider riêng đang bật → gom batch sát trần background (ít round-trip hơn hẳn).
+      const batchLimits = providerPathEnabled() ? PROVIDER_BATCH_LIMITS : FREE_BATCH_LIMITS;
       const batches = [];
-      for (const group of byScript.values()) batches.push(...makeBatches(group));
-      const results = new Array(items.length);
+      for (const group of byScript.values()) batches.push(...makeBatches(group, batchLimits));
       let cursor = 0;
 
       async function worker() {
@@ -730,7 +837,6 @@
   }
 
   const CONFIG = {
-    requestConcurrency: 4,
     maxRequestChars: 3500,
     mutationDebounceMs: 220,
     minimumTextLength: 2,
@@ -768,10 +874,19 @@
     };
   }
 
-  // Chữ ký style: đổi 1 trong 5 tuỳ chọn → bản dịch cache trong records hết hiệu lực
-  // (xét theo record.sig), phải dịch lại.
+  /* Chữ ký style: đổi 1 trong các tuỳ chọn → bản dịch cache trong records hết
+   * hiệu lực (xét theo record.sig), phải dịch lại. Memo hoá như bên core: hàm
+   * này chạy trong vòng lặp rerenderDisplayMode trên MỌI record. */
+  let styleSignatureCache = '';
+  let styleSignatureUrl = '';
+  onSettingsChanged(() => { styleSignatureCache = ''; });
+
   function pageStyleSignature() {
-    return JSON.stringify(currentPageOptions());
+    if (!styleSignatureCache || styleSignatureUrl !== location.href) {
+      styleSignatureUrl = location.href;
+      styleSignatureCache = hashString(JSON.stringify(currentPageOptions()));
+    }
+    return styleSignatureCache;
   }
 
   const SKIP_TAGS = new Set([
@@ -818,28 +933,69 @@
     return Boolean(toolbarHost && (node === toolbarHost || toolbarHost.contains(node)));
   }
 
-  function isElementSkipped(element) {
-    if (!element || element.nodeType !== Node.ELEMENT_NODE) return true;
-    if (isToolbarNode(element)) return true;
+  /* Snapshot settings ảnh hưởng vòng quét DOM + selector skip đã ghép sẵn.
+   * isElementSkipped/isUsefulText chạy hàng chục nghìn lần mỗi lần dịch trang,
+   * nên đọc storage + nối chuỗi selector ở đây đúng 1 lần thay vì mỗi node. */
+  const SKIP_BASE_SELECTOR = '[contenteditable="true"],[data-tm-no-translate],code,pre,kbd,samp,[translate="no"],.notranslate';
+  let scanConfigCache = null;
+
+  /* Kết quả skip của một element không đổi trong cùng một lượt quét (và giữa
+   * các lượt nếu settings không đổi). WeakMap + epoch: settings đổi thì epoch
+   * tăng, toàn bộ entry cũ tự hết hạn mà không phải duyệt lại. */
+  const skipCache = new WeakMap();
+  let skipCacheEpoch = 0;
+
+  onSettingsChanged(() => {
+    scanConfigCache = null;
+    skipCacheEpoch++;
+  });
+
+  function scanConfig() {
+    if (!scanConfigCache) {
+      const skipCode = pageSetting('tm-page-skip-code') !== false;
+      const skipUsernames = pageSetting('tm-page-skip-usernames') !== false;
+      let selector = SKIP_BASE_SELECTOR;
+      if (skipCode) selector += `,${SKIP_CODE_CLASS_SELECTOR}`;
+      if (skipUsernames) selector += `,${SKIP_USERNAME_SELECTOR}`;
+      scanConfigCache = { skipCode, skipUsernames, selector };
+    }
+    return scanConfigCache;
+  }
+
+  // Skip "nông": chỉ xét bản thân element (dùng trong TreeWalker, nơi mọi tổ
+  // tiên đã bị FILTER_REJECT loại từ trước nên không cần leo cây lần nữa).
+  function isElementSkippedSelf(element) {
     if (SKIP_TAGS.has(element.tagName)) return true;
     if (element.isContentEditable) return true;
-    if (element.closest('[contenteditable="true"], [data-tm-no-translate]')) return true;
-    // Fix case text node nằm trong <code><span>: cha là SPAN nên lọt SKIP_TAGS.
-    if (element.closest('code, pre, kbd, samp')) return true;
-    // Chuẩn HTML translate="no" / class notranslate (Google Translate).
-    if (element.closest('[translate="no"], .notranslate')) return true;
-    if (pageSetting('tm-page-skip-code') !== false && element.closest(SKIP_CODE_CLASS_SELECTOR)) return true;
-    if (pageSetting('tm-page-skip-usernames') !== false && element.closest(SKIP_USERNAME_SELECTOR)) return true;
-    return false;
+    return element.matches(scanConfig().selector);
   }
+
+  // Skip "sâu": xét cả tổ tiên — dùng cho scan root / node rời từ MutationObserver.
+  function isElementSkipped(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return true;
+    const cached = skipCache.get(element);
+    if (cached && cached.epoch === skipCacheEpoch) return cached.skipped;
+
+    let skipped = true;
+    if (isToolbarNode(element)) skipped = true;
+    else if (SKIP_TAGS.has(element.tagName)) skipped = true;
+    else if (element.isContentEditable) skipped = true;
+    // 1 lần closest() với selector đã ghép, thay cho 5 lần closest() rời.
+    else skipped = Boolean(element.closest(scanConfig().selector));
+
+    skipCache.set(element, { epoch: skipCacheEpoch, skipped });
+    return skipped;
+  }
+
+  const URL_ONLY_TEXT = /^(https?:\/\/|www\.)\S+$/i;
 
   function isUsefulText(value) {
     const text = String(value ?? '').trim();
     if (text.length < CONFIG.minimumTextLength) return false;
     if (!/\p{L}/u.test(text)) return false;
-    if (/^(https?:\/\/|www\.)\S+$/i.test(text)) return false;
+    if (URL_ONLY_TEXT.test(text)) return false;
     // Handle đứng một mình (@nick, u/abc) — không phải câu cần dịch.
-    if (pageSetting('tm-page-skip-usernames') !== false && USERNAME_HANDLE_PATTERNS.some(pattern => pattern.test(text))) return false;
+    if (scanConfig().skipUsernames && USERNAME_HANDLE_PATTERNS.some(pattern => pattern.test(text))) return false;
     return true;
   }
 
@@ -893,68 +1049,77 @@
     return requestTranslation(text, targetLanguage);
   }
 
-  function collectTextNodes(root = document.body) {
-    if (!root) return [];
-    const nodes = new Set();
+  /* ------------------------------------------------------------------
+   * Quét DOM MỘT LƯỢT cho cả text node lẫn attribute.
+   *
+   * Bản cũ chạy 3 vòng riêng trên cùng một cây: enumerateScanRoots dùng
+   * querySelectorAll('*') để tìm shadow root, collectTextNodes đi TreeWalker,
+   * collectAttributeTargets lại querySelectorAll('*') lần nữa — và cả 3 gọi
+   * enumerateScanRoots độc lập. Ở đây một TreeWalker SHOW_ELEMENT|SHOW_TEXT
+   * làm hết: element bị skip trả FILTER_REJECT nên cả subtree bị cắt luôn
+   * (bản cũ vẫn đi vào rồi mới lọc bằng closest() ở từng text node), shadow
+   * root gặp trên đường được đẩy vào hàng đợi, attribute lấy ngay tại chỗ.
+   * ------------------------------------------------------------------ */
+  function collectTargets(root) {
+    const textNodes = [];
+    const attributeTargets = [];
+    if (!root) return { textNodes, attributeTargets };
 
     if (root.nodeType === Node.TEXT_NODE) {
       const parent = root.parentElement;
-      if (parent && !isElementSkipped(parent) && isUsefulText(root.data)) nodes.add(root);
-      return [...nodes];
+      if (parent && !isElementSkipped(parent) && isUsefulText(root.data)) textNodes.push(root);
+      return { textNodes, attributeTargets };
+    }
+    if (root.nodeType !== Node.ELEMENT_NODE && typeof root.querySelectorAll !== 'function') {
+      return { textNodes, attributeTargets };
     }
 
-    for (const scanRoot of enumerateScanRoots(root)) {
-      if (!scanRoot) continue;
-      if (scanRoot.nodeType === Node.ELEMENT_NODE && isElementSkipped(scanRoot)) continue;
+    const collectAttributes = (element) => {
+      for (const attribute of TRANSLATABLE_ATTRIBUTES) {
+        const value = element.getAttribute(attribute);
+        if (value && isUsefulText(value)) attributeTargets.push({ element, attribute });
+      }
+    };
 
-      const walker = document.createTreeWalker(scanRoot, NodeFilter.SHOW_TEXT, {
+    const queue = [root];
+    const visitedRoots = new WeakSet();
+
+    while (queue.length) {
+      const scanRoot = queue.shift();
+      if (!scanRoot || visitedRoots.has(scanRoot)) continue;
+      visitedRoots.add(scanRoot);
+
+      // Root truyền vào có thể nằm sâu trong vùng bị chặn → phải xét cả tổ tiên.
+      if (scanRoot.nodeType === Node.ELEMENT_NODE) {
+        if (isElementSkipped(scanRoot)) continue;
+        collectAttributes(scanRoot);
+        const shadow = getExtensionShadowRoot(scanRoot);
+        if (shadow) queue.push(shadow);
+      }
+
+      const walker = document.createTreeWalker(scanRoot, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
-          const parent = node.parentElement;
-          if (!parent || isElementSkipped(parent) || !isUsefulText(node.data)) {
-            return NodeFilter.FILTER_REJECT;
+          if (node.nodeType === Node.TEXT_NODE) {
+            return isUsefulText(node.data) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
           }
-          return NodeFilter.FILTER_ACCEPT;
+          // Cắt nguyên subtree bị chặn — tổ tiên đã lọc nên chỉ cần xét bản thân.
+          return isElementSkippedSelf(node) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
         },
       });
 
       let node;
-      while ((node = walker.nextNode())) nodes.add(node);
-    }
-
-    return [...nodes];
-  }
-
-  function collectAttributeTargets(root = document.body) {
-    if (!root) return [];
-    const targets = [];
-    const seen = new WeakMap();
-
-    for (const scanRoot of enumerateScanRoots(root)) {
-      let elements = [];
-      if (scanRoot.nodeType === Node.ELEMENT_NODE) {
-        elements = [scanRoot, ...scanRoot.querySelectorAll('*')];
-      } else if (typeof scanRoot.querySelectorAll === 'function') {
-        elements = [...scanRoot.querySelectorAll('*')];
-      }
-
-      for (const element of elements) {
-        if (isElementSkipped(element)) continue;
-        let attrs = seen.get(element);
-        if (!attrs) {
-          attrs = new Set();
-          seen.set(element, attrs);
+      while ((node = walker.nextNode())) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          textNodes.push(node);
+          continue;
         }
-        for (const attribute of TRANSLATABLE_ATTRIBUTES) {
-          const value = element.getAttribute(attribute);
-          if (value && isUsefulText(value) && !attrs.has(attribute)) {
-            attrs.add(attribute);
-            targets.push({ element, attribute });
-          }
-        }
+        collectAttributes(node);
+        const shadow = getExtensionShadowRoot(node);
+        if (shadow && !visitedRoots.has(shadow)) queue.push(shadow);
       }
     }
 
-    return targets;
+    return { textNodes, attributeTargets };
   }
 
   function getTextRecord(node) {
@@ -1088,24 +1253,6 @@
     upsertBilingualSpan(node, translated);
   }
 
-  async function mapWithConcurrency(items, concurrency, worker) {
-    let cursor = 0;
-
-    async function runWorker() {
-      while (cursor < items.length) {
-        const index = cursor++;
-        await worker(items[index], index);
-      }
-    }
-
-    const workers = Array.from(
-      { length: Math.min(concurrency, Math.max(items.length, 1)) },
-      () => runWorker(),
-    );
-
-    await Promise.all(workers);
-  }
-
   function setStatus(message, isError = false) {
     if (!statusElement) return;
     statusElement.textContent = message;
@@ -1234,16 +1381,27 @@
   function splitByViewport(textNodes) {
     const inView = [];
     const outView = [];
+    // Nhiều text node dùng chung một parent (mỗi <p> thường có vài node). Nhớ
+    // kết quả theo parent để không lặp getBoundingClientRect — mỗi lần gọi là
+    // một forced layout, nhân với vài nghìn node thì thấy rõ khựng.
+    const seen = new Map();
+    const top = innerHeight * 1.5;
+    const bottom = -innerHeight * 0.5;
+
     for (const node of textNodes) {
       const parent = node.parentElement;
-      let visible = false;
-      if (parent) {
-        try {
-          const rect = parent.getBoundingClientRect();
-          visible = rect.top < innerHeight * 1.5 && rect.bottom > -innerHeight * 0.5;
-        } catch (_) {
-          visible = false;
+      let visible = seen.get(parent);
+      if (visible === undefined) {
+        visible = false;
+        if (parent) {
+          try {
+            const rect = parent.getBoundingClientRect();
+            visible = rect.top < top && rect.bottom > bottom;
+          } catch (_) {
+            visible = false;
+          }
         }
+        seen.set(parent, visible);
       }
       (visible ? inView : outView).push(node);
     }
@@ -1265,23 +1423,12 @@
 
   // Gắn IntersectionObserver lên parentElement của từng node ngoài viewport;
   // element vào khung nhìn → dịch nhóm node đó rồi unobserve.
-  function observeLazyNodes(nodes, language, runGeneration) {
-    // Trình duyệt không có IntersectionObserver → dịch thẳng, không lazy.
-    if (typeof IntersectionObserver !== 'function') {
-      translateTargets(nodes, [], language, runGeneration);
-      return;
-    }
-
-    for (const node of nodes) {
-      if (!node.isConnected) continue;
-      const parent = node.parentElement;
-      if (!parent) continue;
-      const group = lazyPending.get(parent);
-      if (group) group.push(node);
-      else lazyPending.set(parent, [node]);
-    }
-    if (!lazyPending.size) return;
-
+  /* Một IntersectionObserver duy nhất cho cả phiên dịch. Bản cũ tạo observer
+   * MỚI mỗi lần gọi rồi observe lại toàn bộ lazyPending — giờ dịch động cũng
+   * đẩy node vào đây nên cách đó vừa lãng phí vừa bỏ rơi observer cũ.
+   * Ngôn ngữ/generation đọc tại thời điểm intersect, không capture lúc đăng ký. */
+  function ensureLazyObserver() {
+    if (lazyObserver) return lazyObserver;
     lazyObserver = new IntersectionObserver(entries => {
       const ready = [];
       for (const entry of entries) {
@@ -1292,10 +1439,13 @@
         if (group) ready.push(...group);
       }
       if (!ready.length) return;
-      if (language !== currentLanguage || runGeneration !== generation) return;
 
+      const language = currentLanguage;
+      if (language === 'original') return;
+      const runGeneration = generation;
       const alive = ready.filter(node => node.isConnected);
       if (!alive.length) return;
+
       translateTargets(alive, [], language, runGeneration).then(() => {
         if (language !== currentLanguage || runGeneration !== generation) return;
         if (!lazyPending.size) {
@@ -1303,8 +1453,33 @@
         }
       });
     }, { rootMargin: '250px 0px' });
+    return lazyObserver;
+  }
 
-    for (const element of lazyPending.keys()) lazyObserver.observe(element);
+  function observeLazyNodes(nodes, language, runGeneration) {
+    // Trình duyệt không có IntersectionObserver → dịch thẳng, không lazy.
+    if (typeof IntersectionObserver !== 'function') {
+      translateTargets(nodes, [], language, runGeneration);
+      return;
+    }
+
+    const fresh = [];
+    for (const node of nodes) {
+      if (!node.isConnected) continue;
+      const parent = node.parentElement;
+      if (!parent) continue;
+      const group = lazyPending.get(parent);
+      if (group) {
+        group.push(node);
+        continue;
+      }
+      lazyPending.set(parent, [node]);
+      fresh.push(parent);
+    }
+    if (!fresh.length) return;
+
+    const observer = ensureLazyObserver();
+    for (const element of fresh) observer.observe(element);
   }
 
   /* Toast nổi tối giản trong page IIFE (showToast ở input-helper IIFE không
@@ -1392,12 +1567,17 @@
       showPageToast('📄 Chế độ tài liệu: giữ nguyên code block');
     }
 
+    // Shadow root xuất hiện lúc trang chưa dịch không được handleMutations
+    // theo dõi (nó bỏ qua hoàn toàn khi ở bản gốc) → nhặt lại ngay trước khi quét.
+    discoverAndObserveMutationRoots(document.documentElement);
+
     const uniqueTextNodes = new Set();
     const uniqueAttributeTargets = new Map();
 
     for (const root of roots) {
-      for (const node of collectTextNodes(root)) uniqueTextNodes.add(node);
-      for (const target of collectAttributeTargets(root)) {
+      const found = collectTargets(root);
+      for (const node of found.textNodes) uniqueTextNodes.add(node);
+      for (const target of found.attributeTargets) {
         let attributes = uniqueAttributeTargets.get(target.element);
         if (!attributes) {
           attributes = new Set();
@@ -1456,6 +1636,39 @@
   let dynamicWindowStart = 0;
   let dynamicWindowChars = 0;
 
+  /* textRecords/attributeRecords phải duyệt được (restore, rerender) nên là Map
+   * thường, tức node đã bị gỡ khỏi DOM vẫn bị giữ tham chiếu. Trước đây chỉ
+   * restoreOriginalContent mới dọn — một SPA dịch suốt buổi thì không bao giờ
+   * chạy tới đó. Quét dọn định kỳ khi map đã phình. */
+  const RECORDS_PRUNE_THRESHOLD = 4000;
+
+  function pruneDetachedRecords() {
+    if (textRecords.size >= RECORDS_PRUNE_THRESHOLD) {
+      for (const [node] of textRecords) {
+        if (!node.isConnected) textRecords.delete(node);
+      }
+    }
+    if (attributeRecords.size >= RECORDS_PRUNE_THRESHOLD) {
+      for (const [element] of attributeRecords) {
+        if (!element.isConnected) attributeRecords.delete(element);
+      }
+    }
+    if (bilingualPairs.size >= RECORDS_PRUNE_THRESHOLD) {
+      for (const [node, span] of bilingualPairs) {
+        if (node.isConnected) continue;
+        span.remove();
+        bilingualPairs.delete(node);
+      }
+    }
+    // Node chờ cuộn tới nhưng đã bị gỡ khỏi DOM thì không bao giờ intersect —
+    // IntersectionObserver giữ chúng sống mãi trong lazyPending.
+    for (const [element] of lazyPending) {
+      if (element.isConnected) continue;
+      lazyObserver?.unobserve(element);
+      lazyPending.delete(element);
+    }
+  }
+
   function dynamicBudgetAllow(chars) {
     const now = Date.now();
     if (now - dynamicWindowStart > DYNAMIC_WINDOW_MS) {
@@ -1469,14 +1682,27 @@
 
   function queueDynamicTranslation(roots) {
     if (isSiteBlacklisted()) return; // NPT-015: site vừa bị chặn → không queue mới.
+    // Trang chưa dịch (mặc định của mọi trang) thì không có gì để cập nhật —
+    // vẫn nhồi node vào Set là giữ tham chiếu mạnh tới DOM đã bị gỡ, rò rỉ
+    // vô hạn trên feed cuộn vô tận.
+    if (currentLanguage === 'original') {
+      pendingDynamicRoots.clear();
+      return;
+    }
     // Tắt tự dịch nội dung động (SPA/infinite feed) theo setting.
     if (pageSetting('tm-page-dynamic-translate') === false) return;
     for (const root of roots) pendingDynamicRoots.add(root);
     clearTimeout(mutationTimer);
 
     mutationTimer = setTimeout(async () => {
-      if (currentLanguage === 'original' || !pendingDynamicRoots.size) return;
+      // Bail giữa chừng (user vừa bấm "Gốc") phải dọn hàng đợi, không để lại
+      // node mồ côi trong Set cho tới hết đời trang.
+      if (currentLanguage === 'original' || !pendingDynamicRoots.size) {
+        pendingDynamicRoots.clear();
+        return;
+      }
 
+      pruneDetachedRecords();
       const rootsToTranslate = [...pendingDynamicRoots];
       pendingDynamicRoots.clear();
       const language = currentLanguage;
@@ -1486,8 +1712,9 @@
       const uniqueAttributeTargets = new Map();
 
       for (const root of rootsToTranslate) {
-        for (const node of collectTextNodes(root)) uniqueTextNodes.add(node);
-        for (const target of collectAttributeTargets(root)) {
+        const found = collectTargets(root);
+        for (const node of found.textNodes) uniqueTextNodes.add(node);
+        for (const target of found.attributeTargets) {
           let attributes = uniqueAttributeTargets.get(target.element);
           if (!attributes) {
             attributes = new Set();
@@ -1506,23 +1733,46 @@
       for (const node of textNodes) getTextRecord(node);
       for (const { element, attribute } of attributeTargets) getAttributeRecord(element, attribute);
 
+      /* "Dịch lướt theo khung nhìn" trước đây chỉ áp dụng cho lần dịch ĐẦU.
+       * Nội dung do infinite scroll / SPA bơm vào sau đó luôn được dịch hết,
+       * kể cả phần nằm cách viewport vài màn hình — tức trên đúng loại trang
+       * ngốn quota nhất thì tuỳ chọn tiết kiệm quota lại không có tác dụng. */
+      let immediateNodes = textNodes;
+      let deferredNodes = [];
+      if (pageSetting('tm-page-lazy-translate') !== false && textNodes.length) {
+        const buckets = splitByViewport(textNodes);
+        immediateNodes = buckets.inView;
+        deferredNodes = buckets.outView;
+      }
+
       // NPT-010: vượt budget cửa sổ 60s thì dừng dịch động — không bơm request nền.
-      const dynamicChars = textNodes.reduce((sum, node) => sum + String(node.data || '').length, 0);
-      if ((textNodes.length || attributeTargets.length) && !dynamicBudgetAllow(dynamicChars)) {
+      const dynamicChars = immediateNodes.reduce((sum, node) => sum + String(node.data || '').length, 0);
+      if ((immediateNodes.length || attributeTargets.length) && !dynamicBudgetAllow(dynamicChars)) {
         setStatus('Tạm dừng dịch động — quá nhiều nội dung mới, tự tiếp tục sau ít phút', true);
         return;
       }
 
-      if (textNodes.length || attributeTargets.length) {
-        await translateTargets(textNodes, attributeTargets, language, runGeneration);
+      if (immediateNodes.length || attributeTargets.length) {
+        await translateTargets(immediateNodes, attributeTargets, language, runGeneration);
         if (runGeneration === generation && language === currentLanguage) {
           setStatus(language === 'vi' ? 'Đã cập nhật phần nội dung mới' : 'New content translated');
         }
+      }
+      if (deferredNodes.length && runGeneration === generation && language === currentLanguage) {
+        observeLazyNodes(deferredNodes, language, runGeneration);
       }
     }, CONFIG.mutationDebounceMs);
   }
 
   function handleMutations(mutations) {
+    /* Trang chưa dịch = trạng thái mặc định của MỌI trang có extension. Bản cũ
+     * vẫn dựng record cho từng characterData mutation (Map giữ tham chiếu mạnh
+     * tới text node) và chạy discoverAndObserveMutationRoots — tức
+     * querySelectorAll('*') — trên từng subtree vừa thêm. Trên feed cuộn vô tận
+     * hay app chat, đó là CPU và bộ nhớ đốt liên tục cho việc không ai dùng.
+     * Shadow root sinh ra trong lúc này được nhặt lại ở setLanguage. */
+    if (currentLanguage === 'original') return;
+
     const addedRoots = new Set();
 
     for (const mutation of mutations) {
@@ -2642,6 +2892,15 @@
   }
 
   function hideSelectionUI() {
+    /* Hàm này chạy ở MỌI mouseup/keyup có selection rỗng — tức gần như mọi cú
+     * click trên trang, trong mọi frame. Không có gì đang hiện thì thoát ngay,
+     * đừng chạm tới speechSynthesis.cancel() và clearInterval mỗi lần. */
+    if ((!selectionButton || selectionButton.hidden)
+      && (!selectionPanel || selectionPanel.hidden)
+      && !selectionText && !selectionBusy) {
+      return;
+    }
+
     if (selectionButton) {
       selectionButton.hidden = true;
       selectionButton.dataset.busy = 'false';
@@ -2974,10 +3233,23 @@
 
     const savedLanguage = GM_getValue(`${CONFIG.storageKey}:${location.hostname}`, 'original');
     if (['vi', 'en'].includes(savedLanguage)) {
-      setLanguage(savedLanguage);
+      /* Content script chạy ở document_start nên <body> CHƯA tồn tại. Gọi thẳng
+       * setLanguage lúc này thì roots = [document.body] = [null]: không quét
+       * được gì, báo "không tìm thấy chữ", rồi cả trang rơi xuống đường dịch
+       * động — bỏ qua hoàn toàn lazy viewport nên dịch sạch cả trang dài và
+       * tốn quota gấp nhiều lần. Chờ DOM sẵn sàng rồi mới dịch. */
+      whenDomReady(() => setLanguage(savedLanguage));
     } else if (IS_TOP_FRAME) {
       setStatus('Sẵn sàng · Alt+V / Alt+E / Alt+O');
     }
+  }
+
+  function whenDomReady(callback) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', callback, { once: true });
+      return;
+    }
+    callback();
   }
 
   /* ======================= TÓM TẮT TRANG (summarize) =======================
@@ -3752,6 +4024,19 @@
     return rect;
   }
 
+  /* Scroll/resize/selectionchange bắn liên tục; repositionHelper thì đọc
+   * getComputedStyle + tới 6 lần getBoundingClientRect + offsetWidth/Height —
+   * toàn là forced layout. Gom về đúng 1 lần mỗi khung hình. */
+  let repositionFrame = 0;
+
+  function scheduleReposition() {
+    if (repositionFrame) return;
+    repositionFrame = requestAnimationFrame(() => {
+      repositionFrame = 0;
+      repositionHelper();
+    });
+  }
+
   function repositionHelper() {
     if (helperDragging) return; // Đang kéo tay — không auto reposition đè lên.
     if (!helperPanel || !activeEditable || !activeEditable.isConnected) {
@@ -4107,6 +4392,10 @@
   function activateEditable(editable) {
     if (!helperEnabled()) return; // Toggle tắt → không bám nút lên ô nhập/thanh tìm kiếm.
     if (!editable || !editable.isConnected) return;
+    if (isSiteBlacklisted()) return;
+    // Dựng shadow DOM + stylesheet của nút ✨ EN đúng lúc chạm ô nhập ĐẦU TIÊN.
+    // Trang không có ô nhập nào (và iframe quảng cáo) không phải trả phí này nữa.
+    if (!helperHost) createInputHelper();
     activeEditable = editable;
     savedSnapshot = null;
     setTimeout(repositionHelper, INPUT_CONFIG.repositionDelayMs);
@@ -4139,11 +4428,15 @@
     }, true);
 
     document.addEventListener('selectionchange', () => {
+      // Không có ô nhập nào đang hoạt động thì selectionchange (bắn cho MỌI thao
+      // tác bôi đen trên trang) không liên quan gì tới nút ✨ EN — bỏ luôn,
+      // khỏi tốn một lượt getDeepActiveEditable đi xuyên shadow DOM.
+      if (!activeEditable && !helperHost) return;
       const now = getDeepActiveEditable();
       if (now) {
         activeEditable = now;
         savedSnapshot = null;
-        repositionHelper();
+        scheduleReposition();
       }
     }, true);
 
@@ -4168,8 +4461,8 @@
       }
     }, true);
 
-    window.addEventListener('resize', repositionHelper, { passive: true });
-    window.addEventListener('scroll', repositionHelper, { passive: true, capture: true });
+    window.addEventListener('resize', scheduleReposition, { passive: true });
+    window.addEventListener('scroll', scheduleReposition, { passive: true, capture: true });
 
     document.addEventListener('mousedown', event => {
       const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
@@ -4177,48 +4470,61 @@
       if (menuElement && !menuElement.hidden) closeMenu();
     }, true);
 
-    // Heartbeat fixes editors that swallow focus events, replace their DOM, or live in closed Shadow DOM.
-    setInterval(() => {
-      if (document.hidden) return; // NPT-018: tab ẩn không polling tốn CPU/pin.
-      // Toggle bật/tắt lúc đang chạy (không cần reload): tắt → gỡ hẳn UI, bật → tạo lại.
-      if (!helperEnabled() || isSiteBlacklisted()) {
-        if (helperHost) {
-          helperHost.remove();
-          helperHost = null;
-          helperRoot = null;
-          helperPanel = null;
-          menuElement = null;
-          mainButton = null;
-          arrowButton = null;
-          helperStatus = null;
-          activeEditable = null;
-          savedSnapshot = null;
+    /* Heartbeat vá được các editor nuốt sự kiện focus, thay DOM của chính mình,
+     * hoặc nằm trong closed Shadow DOM. Nhịp thích ứng: 300ms khi user đang thao
+     * tác với một ô nhập (cần bám sát), 1200ms khi không có ô nào — bản cũ chạy
+     * 300ms vĩnh viễn trong MỌI frame của MỌI trang, kể cả iframe quảng cáo
+     * không hề có ô nhập. */
+    const HEARTBEAT_ACTIVE_MS = 300;
+    const HEARTBEAT_IDLE_MS = 1200;
+
+    const tick = () => {
+      let delay = HEARTBEAT_IDLE_MS;
+      try {
+        if (document.hidden) return; // NPT-018: tab ẩn không polling tốn CPU/pin.
+        // Toggle bật/tắt lúc đang chạy (không cần reload): tắt → gỡ hẳn UI, bật → tạo lại.
+        if (!helperEnabled() || isSiteBlacklisted()) {
+          if (helperHost) {
+            helperHost.remove();
+            helperHost = null;
+            helperRoot = null;
+            helperPanel = null;
+            menuElement = null;
+            mainButton = null;
+            arrowButton = null;
+            helperStatus = null;
+            activeEditable = null;
+            savedSnapshot = null;
+          }
+          return;
         }
-        return;
-      }
-      if (!helperHost) createInputHelper();
 
-      if (helperHost && !helperHost.isConnected && document.documentElement) {
-        document.documentElement.appendChild(helperHost);
-      }
+        if (helperHost && !helperHost.isConnected && document.documentElement) {
+          document.documentElement.appendChild(helperHost);
+        }
 
-      const now = getDeepActiveEditable();
-      if (now && now !== activeEditable) activateEditable(now);
+        const now = getDeepActiveEditable();
+        if (now && now !== activeEditable) activateEditable(now);
 
-      if (activeEditable?.isConnected) {
-        repositionHelper();
-      } else if (!busy) {
-        activeEditable = null;
-        helperPanel?.classList.remove('visible');
-        closeMenu();
+        if (activeEditable?.isConnected) {
+          delay = HEARTBEAT_ACTIVE_MS;
+          repositionHelper();
+        } else if (!busy) {
+          activeEditable = null;
+          helperPanel?.classList.remove('visible');
+          closeMenu();
+        }
+      } finally {
+        setTimeout(tick, delay);
       }
-    }, 300);
+    };
+    setTimeout(tick, HEARTBEAT_IDLE_MS);
   }
 
   function initInputTranslator() {
     if (!document.documentElement || document.getElementById('tm-native-en-helper-host')) return;
     if (isSiteBlacklisted()) return; // Site bị chặn: không tạo nút ✨ EN.
-    if (helperEnabled()) createInputHelper(); // Tắt toggle → heartbeat tạo lại khi bật lại.
+    // UI được dựng lazy trong activateEditable — ở đây chỉ gắn listener.
     installInputListeners();
   }
 
