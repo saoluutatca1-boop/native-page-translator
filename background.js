@@ -115,6 +115,11 @@ async function ensureConfig() {
   }
 
   await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: config });
+  /* Xoá hẳn cấu hình v4.0 sau khi đã migrate. Trước đây chúng nằm lại trong
+   * storage vĩnh viễn — trong đó 'tm-native-en-openai-key' là Bearer key THÔ.
+   * Một bản sao credential không ai đọc tới là bản sao chỉ chực rò rỉ: nó đã
+   * lọt vào file "Xuất cài đặt" đúng cái file mà UI hứa là không kèm API key. */
+  await chrome.storage.local.remove(Object.values(LEGACY_KEYS)).catch(() => {});
   configCache = config;
   return config;
 }
@@ -248,9 +253,15 @@ async function nativeTranslate(payload) {
  * dọn. Content script chỉ có cache trong bộ nhớ của từng tab nên mở lại trang,
  * mở tab thứ hai cùng site, hay reload đều phải trả tiền dịch lại từ đầu.
  *
- * Riêng tư: chỉ lưu HASH của đoạn gốc, không lưu nội dung trang. Ghi xuống
- * storage có debounce (tránh ghi 400KB liên tục giữa lúc đang dịch), LRU theo
- * số entry. Tắt bằng setting 'tm-translation-cache' = false.
+ * RIÊNG TƯ — nói cho đúng: khoá là HASH của đoạn gốc, nhưng GIÁ TRỊ là bản
+ * dịch NGUYÊN VĂN. Bản dịch chính là nội dung trang ở ngôn ngữ khác, nên đây
+ * thực chất là lưu phần chữ đọc được của trang xuống đĩa. Vì vậy:
+ *   - Mô tả trong Cài đặt/README phải nói rõ điều này, không được nói "không
+ *     lưu nội dung trang".
+ *   - Tab ẩn danh KHÔNG bao giờ được ghi vào cache (xem isCacheableSender):
+ *     nội dung phiên ẩn danh không được phép sống lâu hơn phiên đó.
+ * Ghi xuống storage có debounce (tránh ghi 400KB liên tục giữa lúc đang dịch),
+ * LRU theo số entry. Tắt hẳn bằng setting 'tm-translation-cache' = false.
  * ------------------------------------------------------------------ */
 const TRANSLATION_CACHE_KEY = 'tm-translation-cache-v1';
 const TRANSLATION_CACHE_ENABLED_KEY = 'tm-translation-cache';
@@ -337,6 +348,13 @@ function translationCachePrefix(config, sourceLanguage, targetLanguage, pageOpti
   const providerId = config?.preferred || '';
   const model = config?.providers?.[providerId]?.model || '';
   return `${providerId}|${model}|${sourceLanguage || 'auto'}|${targetLanguage}|${hashText(JSON.stringify(pageOptions || {}))}|`;
+}
+
+/* Tab ẩn danh: extension chạy ở chế độ spanning nên dùng CHUNG service worker
+ * và CHUNG chrome.storage.local với phiên thường. Không chặn ở đây thì chữ đọc
+ * được của trang xem ẩn danh sẽ nằm lại trên đĩa sau khi đóng cửa sổ. */
+function isCacheableSender(sender) {
+  return sender?.tab?.incognito !== true;
 }
 
 async function clearTranslationCache() {
@@ -454,7 +472,7 @@ async function fetchPdf(payload) {
   }
 }
 
-async function providerTranslate(payload) {
+async function providerTranslate(payload, sender) {
   const texts = payload?.texts;
   if (!Array.isArray(texts) || !texts.length) {
     throw new Error('payload.texts phải là mảng chuỗi không rỗng');
@@ -483,12 +501,13 @@ async function providerTranslate(payload) {
   /* Lọc trước những đoạn đã dịch ở lần trước (tab khác, phiên trước, reload):
    * chỉ phần chưa có mới đi tới provider. Trang tin/diễn đàn lặp lại rất nhiều
    * chuỗi giống nhau nên tỉ lệ trúng thường rất cao. */
+  const useCache = translationCacheEnabled && isCacheableSender(sender);
   const prefix = translationCachePrefix(config, payload?.sourceLanguage, targetLanguage, pageOptions);
   const translations = new Array(list.length);
   const missIndexes = [];
   const missTexts = [];
   for (let index = 0; index < list.length; index++) {
-    const hit = translationCacheEnabled ? translationCacheGet(prefix + hashText(list[index])) : undefined;
+    const hit = useCache ? translationCacheGet(prefix + hashText(list[index])) : undefined;
     if (typeof hit === 'string') {
       translations[index] = hit;
     } else {
@@ -521,7 +540,7 @@ async function providerTranslate(payload) {
     for (let index = 0; index < missIndexes.length; index++) {
       const translated = result.translations[index];
       translations[missIndexes[index]] = translated;
-      if (translationCacheEnabled && typeof translated === 'string' && translated) {
+      if (useCache && typeof translated === 'string' && translated) {
         translationCacheSet(prefix + hashText(missTexts[index]), translated);
       }
     }
@@ -876,7 +895,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'providerTranslate') {
-    providerTranslate(message.payload).then(sendResponse).catch(error => {
+    providerTranslate(message.payload, sender).then(sendResponse).catch(error => {
       sendResponse({ ok: false, error: sanitizeProviderError(error) });
     });
     return true;

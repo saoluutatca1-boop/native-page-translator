@@ -21,6 +21,7 @@ const sentTabMessages = [];
 const createdTabs = [];
 const commandListeners = [];
 const navigationListeners = [];
+const storageChangeListeners = [];
 const badgeCalls = [];
 
 const chromeStub = {
@@ -40,7 +41,7 @@ const chromeStub = {
         for (const key of Array.isArray(keys) ? keys : [keys]) storageData.delete(key);
       },
     },
-    onChanged: { addListener() {} },
+    onChanged: { addListener(fn) { storageChangeListeners.push(fn); } },
   },
   permissions: {
     async contains() { return true; },
@@ -186,6 +187,13 @@ async function main() {
   assert.equal(cfg.tone, 'natural');
 
   // Helper bắn message như content/popup — sender mặc định kiểu content script.
+  // ensureConfig memo hoá config trong bộ nhớ SW; test migrate cần bỏ memo đó.
+  function configCacheReset() {
+    for (const listener of storageChangeListeners) {
+      listener({ 'tm-multi-provider-config': { newValue: undefined } }, 'local');
+    }
+  }
+
   function sendMessage(message, sender = { tab: { id: 1 } }) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('message timeout')), 3000);
@@ -523,6 +531,48 @@ async function main() {
     await commandListeners[0]('khong-ton-tai');
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(sentTabMessages.length, beforeUnknown);
+  }
+
+  // 17b. Key cấu hình v4.0 phải bị XOÁ sau khi migrate — nếu còn nằm lại thì
+  //      nó sẽ lọt vào file "Xuất cài đặt" (file mà UI hứa không kèm API key).
+  {
+    storageData.clear();
+    configCacheReset();
+    storageData.set('tm-native-en-openai-key', 'sk-legacy-SECRET');
+    storageData.set('tm-native-en-api-url', 'https://api.openai.com/v1/chat/completions');
+
+    await sendMessage({ type: 'getProviderStatus' });
+
+    for (const key of ['tm-native-en-openai-key', 'tm-native-en-api-url',
+      'tm-native-en-openai-model', 'tm-native-en-api-format']) {
+      assert.equal(storageData.has(key), false, `key cũ ${key} phải bị xoá sau migrate`);
+    }
+    // Key vẫn phải được chuyển vào config mới, không phải mất luôn.
+    const migrated = storageData.get('tm-multi-provider-config');
+    assert.equal(migrated.providers.openai.keys[0].key, 'sk-legacy-SECRET');
+
+    const dump = JSON.stringify([...storageData.entries()].filter(([k]) => k !== 'tm-multi-provider-config'));
+    assert.equal(dump.includes('sk-legacy-SECRET'), false, 'key thô không được nằm ngoài config');
+  }
+
+  // 17c. Tab ẩn danh KHÔNG được ghi bản dịch xuống cache trên đĩa
+  {
+    const payload = { texts: ['Đoạn chỉ có ở tab ẩn danh'], targetLanguage: 'en', sourceLanguage: 'auto' };
+
+    const first = await sendMessage({ type: 'providerTranslate', payload }, { tab: { id: 9, incognito: true } });
+    assert.equal(first.ok, true);
+
+    const before = fetchCalls.length;
+    const second = await sendMessage({ type: 'providerTranslate', payload }, { tab: { id: 9, incognito: true } });
+    assert.equal(second.ok, true);
+    assert.ok(fetchCalls.length > before, 'lượt 2 trong tab ẩn danh phải gọi lại provider, không được lấy từ cache');
+    assert.notEqual(second.provider, 'cache');
+
+    // Và tab thường cũng không được thấy nội dung của phiên ẩn danh.
+    const beforeNormal = fetchCalls.length;
+    const normal = await sendMessage({ type: 'providerTranslate', payload }, { tab: { id: 1, incognito: false } });
+    assert.equal(normal.ok, true);
+    assert.ok(fetchCalls.length > beforeNormal, 'nội dung tab ẩn danh không được rò sang tab thường qua cache');
   }
 
   // 17. Badge trên icon theo trạng thái trang

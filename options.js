@@ -719,9 +719,32 @@ async function clearCache() {
 }
 
 /* ------------------------- Sao lưu / khôi phục -------------------------
- * CỐ Ý không xuất 'tm-multi-provider-config': file backup hay bị chia sẻ hoặc
- * đồng bộ lên cloud, không nên mang theo API key. */
-const BACKUP_EXCLUDED = new Set([CONFIG_STORAGE_KEY, 'tm-translation-cache-v1']);
+ * File backup hay bị chia sẻ hoặc đồng bộ lên cloud nên TUYỆT ĐỐI không được
+ * mang theo credential.
+ *
+ * Dùng danh sách TRẮNG, không phải danh sách đen. Bản đầu lọc bằng danh sách
+ * đen 2 phần tử và lấy nguyên chrome.storage.local.get(null) — nghĩa là bất kỳ
+ * key nào không nghĩ ra lúc đó đều tự động lọt vào file. Nó lọt thật:
+ * 'tm-native-en-openai-key' (Bearer key thô của bản v4.0) không bao giờ bị xoá
+ * sau khi ensureConfig migrate, nên ngưởi dùng nâng cấp từ v4.0 xuất cài đặt ra
+ * là kèm luôn key — trong khi UI ghi rõ "API key không nằm trong file xuất".
+ * Danh sách trắng thì key mới thêm sau này mặc định KHÔNG được xuất. */
+const BACKUP_KEYS = [
+  ...Object.values(PREFS_KEYS),
+  TEMPLATE_KEYS.templates,
+  TEMPLATE_KEYS.active,
+  GLOSSARY_KEY,
+  'tm-fab-position',
+  'tm-input-helper-offset',
+  'tm-image-target',
+];
+
+// Ngôn ngữ đã chọn cho từng site: 'tm-page-translator-language:<hostname>'.
+const BACKUP_KEY_PATTERN = /^tm-page-translator-language:/;
+
+function isBackupKey(key) {
+  return BACKUP_KEYS.includes(key) || BACKUP_KEY_PATTERN.test(key);
+}
 
 function downloadFile(name, text, mime) {
   const url = URL.createObjectURL(new Blob([text], { type: mime }));
@@ -737,7 +760,7 @@ async function exportSettings() {
   const all = await chrome.storage.local.get(null);
   const data = {};
   for (const [key, value] of Object.entries(all)) {
-    if (BACKUP_EXCLUDED.has(key)) continue;
+    if (!isBackupKey(key)) continue;
     data[key] = value;
   }
   downloadFile(
@@ -760,8 +783,9 @@ async function importSettings(file) {
 
   const clean = {};
   for (const [key, value] of Object.entries(data)) {
-    // Chỉ nhận key của extension này, và không bao giờ ghi đè config chứa API key.
-    if (!key.startsWith('tm-') || BACKUP_EXCLUDED.has(key)) continue;
+    // Đối xứng với lúc xuất: chỉ nhận đúng những key được phép, nên file do
+    // ngưởi khác đưa không thể ghi đè config API/endpoint hay nhét key lạ.
+    if (!isBackupKey(key)) continue;
     clean[key] = value;
   }
   if (!Object.keys(clean).length) return setStatus('File không chứa cài đặt nào dùng được', true);
@@ -775,8 +799,7 @@ async function resetSettings() {
   if (!confirm('Đưa mọi cài đặt về mặc định?\nAPI key, glossary và prompt template sẽ được GIỮ NGUYÊN.')) return;
   const all = await chrome.storage.local.get(null);
   const remove = Object.keys(all).filter(key =>
-    key.startsWith('tm-')
-    && !BACKUP_EXCLUDED.has(key)
+    isBackupKey(key)
     && key !== GLOSSARY_KEY
     && key !== TEMPLATE_KEYS.templates
     && key !== TEMPLATE_KEYS.active);
