@@ -1,8 +1,32 @@
-# Native Page Translator VI / EN — Extension v4.2
+# Native Page Translator VI / EN — Extension v4.3
 
 Dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh tự nhiên.
+Bản 4.3 tập trung vào **tốc độ, quota và giao diện**: cache bản dịch dùng chung mọi tab, quét DOM một lượt, popup bám theo trạng thái trang thật, theme sáng/tối.
 Bản 4.2 thêm bộ tuỳ chọn **dịch trang nâng cao**: chế độ song ngữ, văn phong dịch, dịch lướt theo khung nhìn, nội dung động & SPA...
 Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini · OpenAI-compatible) với xoay vòng key tự động.
+
+## Có gì mới ở v4.3
+
+**Tiết kiệm quota & nhanh hơn**
+
+- **Cache bản dịch dùng chung** — sống trong service worker, dùng chung cho mọi tab và còn nguyên sau khi trình duyệt dọn service worker. Mở lại cùng một trang, mở tab thứ hai cùng site, hay bấm Gốc rồi dịch lại đều **không tốn thêm request nào**. Đoạn gốc chỉ lưu dưới dạng **mã băm**, nhưng **bản dịch thì lưu nguyên văn** — tức phần chữ đọc được của trang có tồn tại trên máy trong bộ nhớ của extension. **Tab ẩn danh không bao giờ được ghi vào cache.** Tắt/xoá trong **Cài đặt → Khác → Cache bản dịch**.
+- **Batch lớn hơn** — khi dùng API riêng, mỗi request gom tới 48 đoạn / 15.000 ký tự (trước là 28 / 2.800), giảm mạnh số round-trip và số lần lặp lại system instruction với LLM.
+- **Tra cache trước khi gom batch** — trước đây chỉ tra khi batch còn đúng 1 phần tử, nên mọi lần dịch lại gần như gửi lại cả trang.
+- **Quét DOM một lượt** — text node và attribute lấy chung một TreeWalker; vùng bị chặn (code, username, `translate="no"`…) bị cắt cả nhánh thay vì lọc lại ở từng text node.
+- **Trang chưa dịch gần như không tốn gì** — bản cũ vẫn dựng record cho mọi thay đổi text và chạy `querySelectorAll('*')` trên từng khối DOM mới, kể cả trên trang bạn không hề bấm dịch.
+- **Dịch lướt theo khung nhìn giờ áp dụng cả cho nội dung tải động** (feed cuộn vô tận, SPA) — trước đây chỉ có tác dụng ở lần dịch đầu.
+- Retry 5xx trên cùng key, tôn trọng `Retry-After`, và DeepL 456 (cạn quota chu kỳ) nghỉ 6 giờ thay vì thử lại mỗi 2 phút.
+
+**Giao diện**
+
+- **Theme sáng/tối** cho popup, trang Cài đặt và trình xem PDF — tự động theo hệ thống, hoặc ép Tối/Sáng trong **Cài đặt → Khác → Giao diện**. Các panel nổi trên trang cũng tự tối theo dark mode.
+- **Popup bám theo trạng thái thật của trang**: nút VI/EN/Gốc hiện đúng cái đang áp dụng, có **thanh tiến trình** khi đang dịch, hiện **quota DeepL**, và chia tab để vừa khung 600px của Chrome.
+- **Điều khiển theo site ngay trong popup**: "tự dịch site này mỗi lần mở" và "không bao giờ dịch site này".
+- **Trang Cài đặt có điều hướng 5 tab**, nút Lưu + trạng thái bám dính đầu trang, cảnh báo **thay đổi chưa lưu**, và **xuất/nhập/reset** toàn bộ cài đặt.
+- **Phím tắt đổi được** tại `chrome://extensions/shortcuts` (khai báo qua manifest `commands`).
+- **Badge VI/EN trên icon** cho biết tab đang xem bản dịch nào.
+- Vòng focus cho bàn phím ở mọi bề mặt, tôn trọng `prefers-reduced-motion`, và tương phản chữ phụ đạt WCAG AA.
+- `Escape` đóng mọi panel nổi (ảnh, tóm tắt, menu icon), không chỉ panel dịch đoạn bôi đen.
 
 ## Cài đặt / nâng cấp
 
@@ -41,6 +65,7 @@ Mỗi provider thêm được **nhiều key**. Khi dịch:
 - **Content script không bao giờ giữ API key**: script tiêm vào trang chỉ đọc đúng whitelist các key cài đặt; toàn bộ request ký key do service worker (background) thực hiện và chỉ gửi tới đúng host của provider (`isRemoteAllowed` chặn mọi origin lạ, luôn `credentials: 'omit'`).
 - **UI của extension dùng closed Shadow DOM** — JS của trang web không đọc/sửa được panel, nút bấm; các handler kích hoạt dịch đều kiểm tra `event.isTrusted` (chặn sự kiện giả do trang tự phát).
 - **Message bridge có kiểm soát**: background chỉ phục vụ sender nội bộ, lệnh quản trị (quota, mở cài đặt) chỉ extension page gọi được; lỗi provider trả về content không chứa mảnh credential; OCR ảnh chỉ gửi kết quả về đúng frame đã khởi tạo.
+- **Cache bản dịch (v4.3)**: lưu trong `chrome.storage.local` của extension. Khoá là **mã băm** của đoạn gốc (không khôi phục ngược ra văn bản gốc được), nhưng **giá trị là bản dịch nguyên văn** — nói thẳng: phần chữ đọc được của những trang bạn đã dịch có nằm trên máy. Không lưu URL, không gửi đi đâu, và **tab ẩn danh không bao giờ được ghi vào cache**. Nếu bạn dịch trang nhạy cảm (webmail, nội bộ công ty) thì nên tắt mục này. Tắt bằng toggle trong **Cài đặt → Khác**, xoá sạch bằng nút "Xoá cache bản dịch", và gỡ extension là mất theo. File **xuất cài đặt** không bao giờ kèm API key lẫn cache.
 - **Chống lạm dụng quota**: dịch động có budget ký tự/phút/tab; timeout phía content sẽ hủy luôn request đang chạy ở background; key rotation reserve nguyên tử tránh dồn request vào một key; cache dịch có giới hạn entry; tab ẩn không polling.
 - **Custom endpoint chỉ chấp nhận HTTPS** (trừ localhost) — không gửi Bearer key/nội dung qua HTTP plaintext.
 - **Khi dùng fallback miễn phí** (không có API key riêng): nội dung trang được gửi tới endpoint không chính thức của Google (`translate.googleapis.com` / `translate.google.com`) và MyMemory — đây là bản chất của mọi dịch vụ dịch miễn phí. Muốn kiểm soát dữ liệu hoàn toàn, hãy thêm API key riêng (DeepL/Gemini/OpenAI) trong Cài đặt.
@@ -166,13 +191,19 @@ Khi đang mở một file PDF trên trình duyệt, popup hiện nút **"Dịch 
 - `Alt+V`: dịch trang sang tiếng Việt.
 - `Alt+E`: dịch trang sang tiếng Anh.
 - `Alt+O`: về bản gốc.
+- `Alt+Shift+T`: mở popup.
+
+Từ v4.3 các phím này khai báo qua manifest `commands` nên **đổi được** tại `chrome://extensions/shortcuts`, và không còn giành phím với phím tắt của chính trang web. Riêng `Alt+Shift+E` / `Alt+Shift+G` (nút ✨ EN) vẫn do content script xử lý vì chúng cần biết ô nhập nào đang được focus.
 
 ## Phát triển
 
 ```bash
-node tests/providers.test.js   # chạy unit test cho providers.js
-node tests/fancy-text.test.js  # unit test cho fancy-text.js (font đặc biệt)
+npm test          # kiểm cú pháp toàn bộ source + manifest + chạy cả 5 test file
+node tests/run-all.js   # tương đương, không cần npm
 ```
+
+Chạy lẻ từng file nếu cần: `node tests/providers.test.js`, `node tests/sw.smoke.test.js`…
+Không có dependency nào — toàn bộ test là script node thuần.
 
 Cấu trúc:
 
@@ -184,6 +215,7 @@ Cấu trúc:
 - `popup.html` / `popup.js` — tác vụ nhanh (dịch trang, chọn template, tóm tắt & dịch, mở PDF viewer).
 - `glossary.js` — parse/serialize glossary (JSON/CSV/TSV/`a => b`), JS thuần dùng chung.
 - `pdf-viewer.html` / `pdf-viewer.js` — trang dịch PDF dạng văn bản (dùng pdf.js trong `vendor/pdfjs/`).
+- `tests/run-all.js` — runner: kiểm cú pháp toàn bộ source, kiểm manifest (version khớp `package.json`, content script tồn tại) rồi chạy mọi `*.test.js`.
 
 Từ v4.2, cấu trúc file giữ nguyên — chỉ mở rộng contract message: `content.js` gửi `providerTranslate` kèm `pageOptions` `{ style, dialect, mode, grammarFix, keepProperNouns }`; `background.js` sanitize (giá trị sai về mặc định) rồi truyền vào `providers.js`, nơi `buildBatchInstructions` ghép các rule thành system instruction. DeepL là engine dịch thuần nên bỏ qua `pageOptions`.
 
@@ -201,6 +233,8 @@ Storage keys mới trên `chrome.storage.local`:
 | `tm-page-keep-proper-nouns` | boolean | `true` |
 | `tm-page-dynamic-translate` | boolean | `true` |
 | `tm-page-lazy-translate` | boolean | `true` |
+| `tm-translation-cache` | boolean | `true` |
+| `tm-ui-theme` | `'auto'` \| `'dark'` \| `'light'` | `'auto'` |
 
 ## Khắc phục sự cố
 

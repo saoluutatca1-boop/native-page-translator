@@ -76,10 +76,18 @@ function normalizeEndpoint(value) {
  *  - seed key DeepL mặc định
  *  - migrate cài đặt API đơn lẻ của bản cũ (v4.0) sang provider openai
  * ------------------------------------------------------------------ */
+/* Config được đọc lại từ storage + normalize cho MỖI message (mỗi batch dịch,
+ * mỗi lần hỏi trạng thái). Giữ trong bộ nhớ service worker và chỉ bỏ khi
+ * storage thực sự đổi — listener onChanged bên dưới lo việc đó. */
+let configCache = null;
+
 async function ensureConfig() {
+  if (configCache) return configCache;
+
   const values = await chrome.storage.local.get([CONFIG_STORAGE_KEY, ...Object.values(LEGACY_KEYS)]);
   if (values[CONFIG_STORAGE_KEY]) {
-    return normalizeConfig(values[CONFIG_STORAGE_KEY]);
+    configCache = normalizeConfig(values[CONFIG_STORAGE_KEY]);
+    return configCache;
   }
 
   const config = normalizeConfig({
@@ -107,6 +115,12 @@ async function ensureConfig() {
   }
 
   await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: config });
+  /* Xoá hẳn cấu hình v4.0 sau khi đã migrate. Trước đây chúng nằm lại trong
+   * storage vĩnh viễn — trong đó 'tm-native-en-openai-key' là Bearer key THÔ.
+   * Một bản sao credential không ai đọc tới là bản sao chỉ chực rò rỉ: nó đã
+   * lọt vào file "Xuất cài đặt" đúng cái file mà UI hứa là không kèm API key. */
+  await chrome.storage.local.remove(Object.values(LEGACY_KEYS)).catch(() => {});
+  configCache = config;
   return config;
 }
 
@@ -182,6 +196,9 @@ async function rawFetch(payload) {
       ok: true,
       status: response.status,
       responseText,
+      // Provider nói rõ phải chờ bao lâu khi 429/503 — providers.js dùng con số
+      // này làm cooldown thay vì đoán bừa.
+      retryAfter: response.headers.get('retry-after') || '',
       responseHeaders: [...response.headers.entries()].map(([k, v]) => `${k}: ${v}`).join('\r\n'),
     };
   } catch (error) {
@@ -210,7 +227,11 @@ async function providerFetchText(request, signal) {
   if (!response.ok && response.networkError) {
     return { status: 0, bodyText: '', networkError: response.networkError };
   }
-  return { status: response.status, bodyText: response.responseText };
+  return {
+    status: response.status,
+    bodyText: response.responseText,
+    retryAfterMs: globalThis.NPT_PROVIDERS.parseRetryAfter(response.retryAfter),
+  };
 }
 
 async function nativeTranslate(payload) {
@@ -225,6 +246,125 @@ async function nativeTranslate(payload) {
   });
 
   return { ok: true, text: result.text, provider: result.provider, providerLabel: result.providerLabel };
+}
+
+/* ------------------------------------------------------------------
+ * Cache bản dịch dùng chung cho MỌI tab và sống qua cả lần service worker bị
+ * dọn. Content script chỉ có cache trong bộ nhớ của từng tab nên mở lại trang,
+ * mở tab thứ hai cùng site, hay reload đều phải trả tiền dịch lại từ đầu.
+ *
+ * RIÊNG TƯ — nói cho đúng: khoá là HASH của đoạn gốc, nhưng GIÁ TRỊ là bản
+ * dịch NGUYÊN VĂN. Bản dịch chính là nội dung trang ở ngôn ngữ khác, nên đây
+ * thực chất là lưu phần chữ đọc được của trang xuống đĩa. Vì vậy:
+ *   - Mô tả trong Cài đặt/README phải nói rõ điều này, không được nói "không
+ *     lưu nội dung trang".
+ *   - Tab ẩn danh KHÔNG bao giờ được ghi vào cache (xem isCacheableSender):
+ *     nội dung phiên ẩn danh không được phép sống lâu hơn phiên đó.
+ * Ghi xuống storage có debounce (tránh ghi 400KB liên tục giữa lúc đang dịch),
+ * LRU theo số entry. Tắt hẳn bằng setting 'tm-translation-cache' = false.
+ * ------------------------------------------------------------------ */
+const TRANSLATION_CACHE_KEY = 'tm-translation-cache-v1';
+const TRANSLATION_CACHE_ENABLED_KEY = 'tm-translation-cache';
+const TRANSLATION_CACHE_MAX = 3000;
+const TRANSLATION_CACHE_FLUSH_MS = 5000;
+// Đủ nhiều entry mới thì ghi ngay, không chờ debounce — service worker có thể
+// bị dọn trước khi timer chạy, mất sạch phần vừa dịch.
+const TRANSLATION_CACHE_FLUSH_AT = 60;
+
+const translationCache = new Map();
+let translationCacheEnabled = true;
+let translationCacheLoaded = null;
+let translationCacheDirty = 0;
+let translationCacheTimer = null;
+
+/* Hai vòng FNV-1a với hằng số nhân khác nhau + độ dài → khoá ~64 bit.
+ * Đủ thưa cho vài nghìn entry và không phục hồi được văn bản gốc. */
+function hashText(text) {
+  let h1 = 0x811c9dc5;
+  let h2 = 0xc2b2ae35;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    h1 = Math.imul(h1 ^ code, 0x01000193);
+    h2 = Math.imul(h2 ^ code, 0x85ebca6b);
+  }
+  return `${(h1 >>> 0).toString(36)}.${(h2 >>> 0).toString(36)}.${text.length.toString(36)}`;
+}
+
+async function ensureTranslationCache() {
+  if (!translationCacheLoaded) {
+    translationCacheLoaded = (async () => {
+      const values = await chrome.storage.local
+        .get([TRANSLATION_CACHE_KEY, TRANSLATION_CACHE_ENABLED_KEY])
+        .catch(() => ({}));
+      translationCacheEnabled = values[TRANSLATION_CACHE_ENABLED_KEY] !== false;
+      const stored = values[TRANSLATION_CACHE_KEY];
+      if (stored && typeof stored === 'object') {
+        for (const [key, value] of Object.entries(stored)) {
+          if (typeof value === 'string') translationCache.set(key, value);
+        }
+      }
+    })();
+  }
+  await translationCacheLoaded;
+}
+
+async function flushTranslationCache() {
+  clearTimeout(translationCacheTimer);
+  translationCacheTimer = null;
+  if (!translationCacheDirty) return;
+  translationCacheDirty = 0;
+  await chrome.storage.local
+    .set({ [TRANSLATION_CACHE_KEY]: Object.fromEntries(translationCache) })
+    .catch(() => { /* quota đầy / storage lỗi: cache vẫn dùng được trong bộ nhớ */ });
+}
+
+function translationCacheSet(key, value) {
+  if (translationCache.has(key)) translationCache.delete(key); // đưa lên cuối (LRU)
+  else if (translationCache.size >= TRANSLATION_CACHE_MAX) {
+    translationCache.delete(translationCache.keys().next().value);
+  }
+  translationCache.set(key, value);
+  translationCacheDirty++;
+  if (translationCacheDirty >= TRANSLATION_CACHE_FLUSH_AT) {
+    flushTranslationCache();
+    return;
+  }
+  if (!translationCacheTimer) {
+    translationCacheTimer = setTimeout(flushTranslationCache, TRANSLATION_CACHE_FLUSH_MS);
+  }
+}
+
+function translationCacheGet(key) {
+  const value = translationCache.get(key);
+  if (value === undefined) return undefined;
+  translationCache.delete(key);
+  translationCache.set(key, value); // refresh LRU
+  return value;
+}
+
+/* Tiền tố khoá: mọi thứ làm ĐỔI kết quả dịch phải nằm trong đây, nếu không
+ * đổi văn phong/provider xong vẫn nhận lại bản dịch cũ. */
+function translationCachePrefix(config, sourceLanguage, targetLanguage, pageOptions) {
+  const providerId = config?.preferred || '';
+  const model = config?.providers?.[providerId]?.model || '';
+  return `${providerId}|${model}|${sourceLanguage || 'auto'}|${targetLanguage}|${hashText(JSON.stringify(pageOptions || {}))}|`;
+}
+
+/* Tab ẩn danh: extension chạy ở chế độ spanning nên dùng CHUNG service worker
+ * và CHUNG chrome.storage.local với phiên thường. Không chặn ở đây thì chữ đọc
+ * được của trang xem ẩn danh sẽ nằm lại trên đĩa sau khi đóng cửa sổ. */
+function isCacheableSender(sender) {
+  return sender?.tab?.incognito !== true;
+}
+
+async function clearTranslationCache() {
+  await ensureTranslationCache();
+  translationCache.clear();
+  translationCacheDirty = 0;
+  clearTimeout(translationCacheTimer);
+  translationCacheTimer = null;
+  await chrome.storage.local.remove(TRANSLATION_CACHE_KEY).catch(() => {});
+  return { ok: true };
 }
 
 // Giới hạn an toàn cho dịch batch (dịch cả trang).
@@ -332,7 +472,7 @@ async function fetchPdf(payload) {
   }
 }
 
-async function providerTranslate(payload) {
+async function providerTranslate(payload, sender) {
   const texts = payload?.texts;
   if (!Array.isArray(texts) || !texts.length) {
     throw new Error('payload.texts phải là mảng chuỗi không rỗng');
@@ -352,6 +492,33 @@ async function providerTranslate(payload) {
   }
 
   const config = await ensureConfig();
+  await ensureTranslationCache();
+
+  // Văn phong dịch trang (v4.2): style/dialect/mode/grammar/proper-nouns.
+  // normalizePageOptions ép giá trị rác về default; DeepL tự bỏ qua ở tầng providers.
+  const pageOptions = normalizePageOptions(payload?.pageOptions);
+
+  /* Lọc trước những đoạn đã dịch ở lần trước (tab khác, phiên trước, reload):
+   * chỉ phần chưa có mới đi tới provider. Trang tin/diễn đàn lặp lại rất nhiều
+   * chuỗi giống nhau nên tỉ lệ trúng thường rất cao. */
+  const useCache = translationCacheEnabled && isCacheableSender(sender);
+  const prefix = translationCachePrefix(config, payload?.sourceLanguage, targetLanguage, pageOptions);
+  const translations = new Array(list.length);
+  const missIndexes = [];
+  const missTexts = [];
+  for (let index = 0; index < list.length; index++) {
+    const hit = useCache ? translationCacheGet(prefix + hashText(list[index])) : undefined;
+    if (typeof hit === 'string') {
+      translations[index] = hit;
+    } else {
+      missIndexes.push(index);
+      missTexts.push(list[index]);
+    }
+  }
+
+  if (!missTexts.length) {
+    return { ok: true, translations, provider: 'cache', providerLabel: 'Cache', cached: list.length };
+  }
 
   // Đăng ký AbortController theo requestId: content gửi 'cancelProviderTranslate'
   // khi timeout phía nó hết hạn → request trả phí không chạy tiếp ngầm (NPT-007).
@@ -362,21 +529,28 @@ async function providerTranslate(payload) {
   try {
     const result = await translateBatchWithRotation({
       config,
-      texts: list,
+      texts: missTexts,
       sourceLanguage: payload?.sourceLanguage,
       targetLanguage,
-      // Văn phong dịch trang (v4.2): style/dialect/mode/grammar/proper-nouns.
-      // normalizePageOptions ép giá trị rác về default; DeepL tự bỏ qua ở tầng providers.
-      pageOptions: normalizePageOptions(payload?.pageOptions),
+      pageOptions,
       keyState,
       fetchText: (request) => providerFetchText(request, controller.signal),
     });
 
+    for (let index = 0; index < missIndexes.length; index++) {
+      const translated = result.translations[index];
+      translations[missIndexes[index]] = translated;
+      if (useCache && typeof translated === 'string' && translated) {
+        translationCacheSet(prefix + hashText(missTexts[index]), translated);
+      }
+    }
+
     return {
       ok: true,
-      translations: result.translations,
+      translations,
       provider: result.provider,
       providerLabel: result.providerLabel,
+      cached: list.length - missTexts.length,
     };
   } finally {
     if (requestId) inflightRequests.delete(requestId);
@@ -616,6 +790,55 @@ function handlePdfMenuClick(info) {
   });
 }
 
+/* ------------------------------------------------------------------
+ * Phím tắt dịch trang. Trước đây content script tự nghe keydown, nên phím
+ * cố định cứng, đụng phím tắt của trang, và không đổi được ở
+ * chrome://extensions/shortcuts. Giờ khai báo trong manifest "commands".
+ * ------------------------------------------------------------------ */
+const COMMAND_LANGUAGE = {
+  'translate-vi': 'vi',
+  'translate-en': 'en',
+  'translate-original': 'original',
+};
+
+chrome.commands.onCommand.addListener(async (command) => {
+  const language = COMMAND_LANGUAGE[command];
+  if (!language) return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!Number.isInteger(tab?.id)) return;
+  await broadcastToFrames(tab.id, { type: 'setPageLanguage', language }).catch(() => {});
+});
+
+/* ------------------------------------------------------------------
+ * Badge trên icon: cho biết tab hiện tại đang xem bản dịch nào. Không có nó
+ * thì phải mở popup (hoặc soi FAB) mới biết trang đang ở trạng thái gì.
+ * ------------------------------------------------------------------ */
+const BADGE_COLOR = '#4f46e5';
+
+async function setPageBadge(tabId, language) {
+  if (!Number.isInteger(tabId)) return;
+  const active = language === 'vi' || language === 'en';
+  try {
+    await chrome.action.setBadgeText({ tabId, text: active ? language.toUpperCase() : '' });
+    if (active) {
+      await chrome.action.setBadgeBackgroundColor({ tabId, color: BADGE_COLOR });
+      await chrome.action.setTitle({ tabId, title: `Native Translator — đang hiển thị bản ${language.toUpperCase()}` });
+    } else {
+      await chrome.action.setTitle({ tabId, title: 'Native Translator' });
+    }
+  } catch (_) {
+    // Tab đã đóng giữa chừng — bỏ qua.
+  }
+}
+
+/* Badge theo tab sống qua cả lần điều hướng. Trang mới chưa dịch mà vẫn thấy
+ * "VI" là sai — xoá khi top frame commit, content script sẽ báo lại nếu trang
+ * mới tự dịch theo preference đã lưu. */
+chrome.webNavigation.onCommitted.addListener(details => {
+  if (details.frameId !== 0) return;
+  setPageBadge(details.tabId, 'original');
+});
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info?.menuItemId === PDF_MENU_ID) {
     handlePdfMenuClick(info);
@@ -624,6 +847,20 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info?.menuItemId !== IMAGE_MENU_ID) return;
   handleImageTranslate(info, tab).catch(error =>
     console.warn('[Native Page Translator] Dịch ảnh thất bại:', error));
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+
+  // Options/popup vừa lưu key hoặc đổi provider → bỏ config đang nhớ.
+  if (Object.hasOwn(changes, CONFIG_STORAGE_KEY)) configCache = null;
+
+  // Tắt cache trong Cài đặt → dừng đọc/ghi ngay và xoá luôn phần đã lưu.
+  const cacheToggle = changes[TRANSLATION_CACHE_ENABLED_KEY];
+  if (cacheToggle) {
+    translationCacheEnabled = cacheToggle.newValue !== false;
+    if (!translationCacheEnabled) clearTranslationCache().catch(() => {});
+  }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -658,7 +895,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'providerTranslate') {
-    providerTranslate(message.payload).then(sendResponse).catch(error => {
+    providerTranslate(message.payload, sender).then(sendResponse).catch(error => {
       sendResponse({ ok: false, error: sanitizeProviderError(error) });
     });
     return true;
@@ -683,6 +920,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const requestId = String(message.requestId || '');
     inflightRequests.get(requestId)?.abort();
     sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === 'translationCacheStats') {
+    if (!isExtensionPageSender(sender)) {
+      sendResponse({ ok: false, error: 'Chỉ trang extension mới dùng lệnh này' });
+      return false;
+    }
+    ensureTranslationCache()
+      .then(() => sendResponse({ ok: true, entries: translationCache.size, enabled: translationCacheEnabled }))
+      .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'clearTranslationCache') {
+    if (!isExtensionPageSender(sender)) {
+      sendResponse({ ok: false, error: 'Chỉ trang extension mới dùng lệnh này' });
+      return false;
+    }
+    clearTranslationCache()
+      .then(sendResponse)
+      .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
   }
 
@@ -715,6 +974,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: error?.message || String(error) });
     });
     return true;
+  }
+
+  // Top frame báo trạng thái mới → cập nhật badge cho đúng tab đó.
+  if (message?.type === 'pageLanguageChanged') {
+    setPageBadge(sender.tab?.id, message.language);
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (message?.type === 'broadcastPageLanguage') {

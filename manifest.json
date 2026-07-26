@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Native Page Translator VI / EN",
-  "version": "4.2.0",
+  "version": "4.3.0",
+  "minimum_chrome_version": "116",
   "description": "Dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh. Hỗ trợ nhiều API key: DeepL, Google AI Studio (Gemini), OpenAI-compatible, kèm fallback miễn phí.",
   "permissions": [
     "storage",
@@ -32,7 +33,25 @@
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
-      "48": "icons/icon48.png"
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+T" }
+    },
+    "translate-vi": {
+      "suggested_key": { "default": "Alt+V" },
+      "description": "Dịch trang sang tiếng Việt"
+    },
+    "translate-en": {
+      "suggested_key": { "default": "Alt+E" },
+      "description": "Dịch trang sang tiếng Anh"
+    },
+    "translate-original": {
+      "suggested_key": { "default": "Alt+O" },
+      "description": "Hiện lại bản gốc"
     }
   },
   "options_ui": {

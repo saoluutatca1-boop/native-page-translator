@@ -1,0 +1,14 @@
+{
+  "name": "native-page-translator",
+  "version": "4.3.0",
+  "private": true,
+  "description": "Chrome MV3 extension: dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node tests/run-all.js",
+    "check": "node tests/run-all.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

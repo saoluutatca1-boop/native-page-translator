@@ -11,8 +11,12 @@ import * as pdfjsLib from './vendor/pdfjs/pdf.min.mjs';
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('vendor/pdfjs/pdf.worker.min.mjs');
 
 const CHAR_CAP = 60000;          // cap tổng ký tự trích xuất — vượt thì dừng + banner.
-const BATCH_MAX_TEXTS = 25;      // tối đa đoạn mỗi batch dịch.
-const BATCH_MAX_CHARS = 12000;   // tối đa ký tự mỗi batch dịch.
+// Background chấp nhận 64 đoạn / 20000 ký tự mỗi request — gom sát trần (chừa
+// headroom) thay vì 25/12000, và chạy 3 batch song song. PDF vài trăm đoạn
+// trước đây đi tuần tự từng batch nhỏ nên chờ rất lâu.
+const BATCH_MAX_TEXTS = 48;      // tối đa đoạn mỗi batch dịch.
+const BATCH_MAX_CHARS = 15000;   // tối đa ký tự mỗi batch dịch.
+const BATCH_CONCURRENCY = 3;     // số batch chạy song song.
 const Y_TOLERANCE = 2;           // gom item cùng dòng theo toạ độ y.
 
 const $ = selector => document.querySelector(selector);
@@ -211,33 +215,50 @@ async function translateAll() {
 
   const batches = buildBatches(pending);
   let done = 0;
-  for (const batch of batches) {
-    setProgress(`Đang dịch… ${done}/${pending.length} đoạn`, 0.3 + 0.7 * (done / pending.length));
-    const result = await chrome.runtime.sendMessage({
-      type: 'providerTranslate',
-      payload: {
-        texts: batch.map(item => item.text),
-        targetLanguage,
-        sourceLanguage: 'auto',
-        requestId: crypto.randomUUID(),
-      },
-    }).catch(error => ({ ok: false, error: error.message }));
+  let cursor = 0;
+  let failure = null;
 
-    if (!result?.ok) {
+  const runWorker = async () => {
+    while (cursor < batches.length && !failure) {
+      const batch = batches[cursor++];
+      const result = await chrome.runtime.sendMessage({
+        type: 'providerTranslate',
+        payload: {
+          texts: batch.map(item => item.text),
+          targetLanguage,
+          sourceLanguage: 'auto',
+          requestId: crypto.randomUUID(),
+        },
+      }).catch(error => ({ ok: false, error: error.message }));
+
+      if (!result?.ok) {
+        // Batch đầu tiên hỏng thì dừng cả lượt — các worker khác thấy cờ và thoát.
+        failure = failure || (result?.error || 'lỗi không rõ');
+        return;
+      }
+
+      batch.forEach((item, index) => {
+        pages[item.pageIndex].paragraphs[item.paraIndex].translation = result.translations?.[index] || '';
+      });
+      done += batch.length;
+      setProgress(`Đang dịch… ${done}/${pending.length} đoạn`, 0.3 + 0.7 * (done / pending.length));
       renderPages();
-      showError(
-        `Dịch thất bại: ${result?.error || 'lỗi không rõ'}. Kiểm tra API key/provider trong trang Cài đặt.`,
-        { settings: true },
-      );
-      setProgress(`Đã dịch ${done}/${pending.length} đoạn trước khi lỗi.`);
-      return;
     }
+  };
 
-    batch.forEach((item, index) => {
-      pages[item.pageIndex].paragraphs[item.paraIndex].translation = result.translations?.[index] || '';
-    });
-    done += batch.length;
+  setProgress(`Đang dịch… 0/${pending.length} đoạn`, 0.3);
+  await Promise.all(
+    Array.from({ length: Math.min(BATCH_CONCURRENCY, batches.length) }, runWorker),
+  );
+
+  if (failure) {
     renderPages();
+    showError(
+      `Dịch thất bại: ${failure}. Kiểm tra API key/provider trong trang Cài đặt.`,
+      { settings: true },
+    );
+    setProgress(`Đã dịch ${done}/${pending.length} đoạn trước khi lỗi.`);
+    return;
   }
   setProgress(`Hoàn tất — đã dịch ${done} đoạn.`, 1);
 }
@@ -302,6 +323,12 @@ $('#targetLang').addEventListener('change', () => {
 
 $('#btnGrant').addEventListener('click', () => requestPermissionAndRetry());
 $('#btnOpenSettings').addEventListener('click', () => chrome.runtime.openOptionsPage());
+
+// Theo lựa chọn "Giao diện" trong Cài đặt như popup/options ('auto' = theo hệ thống).
+chrome.storage.local.get(['tm-ui-theme']).then(values => {
+  const theme = values['tm-ui-theme'];
+  if (theme === 'dark' || theme === 'light') document.documentElement.dataset.theme = theme;
+}).catch(() => { /* không đọc được: giữ theo prefers-color-scheme */ });
 
 const sourceUrl = new URLSearchParams(location.search).get('src');
 if (sourceUrl) {
