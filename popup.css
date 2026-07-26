@@ -69,7 +69,7 @@
     --glow-2: rgba(59, 130, 246, 0.09);
     --card-bg: rgba(255, 255, 255, 0.82);
     --card-shadow: 0 20px 48px rgba(15, 17, 23, 0.12);
-    --knob: #ffffff;
+    --knob: #949cab;
     --link: #4338ca;
     color-scheme: light;
   }
@@ -94,7 +94,7 @@
   --glow-2: rgba(59, 130, 246, 0.09);
   --card-bg: rgba(255, 255, 255, 0.82);
   --card-shadow: 0 20px 48px rgba(15, 17, 23, 0.12);
-  --knob: #ffffff;
+  --knob: #949cab;
   --link: #4338ca;
   color-scheme: light;
 }
@@ -482,7 +482,7 @@ a:focus-visible,
   border: 1px solid var(--hairline-soft);
   border-radius: 99px;
   background: var(--accent-soft);
-  color: #c7d2fe;
+  color: var(--link);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -602,7 +602,7 @@ a:focus-visible,
   border: 1px solid var(--hairline-soft);
   border-radius: 99px;
   background: var(--accent-soft);
-  color: #c7d2fe;
+  color: var(--link);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -741,7 +741,7 @@ button:disabled:active {
   border: 1px solid var(--hairline-soft);
   border-radius: 99px;
   background: var(--accent-soft);
-  color: #c7d2fe;
+  color: var(--link);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
