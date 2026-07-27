@@ -638,6 +638,7 @@ async function run() {
       style: 'natural', dialect: 'us', mode: 'natural',
       grammarFix: false, keepProperNouns: true,
       customPrompt: '', glossaryText: '', docMode: false,
+      pageContext: null,
     };
     assert.deepEqual(P.normalizePageOptions(null), def);
     assert.deepEqual(P.normalizePageOptions(undefined), def);
@@ -651,6 +652,7 @@ async function run() {
       {
         style: 'genz', dialect: 'uk', mode: 'literal', grammarFix: true, keepProperNouns: false,
         customPrompt: 'dịch kiểu lính thủy đánh bộ', glossaryText: '- server => máy chủ', docMode: true,
+        pageContext: null,
       },
     );
     // Từng field rác (sai enum / sai kiểu) -> về default của field đó
@@ -836,6 +838,75 @@ async function run() {
     // customPrompt/glossary rỗng sau trim -> bỏ qua
     const blank = P.buildBatchInstructions('auto', 'Vietnamese', { customPrompt: '   ', glossaryText: '  ' });
     assert.doesNotMatch(blank, /terminology glossary|Additional user instructions/);
+  }
+
+  // 45b. buildBatchInstructions: pageContext -> block "Page context" + hướng dẫn phân giải đa nghĩa
+  {
+    const out = P.buildBatchInstructions('auto', 'Vietnamese', {
+      pageContext: {
+        host: 'petshop.vn',
+        siteName: 'Pet Shop Sài Gòn',
+        title: 'Royal Canin cho chó',
+        description: 'Cửa hàng thức ăn thú cưng',
+      },
+    });
+    assert.match(out, /Page context — website: petshop\.vn; site name: "Pet Shop Sài Gòn"; page title: "Royal Canin cho chó"; page description: "Cửa hàng thức ăn thú cưng"\./);
+    assert.match(out, /domain-appropriate meanings for ambiguous words/);
+    // Thiếu field nào bỏ field đó khỏi chuỗi context
+    const partial = P.buildBatchInstructions('auto', 'Vietnamese', { pageContext: { host: 'facebook.com' } });
+    assert.match(partial, /Page context — website: facebook\.com\./);
+    assert.doesNotMatch(partial, /page title/);
+    // Context đứng SAU base/style, TRƯỚC docMode/glossary/customPrompt
+    const ordered = P.buildBatchInstructions('auto', 'Vietnamese', {
+      docMode: true,
+      glossaryText: '- server => máy chủ',
+      customPrompt: 'Ngắn gọn',
+      pageContext: { host: 'petshop.vn' },
+    });
+    const iCtx = ordered.indexOf('Page context');
+    assert.ok(iCtx !== -1);
+    assert.ok(iCtx < ordered.indexOf('technical documentation'));
+    assert.ok(iCtx < ordered.indexOf('terminology glossary'));
+    assert.ok(iCtx < ordered.indexOf('Additional user instructions'));
+    // Không có pageContext -> không có block nào
+    const bare = P.buildBatchInstructions('auto', 'Vietnamese');
+    assert.doesNotMatch(bare, /Page context|domain-appropriate/);
+  }
+
+  // 45c. normalizePageOptions: pageContext sai kiểu/rỗng -> null; quá dài -> bị cắt
+  {
+    assert.equal(P.normalizePageOptions({}).pageContext, null);
+    assert.equal(P.normalizePageOptions({ pageContext: 'petshop.vn' }).pageContext, null);
+    assert.equal(P.normalizePageOptions({ pageContext: { host: '   ', title: '' } }).pageContext, null);
+    assert.equal(P.normalizePageOptions({ pageContext: { host: 123 } }).pageContext, null);
+    const clipped = P.normalizePageOptions({
+      pageContext: { host: `${'a'.repeat(200)}`, title: `${'b'.repeat(200)}`, description: `${'c'.repeat(400)}` },
+    }).pageContext;
+    assert.equal(clipped.host.length, 100);
+    assert.equal(clipped.title.length, 150);
+    assert.equal(clipped.description.length, 300);
+    assert.equal(clipped.siteName, '');
+  }
+
+  // 45d. buildBatchRequest: gemini nhận pageContext trong systemInstruction; deepl bỏ qua hoàn toàn
+  {
+    const gem = P.buildBatchRequest({
+      providerId: 'gemini', providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'g',
+      texts: ['feed'], targetLanguage: 'vi',
+      pageOptions: { pageContext: { host: 'petshop.vn' } },
+    });
+    assert.match(JSON.parse(gem.body).systemInstruction.parts[0].text, /Page context — website: petshop\.vn/);
+
+    const base = P.buildBatchRequest({
+      providerId: 'deepl', providerConfig: {}, apiKey: 'abc:fx',
+      texts: ['feed'], targetLanguage: 'vi',
+    });
+    const withCtx = P.buildBatchRequest({
+      providerId: 'deepl', providerConfig: {}, apiKey: 'abc:fx',
+      texts: ['feed'], targetLanguage: 'vi',
+      pageOptions: { pageContext: { host: 'petshop.vn' } },
+    });
+    assert.equal(withCtx.body, base.body);
   }
 
   // 46. buildSummaryRequest: prompt yêu cầu bullet + ngôn ngữ đích (gemini + openai)

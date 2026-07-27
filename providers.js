@@ -810,6 +810,23 @@
   // Giới hạn độ dài field tự do: chặn prompt injection quá dài / lạm dụng token.
   const MAX_CUSTOM_PROMPT_CHARS = 2000;
   const MAX_GLOSSARY_CHARS = 8000;
+  // Ngữ cảnh trang (v4.4): cap từng field để prompt không phình theo meta lạ.
+  const MAX_PAGE_CONTEXT_CHARS = { host: 100, title: 150, siteName: 100, description: 300 };
+
+  // pageContext { host, title, siteName, description } -> chuỗi 1 dòng cho prompt;
+  // null nếu caller không gửi / toàn ký tự rỗng / sai kiểu.
+  function normalizePageContext(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const clip = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+    const ctx = {
+      host: clip(raw.host, MAX_PAGE_CONTEXT_CHARS.host),
+      title: clip(raw.title, MAX_PAGE_CONTEXT_CHARS.title),
+      siteName: clip(raw.siteName, MAX_PAGE_CONTEXT_CHARS.siteName),
+      description: clip(raw.description, MAX_PAGE_CONTEXT_CHARS.description),
+    };
+    if (!ctx.host && !ctx.title && !ctx.siteName && !ctx.description) return null;
+    return ctx;
+  }
 
   // Sanitize pageOptions từ caller: giá trị lạ/sai kiểu -> về default.
   function normalizePageOptions(raw) {
@@ -826,12 +843,14 @@
         ? raw.glossaryText.trim().slice(0, MAX_GLOSSARY_CHARS)
         : DEFAULT_PAGE_OPTIONS.glossaryText,
       docMode: typeof raw?.docMode === 'boolean' ? raw.docMode : DEFAULT_PAGE_OPTIONS.docMode,
+      pageContext: normalizePageContext(raw?.pageContext),
     };
   }
 
   // Thứ tự lines: 4 base -> style -> dialect (chỉ target English) -> literal
   // -> grammarFix -> properNouns -> line chốt idiomatic (khi có rule bổ sung)
-  // -> docMode -> glossary -> customPrompt (ưu tiên cao nhất, đứng cuối).
+  // -> pageContext (ngữ cảnh trang, v4.4) -> docMode -> glossary
+  // -> customPrompt (ưu tiên cao nhất, đứng cuối).
   function buildBatchInstructions(sourceLanguage, targetName, pageOptions) {
     const opts = normalizePageOptions(pageOptions);
     const src = sourceLanguage && sourceLanguage !== 'auto'
@@ -855,6 +874,20 @@
     }
 
     const finalLines = [...lines, ...extras];
+    // Ngữ cảnh trang (v4.4): giúp model chọn nghĩa đúng lĩnh vực cho từ đa nghĩa —
+    // "feed" trên MXH là "bảng tin", trên web thú cưng là "cho ăn/thức ăn".
+    if (opts.pageContext) {
+      const ctx = opts.pageContext;
+      const parts = [];
+      if (ctx.host) parts.push(`website: ${ctx.host}`);
+      if (ctx.siteName) parts.push(`site name: "${ctx.siteName}"`);
+      if (ctx.title) parts.push(`page title: "${ctx.title}"`);
+      if (ctx.description) parts.push(`page description: "${ctx.description}"`);
+      finalLines.push(
+        `Page context — ${parts.join('; ')}.`,
+        'Use the page context to pick domain-appropriate meanings for ambiguous words (e.g. "feed" means "bảng tin" on a social network but "cho ăn/thức ăn" on a pet site; "post" can be "bài đăng" or "cột/bưu kiện"; "like" can be "thích" or "như/giống"). When the context does not clarify a word, fall back to its most common meaning.',
+      );
+    }
     // Tài liệu kỹ thuật: giữ nguyên code/lệnh/path, chỉ dịch văn xuôi.
     if (opts.docMode) {
       finalLines.push('This page is technical documentation: keep all code, inline code, commands, file paths and identifiers unchanged; translate only prose.');
