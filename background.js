@@ -349,11 +349,17 @@ function translationCacheGet(key) {
 }
 
 /* Tiền tố khoá: mọi thứ làm ĐỔI kết quả dịch phải nằm trong đây, nếu không
- * đổi văn phong/provider xong vẫn nhận lại bản dịch cũ. */
+ * đổi văn phong/provider xong vẫn nhận lại bản dịch cũ.
+ * pageContext (v4.4) được TÁCH khỏi phần hash: title/description đổi theo từng
+ * trang nên hash cả object sẽ chia cache theo từng URL (mất hit giữa các trang
+ * cùng site). Chỉ giữ `host` ở dạng rõ — cô lập ngữ cảnh giữa các site ("feed"
+ * trên MXH khác "feed" trên web thú cưng) nhưng vẫn share cache trong 1 site. */
 function translationCachePrefix(config, sourceLanguage, targetLanguage, pageOptions) {
   const providerId = config?.preferred || '';
   const model = config?.providers?.[providerId]?.model || '';
-  return `${providerId}|${model}|${sourceLanguage || 'auto'}|${targetLanguage}|${hashText(JSON.stringify(pageOptions || {}))}|`;
+  const { pageContext, ...styleOptions } = pageOptions || {};
+  const contextHost = typeof pageContext?.host === 'string' ? pageContext.host : '';
+  return `${providerId}|${model}|${sourceLanguage || 'auto'}|${targetLanguage}|${hashText(JSON.stringify(styleOptions))}|${contextHost}|`;
 }
 
 /* Tab ẩn danh: extension chạy ở chế độ spanning nên dùng CHUNG service worker

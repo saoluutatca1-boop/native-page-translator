@@ -1,9 +1,19 @@
-# Native Page Translator VI / EN — Extension v4.3
+# Native Page Translator VI / EN — Extension v4.4
 
 Dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh tự nhiên.
+Bản 4.4 thêm **dịch theo ngữ cảnh trang** cho các provider AI (Gemini/OpenAI): model nhìn host, tiêu đề và mô tả trang để chọn đúng nghĩa của từ đa nghĩa — "feed" trên mạng xã hội là "bảng tin", trên web thú cưng là "cho ăn/thức ăn".
 Bản 4.3 tập trung vào **tốc độ, quota và giao diện**: cache bản dịch dùng chung mọi tab, quét DOM một lượt, popup bám theo trạng thái trang thật, theme sáng/tối.
 Bản 4.2 thêm bộ tuỳ chọn **dịch trang nâng cao**: chế độ song ngữ, văn phong dịch, dịch lướt theo khung nhìn, nội dung động & SPA...
 Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini · OpenAI-compatible) với xoay vòng key tự động.
+
+## Có gì mới ở v4.4
+
+**Dịch theo ngữ cảnh trang (chỉ provider AI)**
+
+- Khi dịch trang bằng **Gemini hoặc OpenAI-compatible**, extension tự trích ngữ cảnh trang — hostname, tiêu đề, `og:site_name`, meta description — và đưa vào system instruction để model chọn nghĩa đúng lĩnh vực cho từ đa nghĩa: "feed" = "bảng tin" trên MXH nhưng = "thức ăn/cho ăn" trên web thú cưng; "post" = "bài đăng" hay "cột/bưu kiện" tuỳ trang. Khi ngữ cảnh không nói rõ, model dùng nghĩa phổ biến nhất.
+- **Không cần bật gì thêm** — áp dụng tự động mỗi khi dịch trang qua key LLM. DeepL và các engine dịch thuần không có khái niệm prompt nên giữ nguyên hành vi cũ; dịch đoạn bôi đen cũng không kèm ngữ cảnh (giữ prompt gốc).
+- **Cache dịch tách theo site** — khoá cache giờ có thêm hostname, nên bản dịch "đúng ngữ cảnh" của site này không bị tái sử dụng nhầm sang site khác; các trang trong cùng một site vẫn dùng chung cache như trước.
+- Ngữ cảnh được cắt giới hạn độ dài (host 100 / title 150 / site name 100 / description 300 ký tự) để không thổi phồng prompt, và nằm **sau** các rule văn phong, **trước** glossary/custom prompt nên chỉ dẫn của bạn vẫn có ưu tiên cao nhất.
 
 ## Có gì mới ở v4.3
 
@@ -266,6 +276,8 @@ Cấu trúc:
 - `tests/run-all.js` — runner: kiểm cú pháp toàn bộ source, kiểm manifest (version khớp `package.json`, content script tồn tại) rồi chạy mọi `*.test.js`.
 
 Từ v4.2, cấu trúc file giữ nguyên — chỉ mở rộng contract message: `content.js` gửi `providerTranslate` kèm `pageOptions` `{ style, dialect, mode, grammarFix, keepProperNouns }`; `background.js` sanitize (giá trị sai về mặc định) rồi truyền vào `providers.js`, nơi `buildBatchInstructions` ghép các rule thành system instruction. DeepL là engine dịch thuần nên bỏ qua `pageOptions`.
+
+Từ v4.4, `pageOptions` có thêm `pageContext` `{ host, title, siteName, description }` do `content.js` trích từ DOM (hostname, `<title>`, meta description/`og:site_name`, có giới hạn độ dài từng field). `buildBatchInstructions` chèn block "Page context" kèm hướng dẫn phân giải từ đa nghĩa vào system instruction của LLM (Gemini/OpenAI). Ở `background.js`, `translationCachePrefix` tách `pageContext` khỏi phần hash style và chỉ giữ `host` ở dạng rõ trong khoá cache — cô lập bản dịch giữa các site nhưng vẫn share cache trong cùng một site.
 
 Storage keys mới trên `chrome.storage.local`:
 

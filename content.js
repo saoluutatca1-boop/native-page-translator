@@ -271,6 +271,33 @@
     const PAGE_DIALECT_VALUES = new Set(['us', 'uk']);
     const PAGE_MODE_VALUES = new Set(['natural', 'literal']);
 
+    /* Ngữ cảnh trang cho LLM (v4.4): host + title + meta description/og:site_name.
+     * Giúp model phân giải từ đa nghĩa theo lĩnh vực — "feed" trên MXH là
+     * "bảng tin" nhưng trên web thú cưng là "cho ăn/thức ăn". Chỉ đọc vài thẻ
+     * meta nên rẻ; kết quả đi theo pageOptions (đã memo theo URL bên dưới). */
+    const PAGE_CONTEXT_LIMITS = { host: 100, title: 150, siteName: 100, description: 300 };
+    function readMetaContent(selectors) {
+      for (const selector of selectors) {
+        const content = document.querySelector(selector)?.getAttribute('content');
+        if (content && content.trim()) return content.trim();
+      }
+      return '';
+    }
+    function computePageContext() {
+      const host = String(location.hostname || '').trim().slice(0, PAGE_CONTEXT_LIMITS.host);
+      const title = String(document.title || '').trim().slice(0, PAGE_CONTEXT_LIMITS.title);
+      const siteName = readMetaContent([
+        'meta[property="og:site_name"]',
+        'meta[name="application-name"]',
+      ]).slice(0, PAGE_CONTEXT_LIMITS.siteName);
+      const description = readMetaContent([
+        'meta[name="description"]',
+        'meta[property="og:description"]',
+      ]).slice(0, PAGE_CONTEXT_LIMITS.description);
+      if (!host && !title && !siteName && !description) return null;
+      return { host, title, siteName, description };
+    }
+
     // Sanitize nhẹ: style/dialect/mode sai → về default; boolean chỉ tắt khi === false.
     function computePageOptions() {
       const style = GM_getValue('tm-page-style', PAGE_OPTION_DEFAULTS.style);
@@ -282,6 +309,7 @@
         mode: PAGE_MODE_VALUES.has(mode) ? mode : PAGE_OPTION_DEFAULTS.mode,
         grammarFix: GM_getValue('tm-page-grammar-fix', PAGE_OPTION_DEFAULTS.grammarFix) !== false,
         keepProperNouns: GM_getValue('tm-page-keep-proper-nouns', PAGE_OPTION_DEFAULTS.keepProperNouns) !== false,
+        pageContext: computePageContext(),
         ...readExtendedPageOptions(),
       };
     }
