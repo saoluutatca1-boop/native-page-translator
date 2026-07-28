@@ -1,26 +1,32 @@
 /* ========================================================================
- * NPT TTS — đọc to bản dịch / tóm tắt bằng speechSynthesis.
+ * NPT TTS — đọc to bản dịch / tóm tắt bằng speechSynthesis + Fallback Audio.
  *
- * - speak(text, lang, rate): chọn voice khớp 'vi'/'en' (fallback voice mặc
- *   định); text dài tự chunk thành utterance ≤200 ký tự (cắt theo ranh giới
- *   câu) để tránh giới hạn utterance của Chrome; cancel() trước khi nói mới.
+ * - speak(text, lang, rate): chọn voice khớp 'vi'/'en' (fallback voice chuẩn);
+ *   nếu máy không có giọng tiếng Việt (vi-VN), tự động dùng Google Translate TTS
+ *   fallback để phát đúng 100% giọng Việt tự nhiên thay vì bị nhại giọng Anh.
  * - stop(), isSpeaking().
- * - Không có speechSynthesis (node, môi trường lạ) → mọi hàm no-op.
- *
- * JS thuần (không chrome.*): chạy được trong content script lẫn node (test).
  * ====================================================================== */
 (function attachTts(global) {
   'use strict';
 
   const MAX_CHUNK_CHARS = 200;
   let speaking = false;
+  let currentAudio = null;
 
   function synth() {
     return typeof global.speechSynthesis !== 'undefined' ? global.speechSynthesis : null;
   }
 
-  /* Cắt text dài thành các đoạn ≤ MAX_CHUNK_CHARS, ưu tiên ranh giới câu
-   * (. ! ? ; , xuống dòng), fallback cắt theo khoảng trắng. */
+  function getVoices() {
+    const engine = synth();
+    if (!engine || typeof engine.getVoices !== 'function') return [];
+    return engine.getVoices() || [];
+  }
+
+  if (synth() && typeof synth().addEventListener === 'function') {
+    synth().addEventListener('voiceschanged', () => getVoices());
+  }
+
   function chunkText(text) {
     const chunks = [];
     let rest = String(text || '').trim();
@@ -31,7 +37,7 @@
         const index = window_.lastIndexOf(mark);
         if (index >= 0 && index + mark.length > cut) cut = index + mark.length;
       }
-      if (cut < MAX_CHUNK_CHARS * 0.4) cut = MAX_CHUNK_CHARS; // không có ranh giới đẹp → cắt cứng
+      if (cut < MAX_CHUNK_CHARS * 0.4) cut = MAX_CHUNK_CHARS;
       chunks.push(rest.slice(0, cut).trim());
       rest = rest.slice(cut).trim();
     }
@@ -40,34 +46,112 @@
   }
 
   function pickVoice(lang) {
-    const engine = synth();
-    if (!engine || typeof engine.getVoices !== 'function') return null;
+    const voices = getVoices();
+    if (!voices.length) return null;
     const wanted = String(lang || '').toLowerCase();
-    const voices = engine.getVoices() || [];
+    const isVi = wanted.startsWith('vi');
+    const isEn = wanted.startsWith('en');
+
+    if (isVi) {
+      return (
+        voices.find(v => String(v.lang || '').toLowerCase().replace('_', '-').startsWith('vi')) ||
+        voices.find(v => /vietnamese|tiếng việt|hoaimy|namminh/i.test(v.name || '')) ||
+        null
+      );
+    }
+
+    if (isEn) {
+      return (
+        voices.find(v => String(v.lang || '').toLowerCase().replace('_', '-').startsWith('en-us')) ||
+        voices.find(v => String(v.lang || '').toLowerCase().replace('_', '-').startsWith('en')) ||
+        null
+      );
+    }
+
     return (
-      voices.find(voice => String(voice.lang || '').toLowerCase().startsWith(wanted)) ||
-      voices.find(voice => String(voice.lang || '').toLowerCase().startsWith(wanted.slice(0, 2))) ||
+      voices.find(v => String(v.lang || '').toLowerCase().replace('_', '-').startsWith(wanted)) ||
+      voices.find(v => String(v.lang || '').toLowerCase().replace('_', '-').startsWith(wanted.slice(0, 2))) ||
       null
     );
   }
 
-  function speak(text, lang, rate = 1) {
+  function stop() {
     const engine = synth();
-    if (!engine || typeof global.SpeechSynthesisUtterance !== 'function') return;
-    engine.cancel(); // huỷ lượt đang nói trước khi xếp lượt mới
+    if (engine) engine.cancel();
+    if (currentAudio) {
+      try {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+      } catch (_) {}
+      currentAudio = null;
+    }
+    speaking = false;
+  }
+
+  function speakWithFallbackAudio(chunks, lang, rate) {
+    if (!chunks.length) {
+      speaking = false;
+      return;
+    }
+    const chunk = chunks.shift();
+    const targetLang = lang === 'vi' ? 'vi' : 'en';
+    const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${targetLang}&client=tw-ob&q=${encodeURIComponent(chunk)}`;
+
+    try {
+      const audio = new Audio(audioUrl);
+      currentAudio = audio;
+      audio.playbackRate = Number.isFinite(Number(rate)) ? Math.min(3, Math.max(0.5, Number(rate))) : 1;
+      audio.onended = () => {
+        if (chunks.length > 0) {
+          speakWithFallbackAudio(chunks, lang, rate);
+        } else {
+          speaking = false;
+          currentAudio = null;
+        }
+      };
+      audio.onerror = () => {
+        speaking = false;
+        currentAudio = null;
+      };
+      audio.play().catch(() => {
+        speaking = false;
+        currentAudio = null;
+      });
+    } catch (_) {
+      speaking = false;
+      currentAudio = null;
+    }
+  }
+
+  function speak(text, lang, rate = 1) {
+    stop();
 
     const chunks = chunkText(text);
     if (!chunks.length) return;
 
+    const engine = synth();
     const voice = pickVoice(lang);
+    const wanted = String(lang || '').toLowerCase();
+    const isVi = wanted.startsWith('vi');
+
+    // Nếu đọc tiếng Việt nhưng máy không có sẵn giọng đọc tiếng Việt -> Dùng Audio Fallback Google Translate chuẩn giọng Việt 100%
+    if (isVi && !voice && typeof Audio !== 'undefined') {
+      speaking = true;
+      speakWithFallbackAudio(chunks, lang, rate);
+      return;
+    }
+
+    if (!engine || typeof global.SpeechSynthesisUtterance !== 'function') return;
+
     const safeRate = Number.isFinite(Number(rate)) ? Math.min(3, Math.max(0.5, Number(rate))) : 1;
     speaking = true;
 
     chunks.forEach((chunk, index) => {
       const utterance = new global.SpeechSynthesisUtterance(chunk);
-      utterance.lang = lang === 'vi' ? 'vi-VN' : lang === 'en' ? 'en-US' : String(lang || '');
+      utterance.lang = isVi ? 'vi-VN' : wanted.startsWith('en') ? 'en-US' : String(lang || '');
       if (voice) utterance.voice = voice;
       utterance.rate = safeRate;
+
       if (index === chunks.length - 1) {
         const done = () => { speaking = false; };
         utterance.onend = done;
@@ -77,18 +161,14 @@
     });
   }
 
-  function stop() {
-    const engine = synth();
-    if (engine) engine.cancel();
-    speaking = false;
-  }
-
   function isSpeaking() {
     const engine = synth();
-    return Boolean(engine && speaking && (engine.speaking || engine.pending));
+    const synthSpeaking = Boolean(engine && (engine.speaking || engine.pending));
+    const audioSpeaking = Boolean(currentAudio && !currentAudio.paused && !currentAudio.ended);
+    return speaking && (synthSpeaking || audioSpeaking);
   }
 
-  const api = { speak, stop, isSpeaking, chunkText, MAX_CHUNK_CHARS };
+  const api = { speak, stop, isSpeaking, chunkText, pickVoice, MAX_CHUNK_CHARS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.NPT_TTS = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
