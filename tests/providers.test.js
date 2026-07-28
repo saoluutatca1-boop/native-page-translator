@@ -63,7 +63,7 @@ async function run() {
     assert.equal(pro.url, 'https://api.deepl.com/v2/translate');
   }
 
-  // 3. buildRequest Gemini: URL chứa model, header x-goog-api-key
+  // 3. buildRequest Gemini: URL chứa model, header x-goog-api-key, generationConfig (temperature: 0.1, thinkingBudget: 0)
   {
     const req = P.buildRequest({
       providerId: 'gemini', providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'gkey',
@@ -74,15 +74,16 @@ async function run() {
     const body = JSON.parse(req.body);
     assert.ok(body.systemInstruction.parts[0].text.includes('native English'));
     assert.match(body.contents[0].parts[0].text, /ctx[\s\S]*xin chào/);
-    // Dòng 2.5 phải tắt thinking để tiết kiệm token
+    assert.equal(body.generationConfig.temperature, 0.1);
     assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);
 
-    // Dòng 3.x không gửi thinkingConfig
     const req3 = P.buildRequest({
       providerId: 'gemini', providerConfig: { model: 'gemini-3.1-flash-lite' }, apiKey: 'gkey',
       source: 'x', context: '',
     });
-    assert.equal(JSON.parse(req3.body).generationConfig.thinkingConfig, undefined);
+    const body3 = JSON.parse(req3.body);
+    assert.equal(body3.generationConfig.temperature, 0.1);
+    assert.equal(body3.generationConfig.thinkingConfig.thinkingBudget, 0);
   }
 
   // 4. buildRequest OpenAI chat: Bearer + messages

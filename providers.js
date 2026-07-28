@@ -564,8 +564,10 @@
       // Dịch thuật không cần suy luận: tắt thinking để tiết kiệm token.
       // Chỉ gửi cho dòng 2.5 (đã kiểm chứng field hợp lệ); dòng 3.x mặc định
       // Flash-Lite đã tối thiểu thinking nên không cần gửi.
-      const generationConfig = { temperature: 0.3 };
-      if (/2\.5/.test(model)) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      const generationConfig = {
+        temperature: 0.1,
+        thinkingConfig: { thinkingBudget: 0 }
+      };
       return {
         url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         method: 'POST',
