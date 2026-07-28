@@ -30,6 +30,12 @@ globalThis.NPT_ICONS?.hydrate();
 let pages = [];
 let pendingUrl = null;
 
+/* Map `${pageIndex}:${paraIndex}` -> <p class="trans"> tương ứng.
+ * Nhờ vậy mỗi batch dịch xong chỉ ghi textContent của đúng các đoạn vừa dịch,
+ * thay vì renderPages() dựng lại toàn bộ DOM (O(n^2) với PDF dài, lại làm
+ * mất vị trí scroll và vùng đang bôi đen của người đọc). */
+const transNodes = new Map();
+
 function setProgress(text, ratio = null) {
   $('#progressText').textContent = text;
   if (ratio === null) return;
@@ -101,13 +107,27 @@ async function loadRemotePdf(url) {
 }
 
 async function requestPermissionAndRetry() {
-  const granted = await chrome.permissions.request({ origins: ['https://*/*', 'http://*/*'] }).catch(() => false);
-  if (!granted) return showError('Bạn chưa cấp quyền — không tải được PDF từ trang này.');
-  if (pendingUrl) {
-    const url = pendingUrl;
-    pendingUrl = null;
-    await loadRemotePdf(url).catch(error => showError(error.message));
+  /* Chỉ xin đúng origin chứa file PDF.
+   * Trước đây xin thẳng ['https://*/*', 'http://*/*'] — tức toàn bộ web — chỉ
+   * để tải một file PDF, và quyền đó ở lại vĩnh viễn. background.js
+   * (handleImageTranslate) đã làm đúng theo từng origin, chỗ này giờ khớp theo. */
+  if (!pendingUrl) return showError('Không còn PDF nào đang chờ tải.');
+
+  let origin = null;
+  try {
+    const parsed = new URL(pendingUrl);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('bad protocol');
+    origin = parsed.origin;
+  } catch (_) {
+    return showError('URL PDF không hợp lệ.');
   }
+
+  const granted = await chrome.permissions.request({ origins: [`${origin}/*`] }).catch(() => false);
+  if (!granted) return showError('Bạn chưa cấp quyền — không tải được PDF từ trang này.');
+
+  const url = pendingUrl;
+  pendingUrl = null;
+  await loadRemotePdf(url).catch(error => showError(error.message));
 }
 
 /* ------------------------- Trích xuất text ------------------------- */
@@ -204,6 +224,12 @@ function buildBatches(pending) {
   return batches;
 }
 
+// Cập nhật đúng một đoạn trên DOM (nếu node còn tồn tại).
+function paintTranslation(pageIndex, paraIndex, translation) {
+  const node = transNodes.get(`${pageIndex}:${paraIndex}`);
+  if (node) node.textContent = translation || '…';
+}
+
 async function translateAll() {
   const targetLanguage = $('#targetLang').value;
   const pending = [];
@@ -242,11 +268,12 @@ async function translateAll() {
       }
 
       batch.forEach((item, index) => {
-        pages[item.pageIndex].paragraphs[item.paraIndex].translation = result.translations?.[index] || '';
+        const translation = result.translations?.[index] || '';
+        pages[item.pageIndex].paragraphs[item.paraIndex].translation = translation;
+        paintTranslation(item.pageIndex, item.paraIndex, translation);
       });
       done += batch.length;
       setProgress(`Đang dịch… ${done}/${pending.length} đoạn`, 0.3 + 0.7 * (done / pending.length));
-      renderPages();
     }
   };
 
@@ -256,7 +283,6 @@ async function translateAll() {
   );
 
   if (failure) {
-    renderPages();
     showError(
       `Dịch thất bại: ${failure}. Kiểm tra API key/provider trong trang Cài đặt.`,
       { settings: true },
@@ -272,8 +298,9 @@ async function translateAll() {
 function renderPages() {
   const container = $('#content');
   container.textContent = '';
+  transNodes.clear();
 
-  for (const page of pages) {
+  pages.forEach((page, pageIndex) => {
     const block = document.createElement('section');
     block.className = 'page-block';
     const heading = document.createElement('h2');
@@ -281,7 +308,7 @@ function renderPages() {
     heading.textContent = `Trang ${page.pageNumber}`;
     block.appendChild(heading);
 
-    for (const para of page.paragraphs) {
+    page.paragraphs.forEach((para, paraIndex) => {
       const row = document.createElement('div');
       row.className = 'para';
       const orig = document.createElement('p');
@@ -292,9 +319,10 @@ function renderPages() {
       trans.textContent = para.translation || '…';
       row.append(orig, trans);
       block.appendChild(row);
-    }
+      transNodes.set(`${pageIndex}:${paraIndex}`, trans);
+    });
     container.appendChild(block);
-  }
+  });
 }
 
 /* ------------------------- Events & init ------------------------- */
@@ -322,6 +350,8 @@ $('#targetLang').addEventListener('change', () => {
   // Đổi ngôn ngữ đích → xoá bản dịch cũ và dịch lại.
   for (const page of pages) for (const para of page.paragraphs) para.translation = '';
   hideError();
+  // Render lại một lần để mọi đoạn về '…' trước khi dịch lại.
+  renderPages();
   translateAll().catch(error => showError(error.message));
 });
 
