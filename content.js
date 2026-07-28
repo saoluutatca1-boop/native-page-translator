@@ -1394,8 +1394,10 @@
       const el = job.kind === 'attribute' ? job.element : job.node?.parentElement;
       if (!el || !el.getBoundingClientRect) return false;
       const rect = el.getBoundingClientRect();
-      const vHeight = window.innerHeight || document.documentElement.clientHeight;
-      const vWidth = window.innerWidth || document.documentElement.clientWidth;
+      if (rect.width === 0 && rect.height === 0) return false;
+      const vp = window.visualViewport;
+      const vHeight = vp?.height || window.innerHeight || document.documentElement.clientHeight;
+      const vWidth = vp?.width || window.innerWidth || document.documentElement.clientWidth;
       return (
         rect.bottom >= 0 &&
         rect.top <= vHeight &&

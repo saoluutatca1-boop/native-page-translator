@@ -380,7 +380,7 @@ async function run() {
     );
   }
 
-  // 22. Prompt batch dùng tên tiếng Anh của đích + Gemini batch có safetySettings
+  // 22. Prompt batch dùng tên tiếng Anh của đích + Gemini batch có safetySettings & generationConfig
   {
     const req = P.buildBatchRequest({
       providerId: 'gemini', providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'g',
@@ -391,6 +391,8 @@ async function run() {
     assert.match(body.systemInstruction.parts[0].text, /native speaker/); // dịch tự nhiên, không word-for-word
     assert.equal(body.safetySettings.length, 4);
     assert.ok(body.safetySettings.every(s => s.threshold === 'BLOCK_NONE'));
+    assert.equal(body.generationConfig.temperature, 0.1);
+    assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);
   }
 
   // 23. Gemini single (buildRequest) cũng có safetySettings BLOCK_NONE đủ 4 category
