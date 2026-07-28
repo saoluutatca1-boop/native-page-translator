@@ -3,7 +3,7 @@
  *
  * - speak(text, lang, rate): chọn voice khớp 'vi'/'en' (fallback voice chuẩn);
  *   nếu máy không có giọng tiếng Việt (vi-VN), tự động dùng Google Translate TTS
- *   fallback để phát đúng 100% giọng Việt tự nhiên thay vì bị nhại giọng Anh.
+ *   fallback để phát đúng giọng Việt thay vì bị nhại giọng Anh.
  * - stop(), isSpeaking().
  *
  * LƯU Ý RIÊNG TƯ: nhánh fallback gửi ĐOẠN VĂN BẢN đang đọc tới endpoint
@@ -14,6 +14,9 @@
   'use strict';
 
   const MAX_CHUNK_CHARS = 200;
+  const TTS_ORIGIN = 'https://translate.google.com';
+  const TTS_PATH = '/translate_tts';
+
   let speaking = false;
   let currentAudio = null;
 
@@ -92,18 +95,17 @@
     speaking = false;
   }
 
-  /* URL endpoint TTS của Google Translate.
-   * Trước đây chuỗi này lọt một cặp {{ }} vào giữa template literal và đóng
-   * sai chỗ (ngay trước &client=), nên new Audio() nhận một URL tương đối
+  /* Dựng URL bằng URL + searchParams thay vì nối chuỗi tay.
+   * Phiên bản cũ nối chuỗi và bị lọt một cặp {{ }} vào giữa template literal,
+   * đóng sai chỗ ngay trước &client=, nên new Audio() nhận một URL tương đối
    * và fallback giọng Việt không bao giờ phát được. */
   function buildTtsUrl(text, targetLang) {
-    const params = new URLSearchParams({
-      ie: 'UTF-8',
-      client: 'tw-ob',
-      tl: targetLang,
-      q: text,
-    });
-    return `https://translate.google.com/translate_tts?${params.toString()}`;
+    const url = new URL(TTS_PATH, TTS_ORIGIN);
+    url.searchParams.set('ie', 'UTF-8');
+    url.searchParams.set('client', 'tw-ob');
+    url.searchParams.set('tl', targetLang);
+    url.searchParams.set('q', String(text ?? ''));
+    return url.href;
   }
 
   function speakWithFallbackAudio(chunks, lang, rate) {
@@ -152,7 +154,7 @@
     const wanted = String(lang || '').toLowerCase();
     const isVi = wanted.startsWith('vi');
 
-    // Nếu đọc tiếng Việt nhưng máy không có sẵn giọng đọc tiếng Việt -> Dùng Audio Fallback Google Translate chuẩn giọng Việt 100%
+    // Đọc tiếng Việt nhưng máy không có sẵn giọng vi-VN -> dùng Audio fallback.
     if (isVi && !voice && typeof Audio !== 'undefined') {
       speaking = true;
       speakWithFallbackAudio(chunks, lang, rate);
