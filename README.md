@@ -1,10 +1,19 @@
-# Native Page Translator VI / EN — Extension v4.4
+# Native Page Translator VI / EN — Extension v4.5
 
 Dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh tự nhiên.
+Bản 4.5 tập trung vào **tối ưu tốc độ dịch Gemini & chống Rate Limit**: Viewport Priority Queue (dịch phần tầm mắt trước < 0.5s), Adaptive Concurrency Pool (3 batch song song, micro-staggering 30ms), ép `temperature: 0.1` và `thinkingBudget: 0` cho các request Gemini.
 Bản 4.4 thêm **dịch theo ngữ cảnh trang** cho các provider AI (Gemini/OpenAI): model nhìn host, tiêu đề và mô tả trang để chọn đúng nghĩa của từ đa nghĩa — "feed" trên mạng xã hội là "bảng tin", trên web thú cưng là "cho ăn/thức ăn".
 Bản 4.3 tập trung vào **tốc độ, quota và giao diện**: cache bản dịch dùng chung mọi tab, quét DOM một lượt, popup bám theo trạng thái trang thật, theme sáng/tối.
 Bản 4.2 thêm bộ tuỳ chọn **dịch trang nâng cao**: chế độ song ngữ, văn phong dịch, dịch lướt theo khung nhìn, nội dung động & SPA...
 Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini · OpenAI-compatible) với xoay vòng key tự động.
+
+## Có gì mới ở v4.5
+
+**Tối ưu tốc độ dịch Gemini & Viewport-First Priority**
+
+- **Dịch tầm mắt trước (Viewport-First Priority Queue)** — Các phần tử văn bản nằm trong khung nhìn của người dùng (`window.visualViewport`) được gán ưu tiên cao nhất, đưa vào batch #1 và #2 phát đi ngay lập tức (< 0.5s). Các phần dưới cuộn trang được dịch âm thầm ở background.
+- **Adaptive Concurrency Pool (3x parallel batch)** — Cho phép gửi tối đa 3 batch request song song với khoảng giãn micro-staggering 30ms giữa các lần dispatch để phòng chống nghẽn đường truyền và burst 429. Tự động hạ concurrency xuống 2 khi gặp nghẽn rate-limit.
+- **Zero Token Waste & Fast TTFT** — Ép `temperature: 0.1` và `thinkingBudget: 0` cho toàn bộ request Gemini, giữ nguyên `systemInstruction` chuẩn để tận dụng Implicit Prompt Caching của Google AI Studio.
 
 ## Có gì mới ở v4.4
 
