@@ -1389,6 +1389,24 @@
     }
   }
 
+  function isJobInViewport(job) {
+    try {
+      const el = job.kind === 'attribute' ? job.element : job.node?.parentElement;
+      if (!el || !el.getBoundingClientRect) return false;
+      const rect = el.getBoundingClientRect();
+      const vHeight = window.innerHeight || document.documentElement.clientHeight;
+      const vWidth = window.innerWidth || document.documentElement.clientWidth;
+      return (
+        rect.bottom >= 0 &&
+        rect.top <= vHeight &&
+        rect.right >= 0 &&
+        rect.left <= vWidth
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function translateTargets(textNodes, attributeTargets, language, runGeneration) {
     let completed = 0;
     let failed = 0;
@@ -1404,6 +1422,8 @@
       const record = getAttributeRecord(element, attribute);
       jobs.push({ kind: 'attribute', element, attribute, record, original: record.original });
     }
+
+    jobs.sort((a, b) => (isJobInViewport(b) ? 1 : 0) - (isJobInViewport(a) ? 1 : 0));
 
     const total = jobs.length;
     const updateProgress = () => {
