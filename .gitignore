@@ -1,2 +1,24 @@
 .superpowers/
 docs/superpowers/
+
+# Dependencies
+node_modules/
+
+# Gói build / đóng gói extension
+*.zip
+*.crx
+*.pem
+dist/
+build/
+
+# Secrets — KHÔNG BAO GIỜ commit
+.env
+.env.*
+*.key
+secrets.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
