@@ -27,9 +27,39 @@ const BUILTIN_ORIGINS = new Set([
   'https://api.deepl.com',
 ]);
 
-// Key DeepL Free được seed sẵn khi cài extension. Nằm trong chrome.storage.local
-// nên gỡ extension là mất hoàn toàn — xoá được trong trang Cài đặt.
-const DEFAULT_DEEPL_KEY = '16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx';
+/* Origin mà CONTENT SCRIPT được phép proxy qua 'proxyFetch'.
+ * Đây là các endpoint dịch miễn phí, không cần credential. Provider có API key
+ * (OpenAI/Gemini/DeepL) đi qua 'nativeTranslate'/'providerTranslate' — nơi
+ * background tự gắn key — nên content script không bao giờ cần tự dựng request
+ * tới đó. Không giới hạn thì bất kỳ script nào chạy được trong ISOLATED world
+ * của ta cũng mượn được host permission của extension để gọi thẳng API có key. */
+const CONTENT_PROXY_ORIGINS = new Set([
+  'https://translate.googleapis.com',
+  'https://translate.google.com',
+  'https://api.mymemory.translated.net',
+]);
+
+// Header mang credential — content script không được tự đặt.
+const CREDENTIAL_HEADERS = new Set([
+  'authorization',
+  'cookie',
+  'api-key',
+  'x-api-key',
+  'x-goog-api-key',
+  'deepl-auth-key',
+]);
+
+/* KHÔNG bundle bất kỳ API key nào trong source.
+ * Bản <= 4.5.0 seed sẵn một key DeepL Free dùng chung cho mọi người cài
+ * extension. Repo public nên key đó coi như đã lộ, và dùng chung một key còn
+ * làm quota của mọi user dính vào nhau: một người dịch nhiều là cả làng hết
+ * lượt. Từ nay người dùng tự thêm key trong trang Cài đặt.
+ *
+ * SEED_CLEANUP_KEY: cờ migration chạy một lần, gỡ key đã seed khỏi máy user cũ.
+ * Nhận diện theo LABEL chứ không so sánh với chuỗi key — để không phải nhúng
+ * lại chính cái key vừa gỡ vào source. */
+const SEEDED_DEEPL_LABEL = 'DeepL Free (mặc định)';
+const SEED_CLEANUP_KEY = 'tm-seeded-key-removed-v1';
 
 // Trạng thái cooldown/con trỏ xoay vòng key, sống trong bộ nhớ service worker.
 const keyState = createKeyState();
@@ -37,10 +67,21 @@ const keyState = createKeyState();
 // Registry các providerTranslate đang chạy: requestId -> AbortController (NPT-007).
 const inflightRequests = new Map();
 
-// Không đưa bất kỳ mảnh credential nào (kể cả dạng mask [abc…wxyz]) về content script.
+/* Không đưa bất kỳ mảnh credential nào về content script.
+ * Trước đây chỉ xoá dạng mask [abc…wxyz], nhưng thông điệp lỗi của provider
+ * thường kèm nguyên URL hoặc header đã gửi — với Gemini thì key nằm ngay trong
+ * query '?key=...'. Chặn theo cả hình dạng key của từng nhà cung cấp.
+ * Dùng chuỗi thay thế '$1[đã ẩn]' chứ KHÔNG dùng hàm replacer chung: regex nào
+ * không có capture group sẽ truyền offset (một con số) vào tham số thứ hai và
+ * làm hỏng kết quả. */
 function sanitizeProviderError(error) {
   return String(error?.message || error || 'Provider lỗi')
-    .replace(/\[[^\]]*…[^\]]*\]/g, '')
+    .replace(/\[[^\]]*…[^\]]*\]/g, '[đã ẩn]')
+    .replace(/([?&](?:key|api[-_]?key|access[-_]?token|token)=)[^&\s"']+/gi, '$1[đã ẩn]')
+    .replace(/\b(?:Bearer|DeepL-Auth-Key)\s+\S+/gi, '[đã ẩn]')
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, '[đã ẩn]')
+    .replace(/\bAIza[A-Za-z0-9_-]{10,}\b/g, '[đã ẩn]')
+    .replace(/\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}(?::fx)?\b/gi, '[đã ẩn]')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -73,10 +114,24 @@ function normalizeEndpoint(value) {
   return url;
 }
 
+/* Gỡ key DeepL đã được seed sẵn ở các bản <= 4.5.0 khỏi config của user.
+ * Trả về true nếu có thay đổi. Key do người dùng tự thêm (label khác) giữ nguyên. */
+function removeSeededDeeplKey(config) {
+  const deepl = config?.providers?.deepl;
+  if (!deepl || !Array.isArray(deepl.keys)) return false;
+  const kept = deepl.keys.filter(entry => String(entry?.label || '') !== SEEDED_DEEPL_LABEL);
+  if (kept.length === deepl.keys.length) return false;
+  deepl.keys = kept;
+  // Hết key thì tắt provider, tránh mọi lần dịch đều đâm vào lỗi 403.
+  if (!kept.length) deepl.enabled = false;
+  return true;
+}
+
 /* ------------------------------------------------------------------
  * Đọc cấu hình multi-provider. Nếu chưa có (lần cài đầu / sau update):
- *  - seed key DeepL mặc định
+ *  - KHÔNG seed key nào cả (xem ghi chú ở SEEDED_DEEPL_LABEL)
  *  - migrate cài đặt API đơn lẻ của bản cũ (v4.0) sang provider openai
+ * Config đã có sẵn thì chạy migration gỡ key seed đúng một lần.
  * ------------------------------------------------------------------ */
 /* Config được đọc lại từ storage + normalize cho MỖI message (mỗi batch dịch,
  * mỗi lần hỏi trạng thái). Giữ trong bộ nhớ service worker và chỉ bỏ khi
@@ -86,21 +141,28 @@ let configCache = null;
 async function ensureConfig() {
   if (configCache) return configCache;
 
-  const values = await chrome.storage.local.get([CONFIG_STORAGE_KEY, ...Object.values(LEGACY_KEYS)]);
+  const values = await chrome.storage.local.get([
+    CONFIG_STORAGE_KEY,
+    SEED_CLEANUP_KEY,
+    ...Object.values(LEGACY_KEYS),
+  ]);
+
   if (values[CONFIG_STORAGE_KEY]) {
-    configCache = normalizeConfig(values[CONFIG_STORAGE_KEY]);
+    const existing = normalizeConfig(values[CONFIG_STORAGE_KEY]);
+    if (values[SEED_CLEANUP_KEY] !== true) {
+      const removed = removeSeededDeeplKey(existing);
+      await chrome.storage.local.set({
+        [SEED_CLEANUP_KEY]: true,
+        ...(removed ? { [CONFIG_STORAGE_KEY]: existing } : {}),
+      }).catch(() => { /* ghi hỏng: lần khởi động sau thử lại */ });
+    }
+    configCache = existing;
     return configCache;
   }
 
-  const config = normalizeConfig({
-    preferred: 'deepl',
-    providers: {
-      deepl: {
-        enabled: true,
-        keys: [{ key: DEFAULT_DEEPL_KEY, label: 'DeepL Free (mặc định)' }],
-      },
-    },
-  });
+  // Cài mới: không provider nào có key. UI đã có sẵn trạng thái
+  // "Chưa cấu hình provider nào" và nút Quản lý key để dẫn người dùng đi tiếp.
+  const config = normalizeConfig({ preferred: 'deepl', providers: {} });
 
   const legacyKey = String(values[LEGACY_KEYS.apiKey] || '').trim();
   const legacyUrl = String(values[LEGACY_KEYS.apiUrl] || '').trim();
@@ -116,7 +178,7 @@ async function ensureConfig() {
     if (legacyKey) openai.keys = [{ key: legacyKey, label: 'Key từ bản cũ' }];
   }
 
-  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: config });
+  await chrome.storage.local.set({ [CONFIG_STORAGE_KEY]: config, [SEED_CLEANUP_KEY]: true });
   /* Xoá hẳn cấu hình v4.0 sau khi đã migrate. Trước đây chúng nằm lại trong
    * storage vĩnh viễn — trong đó 'tm-native-en-openai-key' là Bearer key THÔ.
    * Một bản sao credential không ai đọc tới là bản sao chỉ chực rò rỉ: nó đã
@@ -145,14 +207,36 @@ async function isRemoteAllowed(url) {
   return chrome.permissions.contains({ origins: [`${url.origin}/*`] });
 }
 
-async function rawFetch(payload) {
+// Bỏ mọi header mang credential khỏi request do content script dựng.
+function stripCredentialHeaders(headers) {
+  const safe = {};
+  for (const [name, value] of Object.entries(headers || {})) {
+    if (CREDENTIAL_HEADERS.has(String(name).toLowerCase())) continue;
+    safe[name] = value;
+  }
+  return safe;
+}
+
+/* options.allowedOrigins: Set origin được phép. Truyền vào khi người gọi KHÔNG
+ * đáng tin (content script). Bỏ trống = gọi nội bộ từ background, cho phép mọi
+ * origin đã qua isRemoteAllowed. */
+async function rawFetch(payload, options = {}) {
   const url = new URL(payload?.url || '');
+  const allowedOrigins = options.allowedOrigins || null;
+
+  if (allowedOrigins && !allowedOrigins.has(url.origin)) {
+    throw new Error(`Content script không được phép gọi ${url.origin}`);
+  }
   if (!(await isRemoteAllowed(url))) {
     throw new Error(`Extension chưa được cấp quyền truy cập ${url.origin}`);
   }
 
   const method = String(payload?.method || 'GET').toUpperCase();
   if (!['GET', 'POST'].includes(method)) throw new Error('Blocked HTTP method');
+
+  const headers = allowedOrigins
+    ? stripCredentialHeaders(payload?.headers)
+    : (payload?.headers || {});
 
   const controller = new AbortController();
   const timeout = Math.max(1000, Math.min(Number(payload?.timeout) || 30000, 70000));
@@ -169,12 +253,17 @@ async function rawFetch(payload) {
   try {
     const response = await fetch(url.href, {
       method,
-      headers: payload?.headers || {},
+      headers,
       body: method === 'GET' ? undefined : payload?.data ?? undefined,
       signal: controller.signal,
       cache: 'no-store',
       credentials: 'omit',
-      redirect: 'follow',
+      /* redirect:'error' chứ không phải 'follow'. Allowlist origin chỉ được kiểm
+       * TRƯỚC khi gửi; với 'follow' thì một endpoint đã whitelist (kể cả custom
+       * endpoint OpenAI-compatible do user thêm) chỉ cần trả 302 là kéo được
+       * request — kèm Authorization header — sang origin bất kỳ, kể cả IP nội bộ.
+       * Provider thật không redirect API call, nên chặn thẳng là an toàn. */
+      redirect: 'error',
     });
 
     // Đọc response theo chunk có cap — endpoint lạ có thể stream payload khổng lồ
@@ -212,7 +301,12 @@ async function rawFetch(payload) {
       ok: false,
       status: 0,
       responseText: '',
-      networkError: error?.name === 'AbortError' ? 'Request timed out' : (error?.message || String(error)),
+      /* networkError đi thẳng về content script qua proxyFetch, nên phải
+       * sanitize như mọi lỗi provider khác: TypeError của fetch thường kèm
+       * nguyên URL, mà URL của Gemini có '?key=...' trong đó. */
+      networkError: error?.name === 'AbortError'
+        ? 'Request timed out'
+        : sanitizeProviderError(error),
     };
   } finally {
     clearTimeout(timer);
@@ -276,6 +370,9 @@ const TRANSLATION_CACHE_FLUSH_MS = 5000;
 // Đủ nhiều entry mới thì ghi ngay, không chờ debounce — service worker có thể
 // bị dọn trước khi timer chạy, mất sạch phần vừa dịch.
 const TRANSLATION_CACHE_FLUSH_AT = 60;
+
+// Contract chung với popup.js/options.js: danh sách template + template đang dùng.
+const TEMPLATE_KEYS = { templates: 'tm-prompt-templates', active: 'tm-active-template' };
 
 const translationCache = new Map();
 let translationCacheEnabled = true;
@@ -348,18 +445,34 @@ function translationCacheGet(key) {
   return value;
 }
 
+/* Chữ ký của prompt template đang dùng.
+ * Template đổi nội dung => prompt đổi => bản dịch đổi, nên nó PHẢI nằm trong
+ * khoá cache. Trước đây không có: người dùng sửa template rồi dịch lại vẫn
+ * nhận đúng bản dịch cũ và tưởng tính năng template hỏng. Hash cả object chứ
+ * không chỉ id, vì sửa nội dung mà giữ nguyên id là trường hợp phổ biến nhất. */
+async function activeTemplateRevision() {
+  const values = await chrome.storage.local
+    .get([TEMPLATE_KEYS.templates, TEMPLATE_KEYS.active])
+    .catch(() => ({}));
+  const activeId = typeof values[TEMPLATE_KEYS.active] === 'string' ? values[TEMPLATE_KEYS.active] : '';
+  if (!activeId) return '';
+  const templates = Array.isArray(values[TEMPLATE_KEYS.templates]) ? values[TEMPLATE_KEYS.templates] : [];
+  const active = templates.find(tpl => tpl?.id === activeId);
+  return active ? hashText(JSON.stringify(active)) : activeId;
+}
+
 /* Tiền tố khoá: mọi thứ làm ĐỔI kết quả dịch phải nằm trong đây, nếu không
  * đổi văn phong/provider xong vẫn nhận lại bản dịch cũ.
  * pageContext (v4.4) được TÁCH khỏi phần hash: title/description đổi theo từng
  * trang nên hash cả object sẽ chia cache theo từng URL (mất hit giữa các trang
  * cùng site). Chỉ giữ `host` ở dạng rõ — cô lập ngữ cảnh giữa các site ("feed"
  * trên MXH khác "feed" trên web thú cưng) nhưng vẫn share cache trong 1 site. */
-function translationCachePrefix(config, sourceLanguage, targetLanguage, pageOptions) {
+function translationCachePrefix(config, sourceLanguage, targetLanguage, pageOptions, promptRevision) {
   const providerId = config?.preferred || '';
   const model = config?.providers?.[providerId]?.model || '';
   const { pageContext, ...styleOptions } = pageOptions || {};
   const contextHost = typeof pageContext?.host === 'string' ? pageContext.host : '';
-  return `${providerId}|${model}|${sourceLanguage || 'auto'}|${targetLanguage}|${hashText(JSON.stringify(styleOptions))}|${contextHost}|`;
+  return `${providerId}|${model}|${sourceLanguage || 'auto'}|${targetLanguage}|${hashText(JSON.stringify(styleOptions))}|${contextHost}|${promptRevision || ''}|`;
 }
 
 /* Tab ẩn danh: extension chạy ở chế độ spanning nên dùng CHUNG service worker
@@ -549,12 +662,13 @@ async function providerTranslate(payload, sender) {
   // Văn phong dịch trang (v4.2): style/dialect/mode/grammar/proper-nouns.
   // normalizePageOptions ép giá trị rác về default; DeepL tự bỏ qua ở tầng providers.
   const pageOptions = normalizePageOptions(payload?.pageOptions);
+  const promptRevision = await activeTemplateRevision();
 
   /* Lọc trước những đoạn đã dịch ở lần trước (tab khác, phiên trước, reload):
    * chỉ phần chưa có mới đi tới provider. Trang tin/diễn đàn lặp lại rất nhiều
    * chuỗi giống nhau nên tỉ lệ trúng thường rất cao. */
   const useCache = translationCacheEnabled && isCacheableSender(sender);
-  const prefix = translationCachePrefix(config, payload?.sourceLanguage, targetLanguage, pageOptions);
+  const prefix = translationCachePrefix(config, payload?.sourceLanguage, targetLanguage, pageOptions, promptRevision);
   const translations = new Array(list.length);
   const missIndexes = [];
   const missTexts = [];
@@ -728,10 +842,23 @@ function arrayBufferToBase64(buffer) {
 
 // Tải ảnh -> { mimeType, imageBase64 }. Timeout 30s, tối đa ~8MB.
 async function fetchImageAsBase64(srcUrl) {
+  /* Chỉ http/https. info.srcUrl của context menu có thể là blob:, data:, hay
+   * filesystem: — trước đây fetch thẳng, tức trang web tự chọn được nội dung
+   * gửi lên Gemini bằng key của người dùng. */
+  let url;
+  try {
+    url = new URL(String(srcUrl || ''));
+  } catch (_) {
+    throw new Error('URL ảnh không hợp lệ');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('Chỉ dịch được ảnh tải qua http/https');
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
-    const response = await fetch(srcUrl, {
+    const response = await fetch(url.href, {
       signal: controller.signal,
       credentials: 'omit',
       redirect: 'follow',
@@ -739,6 +866,11 @@ async function fetchImageAsBase64(srcUrl) {
     });
     if (!response.ok) throw new Error(`Không tải được ảnh (HTTP ${response.status})`);
     const mimeType = (response.headers.get('content-type') || '').split(';')[0].trim() || 'image/png';
+    /* Kiểm SAU khi đã áp fallback 'image/png': server trả text/html hay
+     * application/json thì đó không phải ảnh, đừng đẩy nội dung đó lên Gemini. */
+    if (!/^image\//i.test(mimeType)) {
+      throw new Error(`Nội dung tải về không phải ảnh (${mimeType})`);
+    }
 
     // Đọc theo chunk và abort NGAY khi vượt 8MB — không buffer toàn bộ rồi mới kiểm tra.
     const reader = response.body?.getReader?.();
@@ -784,6 +916,21 @@ async function seedGrantedImageOrigins() {
     try { grantedImageOrigins.add(new URL(pattern).origin); } catch (_) { /* pattern lạ */ }
   }
 }
+
+/* Người dùng thu hồi quyền trong chrome://extensions mà cache vẫn nhớ là "đã
+ * cấp" thì handleImageTranslate bỏ qua bước xin lại quyền và fetch chắc chắn
+ * hỏng. Theo dõi cả hai chiều để cache luôn khớp với quyền thật. */
+chrome.permissions.onRemoved.addListener(permissions => {
+  for (const pattern of permissions?.origins || []) {
+    try { grantedImageOrigins.delete(new URL(pattern).origin); } catch (_) { /* pattern lạ */ }
+  }
+});
+
+chrome.permissions.onAdded.addListener(permissions => {
+  for (const pattern of permissions?.origins || []) {
+    try { grantedImageOrigins.add(new URL(pattern).origin); } catch (_) { /* pattern lạ */ }
+  }
+});
 
 async function handleImageTranslate(info, tab) {
   const srcUrl = String(info?.srcUrl || '');
@@ -833,7 +980,7 @@ async function handleImageTranslate(info, tab) {
 
     await send({ type: 'imageTranslateResult', srcUrl, ok: true, lines: result.lines, mimeType, imageBase64 });
   } catch (error) {
-    let friendly = error?.message || String(error);
+    let friendly = sanitizeProviderError(error);
     if (friendly.includes('IMAGE_NEEDS_GEMINI')) {
       friendly = 'Dịch ảnh cần API key Gemini (bật trong Cài đặt)';
     }
@@ -907,7 +1054,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
   if (info?.menuItemId !== IMAGE_MENU_ID) return;
   handleImageTranslate(info, tab).catch(error =>
-    console.warn('[Native Page Translator] Dịch ảnh thất bại:', error));
+    console.warn('[Native Page Translator] Dịch ảnh thất bại:', sanitizeProviderError(error)));
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -925,7 +1072,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  ensureConfig().catch(error => console.warn('[Native Page Translator] Seed config failed:', error));
+  ensureConfig().catch(error => console.warn('[Native Page Translator] Seed config failed:', sanitizeProviderError(error)));
   registerImageContextMenu();
   seedGrantedImageOrigins().catch(() => {});
 });
@@ -942,8 +1089,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
 
   if (message?.type === 'proxyFetch') {
-    rawFetch(message.payload).then(sendResponse).catch(error => {
-      sendResponse({ ok: false, status: 0, responseText: '', networkError: error?.message || String(error) });
+    /* Content script chỉ được proxy tới endpoint dịch miễn phí, và không được
+     * tự đặt header credential. Popup/options (extension page) là code của
+     * chính ta nên giữ nguyên toàn quyền. */
+    const options = isExtensionPageSender(sender)
+      ? {}
+      : { allowedOrigins: CONTENT_PROXY_ORIGINS };
+    rawFetch(message.payload, options).then(sendResponse).catch(error => {
+      sendResponse({ ok: false, status: 0, responseText: '', networkError: sanitizeProviderError(error) });
     });
     return true;
   }
@@ -971,7 +1124,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'fetchPdf') {
     fetchPdf(message.payload).then(sendResponse).catch(error => {
-      sendResponse({ ok: false, error: error?.message || String(error) });
+      sendResponse({ ok: false, error: sanitizeProviderError(error) });
     });
     return true;
   }
@@ -991,7 +1144,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     ensureTranslationCache()
       .then(() => sendResponse({ ok: true, entries: translationCache.size, enabled: translationCacheEnabled }))
-      .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
+      .catch(error => sendResponse({ ok: false, error: sanitizeProviderError(error) }));
     return true;
   }
 
@@ -1002,13 +1155,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     clearTranslationCache()
       .then(sendResponse)
-      .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
+      .catch(error => sendResponse({ ok: false, error: sanitizeProviderError(error) }));
     return true;
   }
 
   if (message?.type === 'getProviderStatus') {
     providerStatus().then(sendResponse).catch(error => {
-      sendResponse({ ok: false, configured: false, error: error?.message || String(error) });
+      sendResponse({ ok: false, configured: false, error: sanitizeProviderError(error) });
     });
     return true;
   }
@@ -1032,7 +1185,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     chrome.runtime.openOptionsPage().then(() => sendResponse({ ok: true })).catch(error => {
-      sendResponse({ ok: false, error: error?.message || String(error) });
+      sendResponse({ ok: false, error: sanitizeProviderError(error) });
     });
     return true;
   }
@@ -1052,7 +1205,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     broadcastToFrames(tabId, { type: 'setPageLanguage', language: message.language })
       .then(sendResponse)
-      .catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
+      .catch(error => sendResponse({ ok: false, error: sanitizeProviderError(error) }));
     return true;
   }
 
