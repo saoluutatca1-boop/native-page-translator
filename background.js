@@ -484,6 +484,46 @@ async function fetchPdf(payload) {
   }
 }
 
+/* ------------------------------------------------------------------
+ * Adaptive Concurrency Pool (tối đa 3 batch song song, tự động giảm về 2 khi gặp HTTP 429)
+ * ------------------------------------------------------------------ */
+let maxBatchConcurrency = 3;
+let activeBatchRequests = 0;
+const batchQueue = [];
+let concurrencyAdaptTimer = null;
+
+function adaptConcurrencyOnRateLimit() {
+  maxBatchConcurrency = 2;
+  clearTimeout(concurrencyAdaptTimer);
+  concurrencyAdaptTimer = setTimeout(() => {
+    maxBatchConcurrency = 3;
+    processBatchQueue();
+  }, 30000);
+}
+
+async function acquireBatchSlot() {
+  if (activeBatchRequests < maxBatchConcurrency) {
+    activeBatchRequests++;
+    return;
+  }
+  return new Promise(resolve => {
+    batchQueue.push(resolve);
+  });
+}
+
+function releaseBatchSlot() {
+  activeBatchRequests = Math.max(0, activeBatchRequests - 1);
+  processBatchQueue();
+}
+
+function processBatchQueue() {
+  while (batchQueue.length > 0 && activeBatchRequests < maxBatchConcurrency) {
+    activeBatchRequests++;
+    const next = batchQueue.shift();
+    if (typeof next === 'function') next();
+  }
+}
+
 async function providerTranslate(payload, sender) {
   const texts = payload?.texts;
   if (!Array.isArray(texts) || !texts.length) {
@@ -532,6 +572,9 @@ async function providerTranslate(payload, sender) {
     return { ok: true, translations, provider: 'cache', providerLabel: 'Cache', cached: list.length };
   }
 
+  // Chờ slot trong pool 3x adaptive concurrency
+  await acquireBatchSlot();
+
   // Đăng ký AbortController theo requestId: content gửi 'cancelProviderTranslate'
   // khi timeout phía nó hết hạn → request trả phí không chạy tiếp ngầm (NPT-007).
   const requestId = String(payload?.requestId || '');
@@ -564,8 +607,14 @@ async function providerTranslate(payload, sender) {
       providerLabel: result.providerLabel,
       cached: list.length - missTexts.length,
     };
+  } catch (error) {
+    if (String(error?.message || error).includes('429')) {
+      adaptConcurrencyOnRateLimit();
+    }
+    throw error;
   } finally {
     if (requestId) inflightRequests.delete(requestId);
+    releaseBatchSlot();
   }
 }
 

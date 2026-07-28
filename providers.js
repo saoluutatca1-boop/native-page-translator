@@ -1053,7 +1053,7 @@
    *   { cooldowns: Map("providerId\x00key" -> timestamp), pointers: Map(providerId -> số) }
    * ------------------------------------------------------------------ */
   function createKeyState() {
-    return { cooldowns: new Map(), pointers: new Map() };
+    return { cooldowns: new Map(), pointers: new Map(), nextDispatchTime: 0 };
   }
 
   function cooldownKey(providerId, key) {
@@ -1093,6 +1093,17 @@
         // Reserve NGAY khi chọn key (trước await): các caller song song đọc pointer
         // sau thởi điểm này sẽ lấy key kế tiếp — tránh dồn request vào 1 key.
         if (keyPool.length > 1) state.pointers.set(providerId, (index + 1) % keyPool.length);
+
+        // Micro-staggering (30ms): trì hoãn 30ms giữa các dispatches song song / xoay key
+        // để tránh HTTP burst spikes gây ra lỗi 429.
+        const STAGGER_MS = 30;
+        const nowTime = currentTime();
+        const scheduledTime = Math.max(nowTime, state.nextDispatchTime || 0);
+        state.nextDispatchTime = scheduledTime + STAGGER_MS;
+        const delayMs = scheduledTime - nowTime;
+        if (delayMs > 0) {
+          await wait(delayMs);
+        }
 
         /* Nghẽn tạm thời phía provider (5xx/408/425) thì thử lại NGAY trên cùng
          * key với backoff, tôn trọng Retry-After nếu có. Hết lượt mới hạ xuống

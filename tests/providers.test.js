@@ -1406,6 +1406,39 @@ async function run() {
     );
   }
 
+  // 72. Micro-staggering (30ms): các dispatch song song được giãn cách 30ms
+  {
+    const state = P.createKeyState();
+    const simulatedNow = () => 1000;
+    const fetchText = async () => ({
+      status: 200,
+      bodyText: JSON.stringify({ translations: [{ text: 'ok' }] }),
+    });
+
+    const sleepCalls = [];
+    const trackingSleep = async (ms) => {
+      sleepCalls.push(ms);
+    };
+
+    const p1 = P.translateBatchWithRotation({
+      config: BASE_CONFIG, texts: ['a'], targetLanguage: 'en',
+      fetchText, keyState: state, now: simulatedNow, sleep: trackingSleep,
+    });
+    const p2 = P.translateBatchWithRotation({
+      config: BASE_CONFIG, texts: ['b'], targetLanguage: 'en',
+      fetchText, keyState: state, now: simulatedNow, sleep: trackingSleep,
+    });
+    const p3 = P.translateBatchWithRotation({
+      config: BASE_CONFIG, texts: ['c'], targetLanguage: 'en',
+      fetchText, keyState: state, now: simulatedNow, sleep: trackingSleep,
+    });
+
+    await Promise.all([p1, p2, p3]);
+
+    assert.deepEqual(sleepCalls, [30, 60], `sleepCalls phải là [30, 60], nhận được: ${JSON.stringify(sleepCalls)}`);
+    assert.equal(state.nextDispatchTime, 1090);
+  }
+
   console.log('Tất cả test providers.js đều PASS ✔');
 }
 
