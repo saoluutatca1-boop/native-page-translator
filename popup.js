@@ -26,7 +26,9 @@ const TEMPLATE_KEYS = { templates: 'tm-prompt-templates', active: 'tm-active-tem
 
 // Đúng thứ tự content_scripts trong manifest — reinjection thiếu file nào thì
 // tính năng của file đó chết lặng lẽ sau khi khôi phục.
-const CONTENT_SCRIPT_FILES = ['fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js'];
+// icons.js PHẢI đứng đầu: popup.js và content.js đều gọi globalThis.NPT_ICONS
+// không optional-chaining, thiếu nó là toolbar trên trang vỡ ngay khi reinject.
+const CONTENT_SCRIPT_FILES = ['icons.js', 'fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js'];
 
 // Trang hiện tại: đọc từ content script chứ không đoán theo lần bấm gần nhất.
 let activeTab = null;
@@ -70,8 +72,8 @@ async function ensureInjected(tabId) {
     return true;
   } catch (_) {
     try {
-      // Tiêm ĐỦ dependency theo đúng thứ tự manifest: thiếu glossary/doc-detect/tts
-      // thì glossary, chế độ tài liệu và nút đọc chết sau khi reinject.
+      // Tiêm ĐỦ dependency theo đúng thứ tự manifest: thiếu icons/glossary/doc-detect/tts
+      // thì icon, glossary, chế độ tài liệu và nút đọc chết sau khi reinject.
       await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: CONTENT_SCRIPT_FILES });
     } catch (_) {
       return false;
