@@ -4686,6 +4686,310 @@
     setTimeout(tick, HEARTBEAT_IDLE_MS);
   }
 
+  /* ------------------------------------------------------------------
+   * OCR màn hình (Quét chữ)
+   * ------------------------------------------------------------------ */
+  let ocrOverlay = null;
+
+  function closeOcrOverlay() {
+    if (ocrOverlay) {
+      ocrOverlay.remove();
+      ocrOverlay = null;
+    }
+  }
+
+  function startOcrMode() {
+    if (ocrOverlay) closeOcrOverlay();
+
+    ocrOverlay = document.createElement('div');
+    Object.assign(ocrOverlay.style, {
+      position: 'fixed',
+      top: '0', left: '0', width: '100vw', height: '100vh',
+      zIndex: '2147483647',
+      cursor: 'crosshair',
+      background: 'rgba(0, 0, 0, 0.3)',
+      userSelect: 'none'
+    });
+
+    const selectionBox = document.createElement('div');
+    Object.assign(selectionBox.style, {
+      position: 'absolute',
+      border: '2px dashed #fff',
+      background: 'rgba(255, 255, 255, 0.1)',
+      display: 'none',
+      pointerEvents: 'none'
+    });
+    ocrOverlay.appendChild(selectionBox);
+
+    const header = document.createElement('div');
+    header.textContent = 'Kéo chuột để chọn vùng quét chữ (Nhấn Esc để thoát)';
+    Object.assign(header.style, {
+      position: 'absolute',
+      top: '20px', left: '50%',
+      transform: 'translateX(-50%)',
+      background: 'rgba(0, 0, 0, 0.7)',
+      color: '#fff',
+      padding: '8px 16px',
+      borderRadius: '4px',
+      fontSize: '14px',
+      fontFamily: 'sans-serif',
+      pointerEvents: 'none'
+    });
+    ocrOverlay.appendChild(header);
+
+    let isSelecting = false;
+    let startX = 0, startY = 0;
+
+    ocrOverlay.addEventListener('mousedown', (e) => {
+      isSelecting = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      selectionBox.style.display = 'block';
+      selectionBox.style.left = startX + 'px';
+      selectionBox.style.top = startY + 'px';
+      selectionBox.style.width = '0px';
+      selectionBox.style.height = '0px';
+    });
+
+    ocrOverlay.addEventListener('mousemove', (e) => {
+      if (!isSelecting) return;
+      const currentX = e.clientX;
+      const currentY = e.clientY;
+      const x = Math.min(startX, currentX);
+      const y = Math.min(startY, currentY);
+      const w = Math.abs(currentX - startX);
+      const h = Math.abs(currentY - startY);
+
+      selectionBox.style.left = x + 'px';
+      selectionBox.style.top = y + 'px';
+      selectionBox.style.width = w + 'px';
+      selectionBox.style.height = h + 'px';
+    });
+
+    ocrOverlay.addEventListener('mouseup', async (e) => {
+      if (!isSelecting) return;
+      isSelecting = false;
+
+      const currentX = e.clientX;
+      const currentY = e.clientY;
+      const x = Math.min(startX, currentX);
+      const y = Math.min(startY, currentY);
+      const w = Math.abs(currentX - startX);
+      const h = Math.abs(currentY - startY);
+
+      if (w < 10 || h < 10) {
+        selectionBox.style.display = 'none';
+        return;
+      }
+
+      header.textContent = 'Đang trích xuất chữ...';
+
+      // Ẩn overlay đi xíu để background chụp màn hình ko dính overlay mờ
+      ocrOverlay.style.opacity = '0';
+
+      try {
+        // Đợi tí cho reflow
+        await new Promise(r => setTimeout(r, 100));
+
+        const captureResponse = await chrome.runtime.sendMessage({
+          type: 'ocrTakeScreenshot'
+        });
+
+        ocrOverlay.style.opacity = '1';
+
+        if (!captureResponse || !captureResponse.ok) {
+          throw new Error(captureResponse?.error || 'Lỗi chụp màn hình');
+        }
+
+        const response = await chrome.runtime.sendMessage({
+          type: 'ocrProcessScreenshot',
+          payload: {
+            dataUrl: captureResponse.dataUrl,
+            rect: { x, y, width: w, height: h },
+            viewport: { width: window.innerWidth, height: window.innerHeight }
+          }
+        });
+
+        if (!response || !response.ok) {
+          throw new Error(response?.error || 'Lỗi chụp màn hình');
+        }
+
+        // Lọc các bounding box nằm trong vùng chọn
+        const selectedLines = [];
+        const vW = window.innerWidth;
+        const vH = window.innerHeight;
+
+        const normX = x / vW * 1000;
+        const normY = y / vH * 1000;
+        const normW = w / vW * 1000;
+        const normH = h / vH * 1000;
+        const normRight = normX + normW;
+        const normBottom = normY + normH;
+
+        for (const line of response.lines || []) {
+          if (!line.box) {
+            selectedLines.push(line.text);
+            continue;
+          }
+          const [ymin, xmin, ymax, xmax] = line.box;
+          // Có giao nhau với vùng chọn ko
+          if (xmin < normRight && xmax > normX && ymin < normBottom && ymax > normY) {
+            selectedLines.push(line.text);
+          }
+        }
+
+        showOcrResultPanel(selectedLines.join('\n'));
+
+      } catch (err) {
+        ocrOverlay.style.opacity = '1';
+        alert('Lỗi OCR: ' + err.message);
+      } finally {
+        closeOcrOverlay();
+      }
+    });
+
+    document.body.appendChild(ocrOverlay);
+  }
+
+  function showOcrResultPanel(text) {
+    const panel = document.createElement('div');
+    const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+
+    Object.assign(panel.style, {
+      position: 'fixed',
+      bottom: '20px',
+      right: '20px',
+      width: '300px',
+      maxHeight: '400px',
+      background: isDark ? '#1f2937' : '#ffffff',
+      color: isDark ? '#f3f4f6' : '#111827',
+      border: `1px solid ${isDark ? '#374151' : '#e5e7eb'}`,
+      borderRadius: '8px',
+      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+      zIndex: '2147483647',
+      display: 'flex',
+      flexDirection: 'column',
+      fontFamily: 'system-ui, sans-serif'
+    });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      padding: '8px 12px',
+      borderBottom: `1px solid ${isDark ? '#374151' : '#e5e7eb'}`,
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      fontWeight: '600',
+      fontSize: '14px',
+      cursor: 'move',
+      userSelect: 'none'
+    });
+    header.textContent = 'Kết quả OCR';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    Object.assign(closeBtn.style, {
+      background: 'none', border: 'none', cursor: 'pointer',
+      color: isDark ? '#9ca3af' : '#6b7280',
+      fontSize: '14px', padding: '0 4px'
+    });
+    closeBtn.onclick = () => panel.remove();
+    header.appendChild(closeBtn);
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    Object.assign(textarea.style, {
+      flex: '1',
+      minHeight: '150px',
+      margin: '12px',
+      padding: '8px',
+      background: isDark ? '#111827' : '#f9fafb',
+      color: 'inherit',
+      border: `1px solid ${isDark ? '#374151' : '#d1d5db'}`,
+      borderRadius: '4px',
+      resize: 'vertical',
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      lineHeight: '1.5'
+    });
+
+    const footer = document.createElement('div');
+    Object.assign(footer.style, {
+      padding: '0 12px 12px 12px',
+      display: 'flex',
+      justifyContent: 'flex-end'
+    });
+
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'Copy tất cả';
+    Object.assign(copyBtn.style, {
+      background: '#4f46e5',
+      color: '#fff',
+      border: 'none',
+      padding: '6px 12px',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      fontSize: '13px',
+      fontWeight: '500'
+    });
+    copyBtn.onclick = async () => {
+      await navigator.clipboard.writeText(textarea.value);
+      copyBtn.textContent = 'Đã copy!';
+      setTimeout(() => { copyBtn.textContent = 'Copy tất cả'; }, 2000);
+    };
+    footer.appendChild(copyBtn);
+
+    panel.appendChild(header);
+    panel.appendChild(textarea);
+    panel.appendChild(footer);
+
+    // Drag logic
+    let isDragging = false;
+    let dragX = 0, dragY = 0;
+
+    const onMouseMove = (e) => {
+      if (!isDragging) return;
+      panel.style.left = (e.clientX - dragX) + 'px';
+      panel.style.top = (e.clientY - dragY) + 'px';
+      panel.style.bottom = 'auto';
+      panel.style.right = 'auto';
+    };
+
+    const onMouseUp = () => {
+      isDragging = false;
+    };
+
+    header.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      const rect = panel.getBoundingClientRect();
+      dragX = e.clientX - rect.left;
+      dragY = e.clientY - rect.top;
+    });
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    // Cleanup listeners when panel is removed
+    const originalRemove = panel.remove.bind(panel);
+    panel.remove = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      originalRemove();
+    };
+
+    document.body.appendChild(panel);
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeOcrOverlay();
+  });
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === 'startOcrMode') {
+      startOcrMode();
+    }
+  });
+
   function initInputTranslator() {
     if (!document.documentElement || document.getElementById('tm-native-en-helper-host')) return;
     if (isSiteBlacklisted()) return; // Site bị chặn: không tạo nút ✨ EN.
@@ -4695,6 +4999,4 @@
 
   initInputTranslator();
 })();
-
-
 })();

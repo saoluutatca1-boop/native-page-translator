@@ -52,6 +52,10 @@
     "translate-original": {
       "suggested_key": { "default": "Alt+O" },
       "description": "Hiện lại bản gốc"
+    },
+    "scan-ocr": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Quét chữ trên trang (OCR)"
     }
   },
   "options_ui": {

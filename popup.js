@@ -434,6 +434,16 @@ function initTabContext() {
       chrome.tabs.create({ url: `${chrome.runtime.getURL('pdf-viewer.html')}?src=${encodeURIComponent(url)}` });
     });
   }
+
+  const ocrButton = $('#btnOcr');
+  if (ocrButton) {
+    ocrButton.addEventListener('click', () => {
+      if (activeTab?.id) {
+        chrome.tabs.sendMessage(activeTab.id, { type: 'startOcrMode' }).catch(() => {});
+      }
+      window.close();
+    });
+  }
   if (!/^https?:\/\//i.test(url)) {
     for (const control of [$('#btnSummarize'), $('#siteAuto'), $('#siteBlocked'),
       ...document.querySelectorAll('[data-lang]')]) {
