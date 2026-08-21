@@ -40,7 +40,11 @@
 
   function detectByUrl(urlString) {
     const url = new URL(String(urlString));
-    const hostname = url.hostname.toLowerCase();
+    /* KNOWN_DOC_HOSTNAMES so khớp CHÍNH XÁC nên phải bỏ tiền tố 'www.' trước:
+     * trước đây 'www.npmjs.com', 'www.stackoverflow.com' đều trượt dù đúng là
+     * trang tài liệu. Bỏ trước cả DOC_SUBDOMAIN_PREFIXES để 'www.docs.x.com'
+     * vẫn vào nhánh 'docs.*'. */
+    const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
     const path = String(url.pathname || '/').toLowerCase();
 
     if (KNOWN_DOC_HOSTNAMES.has(hostname)) return hostname;

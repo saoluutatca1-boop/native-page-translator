@@ -3,13 +3,20 @@
  *
  * - speak(text, lang, rate): chọn voice khớp 'vi'/'en' (fallback voice chuẩn);
  *   nếu máy không có giọng tiếng Việt (vi-VN), tự động dùng Google Translate TTS
- *   fallback để phát đúng 100% giọng Việt tự nhiên thay vì bị nhại giọng Anh.
+ *   fallback để phát đúng giọng Việt thay vì bị nhại giọng Anh.
  * - stop(), isSpeaking().
+ *
+ * LƯU Ý RIÊNG TƯ: nhánh fallback gửi ĐOẠN VĂN BẢN đang đọc tới endpoint
+ * translate_tts của Google. Đây là API không chính thức (có thể bị chặn theo
+ * rate-limit bất kỳ lúc nào) và chỉ chạy khi máy KHÔNG có giọng vi-VN.
  * ====================================================================== */
 (function attachTts(global) {
   'use strict';
 
   const MAX_CHUNK_CHARS = 200;
+  const TTS_ORIGIN = 'https://translate.google.com';
+  const TTS_PATH = '/translate_tts';
+
   let speaking = false;
   let currentAudio = null;
 
@@ -88,6 +95,19 @@
     speaking = false;
   }
 
+  /* Dựng URL bằng URL + searchParams thay vì nối chuỗi tay.
+   * Phiên bản cũ nối chuỗi và bị lọt một cặp {{ }} vào giữa template literal,
+   * đóng sai chỗ ngay trước &client=, nên new Audio() nhận một URL tương đối
+   * và fallback giọng Việt không bao giờ phát được. */
+  function buildTtsUrl(text, targetLang) {
+    const url = new URL(TTS_PATH, TTS_ORIGIN);
+    url.searchParams.set('ie', 'UTF-8');
+    url.searchParams.set('client', 'tw-ob');
+    url.searchParams.set('tl', targetLang);
+    url.searchParams.set('q', String(text ?? ''));
+    return url.href;
+  }
+
   function speakWithFallbackAudio(chunks, lang, rate) {
     if (!chunks.length) {
       speaking = false;
@@ -95,7 +115,7 @@
     }
     const chunk = chunks.shift();
     const targetLang = lang === 'vi' ? 'vi' : 'en';
-    const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${targetLang}&client=tw-ob&q=${encodeURIComponent(chunk)}`;
+    const audioUrl = buildTtsUrl(chunk, targetLang);
 
     try {
       const audio = new Audio(audioUrl);
@@ -134,7 +154,7 @@
     const wanted = String(lang || '').toLowerCase();
     const isVi = wanted.startsWith('vi');
 
-    // Nếu đọc tiếng Việt nhưng máy không có sẵn giọng đọc tiếng Việt -> Dùng Audio Fallback Google Translate chuẩn giọng Việt 100%
+    // Đọc tiếng Việt nhưng máy không có sẵn giọng vi-VN -> dùng Audio fallback.
     if (isVi && !voice && typeof Audio !== 'undefined') {
       speaking = true;
       speakWithFallbackAudio(chunks, lang, rate);
@@ -168,7 +188,7 @@
     return speaking && (synthSpeaking || audioSpeaking);
   }
 
-  const api = { speak, stop, isSpeaking, chunkText, pickVoice, MAX_CHUNK_CHARS };
+  const api = { speak, stop, isSpeaking, chunkText, pickVoice, buildTtsUrl, MAX_CHUNK_CHARS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.NPT_TTS = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
