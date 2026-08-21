@@ -14,6 +14,7 @@ const {
   translateBatchWithRotation,
   summarizeWithRotation,
   translateVisionWithRotation,
+  ocrVisionWithRotation,
   createKeyState,
 } = globalThis.NPT_PROVIDERS;
 
@@ -841,6 +842,45 @@ async function handleImageTranslate(info, tab) {
   }
 }
 
+async function handleOcrTakeScreenshot(sender) {
+  const tabId = sender.tab?.id;
+  if (!Number.isInteger(tabId)) return { ok: false, error: 'No active tab' };
+
+  try {
+    const dataUrl = await chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' });
+    if (!dataUrl) {
+      return { ok: false, error: 'Không thể chụp màn hình' };
+    }
+    return { ok: true, dataUrl };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+async function handleOcrProcessScreenshot(payload, sender) {
+  try {
+    const mimeType = 'image/png';
+    const imageBase64 = payload.dataUrl.replace(/^data:image\/png;base64,/, '');
+
+    const config = await ensureConfig();
+    const result = await ocrVisionWithRotation({
+      config,
+      mimeType,
+      imageBase64,
+      keyState,
+      fetchText: providerFetchText,
+    });
+
+    return { ok: true, lines: result.lines };
+  } catch (error) {
+    let friendly = error?.message || String(error);
+    if (friendly.includes('IMAGE_NEEDS_GEMINI')) {
+      friendly = 'Quét chữ cần API key Gemini (bật trong Cài đặt)';
+    }
+    return { ok: false, error: friendly };
+  }
+}
+
 // Click menu PDF: mở pdf-viewer.html kèm ?src=<url pdf>. Kiểm tra lại đuôi .pdf
 // bằng regex phòng trường hợp documentUrlPatterns/targetUrlPatterns không khớp.
 function handlePdfMenuClick(info) {
@@ -863,6 +903,12 @@ const COMMAND_LANGUAGE = {
 };
 
 chrome.commands.onCommand.addListener(async (command) => {
+  if (command === 'scan-ocr') {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!Number.isInteger(tab?.id)) return;
+    chrome.tabs.sendMessage(tab.id, { type: 'startOcrMode' }).catch(() => {});
+    return;
+  }
   const language = COMMAND_LANGUAGE[command];
   if (!language) return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -971,6 +1017,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'fetchPdf') {
     fetchPdf(message.payload).then(sendResponse).catch(error => {
+      sendResponse({ ok: false, error: error?.message || String(error) });
+    });
+    return true;
+  }
+
+  if (message?.type === 'ocrTakeScreenshot') {
+    handleOcrTakeScreenshot(sender).then(sendResponse).catch(error => {
+      sendResponse({ ok: false, error: error?.message || String(error) });
+    });
+    return true;
+  }
+
+  if (message?.type === 'ocrProcessScreenshot') {
+    handleOcrProcessScreenshot(message.payload, sender).then(sendResponse).catch(error => {
       sendResponse({ ok: false, error: error?.message || String(error) });
     });
     return true;

@@ -1445,6 +1445,90 @@
       .filter(item => item.original || item.translated);
   }
 
+  // Dựng request OCR thuần bằng Gemini vision (không dịch).
+  function buildOcrVisionRequest({ providerConfig, apiKey, mimeType, imageBase64 }) {
+    const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+    const instructions = `You are a pure OCR engine. Transcribe every visible text line in the image in reading order exactly as it appears. Do not translate. Pay special attention to exact Vietnamese diacritics and distinctions between 'i', 'I', and 'l'. Return ONLY a JSON array [{"box":[ymin,xmin,ymax,xmax],"text":"..."}]. "box" is the bounding box of that text line in the image: 4 integers normalized to the 0-1000 range, in ymin,xmin,ymax,xmax order. If no text found return [].`;
+    const prompt = `Transcribe the text in this image with per-line bounding boxes exactly as it appears.`;
+
+    return {
+      url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: instructions }] },
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: String(mimeType || 'image/png'), data: String(imageBase64 || '') } },
+          ],
+        }],
+        generationConfig: { temperature: 0.1 },
+        safetySettings: GEMINI_SAFETY_SETTINGS,
+      }),
+    };
+  }
+
+  // Parse mảng [{text, box?}] từ text Gemini trả về. Lỗi -> throw.
+  function parseOcrVisionLines(raw) {
+    const parsed = parseJsonArrayText(raw);
+    if (!parsed) throw new Error('Gemini: không parse được mảng OCR từ ảnh');
+    return parsed
+      .filter(item => item && typeof item.text === 'string')
+      .map(item => ({
+        text: item.text.trim(),
+        box: Array.isArray(item.box) && item.box.length === 4 && item.box.every(n => Number.isFinite(Number(n)))
+          ? item.box.map(Number)
+          : null,
+      }))
+      .filter(item => item.text);
+  }
+
+  // OCR thuần (không dịch) qua rotation key. Ép config chỉ còn gemini.
+  async function ocrVisionWithRotation({ config, mimeType, imageBase64, fetchText, keyState, now, sleep }) {
+    if (!imageBase64) throw new Error('Không có dữ liệu ảnh');
+
+    const gemini = config?.providers?.gemini;
+    if (!gemini?.enabled || !gemini.keys?.length) {
+      throw new Error('IMAGE_NEEDS_GEMINI');
+    }
+    const geminiOnlyConfig = {
+      ...config,
+      preferred: 'gemini',
+      providers: { gemini },
+    };
+
+    const outcome = await withKeyRotation({
+      config: geminiOnlyConfig,
+      keyState,
+      now,
+      sleep,
+      attempt: async ({ providerConfig, apiKey }) => {
+        const request = buildOcrVisionRequest({ providerConfig, apiKey, mimeType, imageBase64 });
+        const response = await fetchText(request);
+        const verdict = classifyResponse({
+          providerId: 'gemini',
+          status: response.status,
+          bodyText: response.bodyText,
+          retryAfterMs: response.retryAfterMs,
+        });
+        return { verdict };
+      },
+    });
+
+    return {
+      lines: parseOcrVisionLines(outcome.verdict.text),
+      provider: outcome.provider,
+      providerLabel: outcome.providerLabel,
+      keyMasked: outcome.keyMasked,
+    };
+  }
+
   // Rotation key giống translateBatchWithRotation nhưng ép config chỉ còn gemini.
   async function translateVisionWithRotation({ config, mimeType, imageBase64, targetLanguage, fetchText, keyState, now, sleep }) {
     if (!imageBase64) throw new Error('Không có dữ liệu ảnh');
@@ -1526,6 +1610,9 @@
     buildVisionRequest,
     parseVisionLines,
     translateVisionWithRotation,
+    buildOcrVisionRequest,
+    parseOcrVisionLines,
+    ocrVisionWithRotation,
     createKeyState,
     parseRetryAfter,
   };
