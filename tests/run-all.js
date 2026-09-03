@@ -67,6 +67,11 @@ function main() {
     for (const file of manifest.content_scripts?.[0]?.js || []) {
       if (!fs.existsSync(path.join(root, file))) throw new Error(`content script thiếu file: ${file}`);
     }
+    const commands = manifest.commands || {};
+    const suggestedKeys = Object.entries(commands).filter(([_, cmd]) => cmd?.suggested_key);
+    if (suggestedKeys.length > 4) {
+      throw new Error(`quá 4 phím tắt mặc định trong commands (Chrome tối đa 4, hiện có ${suggestedKeys.length})`);
+    }
     console.log(`✔ manifest.json hợp lệ (v${manifest.version})`);
   } catch (error) {
     console.log(`✘ manifest.json — ${error.message}`);
