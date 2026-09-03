@@ -847,7 +847,14 @@ async function handleOcrTakeScreenshot(sender) {
   if (!Number.isInteger(tabId)) return { ok: false, error: 'No active tab' };
 
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' });
+    let dataUrl;
+    try {
+      const windowId = Number.isInteger(sender.tab?.windowId) ? sender.tab.windowId : null;
+      dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+    } catch (_) {
+      // Fallback: chụp cửa sổ active hiện tại
+      dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+    }
     if (!dataUrl) {
       return { ok: false, error: 'Không thể chụp màn hình' };
     }
@@ -860,7 +867,7 @@ async function handleOcrTakeScreenshot(sender) {
 async function handleOcrProcessScreenshot(payload, sender) {
   try {
     const mimeType = 'image/png';
-    const imageBase64 = payload.dataUrl.replace(/^data:image\/png;base64,/, '');
+    const imageBase64 = String(payload?.dataUrl || '').replace(/^data:image\/\w+;base64,/, '');
 
     const config = await ensureConfig();
     const result = await ocrVisionWithRotation({
@@ -871,7 +878,7 @@ async function handleOcrProcessScreenshot(payload, sender) {
       fetchText: providerFetchText,
     });
 
-    return { ok: true, lines: result.lines };
+    return { ok: true, text: result.text, lines: result.lines };
   } catch (error) {
     let friendly = error?.message || String(error);
     if (friendly.includes('IMAGE_NEEDS_GEMINI')) {
@@ -905,8 +912,18 @@ const COMMAND_LANGUAGE = {
 chrome.commands.onCommand.addListener(async (command) => {
   if (command === 'scan-ocr') {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!Number.isInteger(tab?.id)) return;
-    chrome.tabs.sendMessage(tab.id, { type: 'startOcrMode' }).catch(() => {});
+    if (!Number.isInteger(tab?.id) || !/^https?:\/\//i.test(tab.url || '')) return;
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: 'startOcrMode' });
+    } catch (_) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['icons.js', 'fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js'],
+        });
+        await chrome.tabs.sendMessage(tab.id, { type: 'startOcrMode' });
+      } catch (_) {}
+    }
     return;
   }
   const language = COMMAND_LANGUAGE[command];

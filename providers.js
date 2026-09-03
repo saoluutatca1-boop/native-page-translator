@@ -131,6 +131,23 @@
     { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
   ];
 
+  // Cấu hình generation cho Gemini: temperature thấp (0.1) cho dịch thuật chuẩn xác.
+  // Thinking chỉ bật/tắt đúng cú pháp theo từng thế hệ model để tránh lỗi HTTP 400 INVALID_ARGUMENT:
+  // - Dòng 3.x (Gemini 3): dùng thinkingLevel: 'low' (dòng 3 không hỗ trợ thinkingBudget).
+  // - Dòng 2.5: dùng thinkingBudget: 0 để tắt reasoning.
+  // - Dòng 1.5, 2.0 hoặc model khác: không gửi thinkingConfig (Google API sẽ từ chối nếu gửi).
+  function buildGeminiGenerationConfig(model, temperature = 0.1) {
+    const config = { temperature };
+    const m = String(model || '').toLowerCase();
+    if (/3\./.test(m) || /gemini-3/.test(m)) {
+      config.thinkingConfig = { thinkingLevel: 'low' };
+    } else if (/2\.5/.test(m)) {
+      config.thinkingConfig = { thinkingBudget: 0 };
+    }
+    return config;
+  }
+
+
   /* ------------------------------------------------------------------
    * Cấu hình lưu trong chrome.storage.local (xóa extension là mất hết).
    * {
@@ -560,19 +577,16 @@
     }
 
     if (kind === 'gemini') {
-      const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
-      // Dịch thuật không cần suy luận: tắt thinking để tiết kiệm token.
-      const generationConfig = {
-        temperature: 0.1,
-        thinkingConfig: { thinkingBudget: 0 }
-      };
+      const rawModel = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      const model = rawModel.replace(/^models\//i, '');
+      const generationConfig = buildGeminiGenerationConfig(model, 0.1);
       return {
         url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         method: 'POST',
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
+          'x-goog-api-key': String(apiKey || '').trim(),
         },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: instructions }] },
@@ -721,7 +735,15 @@
       let detail = '';
       try {
         const data = JSON.parse(bodyText || '{}');
-        detail = data?.error?.message || data?.message || data?.detail || '';
+        const violations = Array.isArray(data?.error?.details)
+          ? data.error.details
+              .flatMap(d => d?.fieldViolations || [])
+              .filter(v => v?.description || v?.field)
+              .map(v => `${v.field ? v.field + ': ' : ''}${v.description || ''}`.trim())
+              .filter(Boolean)
+              .join('; ')
+          : '';
+        detail = violations || data?.error?.message || data?.message || data?.detail || '';
       } catch (_) { /* bỏ qua */ }
       return {
         kind: 'providerFailed',
@@ -932,18 +954,16 @@
     const prompt = JSON.stringify(texts);
 
     if (kind === 'gemini') {
-      const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
-      const generationConfig = {
-        temperature: 0.1,
-        thinkingConfig: { thinkingBudget: 0 }
-      };
+      const rawModel = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      const model = rawModel.replace(/^models\//i, '');
+      const generationConfig = buildGeminiGenerationConfig(model, 0.1);
       return {
         url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         method: 'POST',
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
+          'x-goog-api-key': String(apiKey || '').trim(),
         },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: instructions }] },
@@ -1281,18 +1301,16 @@
     const prompt = String(text || '');
 
     if (kind === 'gemini') {
-      const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
-      const generationConfig = {
-        temperature: 0.1,
-        thinkingConfig: { thinkingBudget: 0 }
-      };
+      const rawModel = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      const model = rawModel.replace(/^models\//i, '');
+      const generationConfig = buildGeminiGenerationConfig(model, 0.1);
       return {
         url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         method: 'POST',
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
+          'x-goog-api-key': String(apiKey || '').trim(),
         },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: instructions }] },
@@ -1400,7 +1418,8 @@
     const targetName = VISION_TARGET[String(targetLanguage || '').toLowerCase()];
     if (!targetName) throw new Error('Ngôn ngữ đích không hỗ trợ');
 
-    const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+    const rawModel = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+    const model = rawModel.replace(/^models\//i, '');
     const instructions = `You are an OCR + translation engine. Transcribe every visible text line in the image in reading order, then translate each line into ${targetName} naturally. Return ONLY a JSON array [{"box":[ymin,xmin,ymax,xmax],"original":"...","translated":"..."}]. "box" is the bounding box of that text line in the image: 4 integers normalized to the 0-1000 range, in ymin,xmin,ymax,xmax order. If no text found return [].`;
     const prompt = `Transcribe the text in this image with per-line bounding boxes and translate it into ${targetName}.`;
 
@@ -1410,7 +1429,7 @@
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
+        'x-goog-api-key': String(apiKey || '').trim(),
       },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: instructions }] },
@@ -1447,9 +1466,10 @@
 
   // Dựng request OCR thuần bằng Gemini vision (không dịch).
   function buildOcrVisionRequest({ providerConfig, apiKey, mimeType, imageBase64 }) {
-    const model = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
-    const instructions = `You are a pure OCR engine. Transcribe every visible text line in the image in reading order exactly as it appears. Do not translate. Pay special attention to exact Vietnamese diacritics and distinctions between 'i', 'I', and 'l'. Return ONLY a JSON array [{"box":[ymin,xmin,ymax,xmax],"text":"..."}]. "box" is the bounding box of that text line in the image: 4 integers normalized to the 0-1000 range, in ymin,xmin,ymax,xmax order. If no text found return [].`;
-    const prompt = `Transcribe the text in this image with per-line bounding boxes exactly as it appears.`;
+    const rawModel = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+    const model = rawModel.replace(/^models\//i, '');
+    const instructions = `You are an accurate OCR engine. Transcribe all visible text in this image accurately and in natural reading order. Preserve original line breaks, punctuation, numbers, and exact Vietnamese diacritics. Do not translate, explain, or add commentary. Return ONLY the transcribed text.`;
+    const prompt = `Transcribe all text visible in this image accurately.`;
 
     return {
       url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -1457,7 +1477,7 @@
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
+        'x-goog-api-key': String(apiKey || '').trim(),
       },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: instructions }] },
@@ -1474,19 +1494,31 @@
     };
   }
 
-  // Parse mảng [{text, box?}] từ text Gemini trả về. Lỗi -> throw.
+  // Parse text từ phản hồi OCR của Gemini: hỗ trợ cả plain text lẫn JSON format.
+  function parseOcrVisionText(raw) {
+    if (!raw || typeof raw !== 'string') return '';
+    const trimmed = raw.trim();
+    if (!trimmed) return '';
+
+    // Nếu Gemini trả về JSON array [{text}] hoặc ["line1", "line2"]
+    const parsed = parseJsonArrayText(trimmed);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed
+        .map(item => (typeof item === 'string' ? item : item?.text || item?.original || ''))
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    // Gọt bỏ code block markdown nếu model có bọc ```...```
+    const unfenced = trimmed.replace(/^```(?:text|json)?\s*\n?|\n?```$/gi, '').trim();
+    return unfenced;
+  }
+
+  // Parse dòng OCR phục vụ tương thích cũ.
   function parseOcrVisionLines(raw) {
-    const parsed = parseJsonArrayText(raw);
-    if (!parsed) throw new Error('Gemini: không parse được mảng OCR từ ảnh');
-    return parsed
-      .filter(item => item && typeof item.text === 'string')
-      .map(item => ({
-        text: item.text.trim(),
-        box: Array.isArray(item.box) && item.box.length === 4 && item.box.every(n => Number.isFinite(Number(n)))
-          ? item.box.map(Number)
-          : null,
-      }))
-      .filter(item => item.text);
+    const text = parseOcrVisionText(raw);
+    if (!text) return [];
+    return text.split('\n').map(line => line.trim()).filter(Boolean).map(line => ({ text: line }));
   }
 
   // OCR thuần (không dịch) qua rotation key. Ép config chỉ còn gemini.
@@ -1521,8 +1553,13 @@
       },
     });
 
+    const rawText = outcome.verdict?.text || '';
+    const parsedText = parseOcrVisionText(rawText);
+    const lines = parseOcrVisionLines(rawText);
+
     return {
-      lines: parseOcrVisionLines(outcome.verdict.text),
+      text: parsedText,
+      lines,
       provider: outcome.provider,
       providerLabel: outcome.providerLabel,
       keyMasked: outcome.keyMasked,
@@ -1611,6 +1648,7 @@
     parseVisionLines,
     translateVisionWithRotation,
     buildOcrVisionRequest,
+    parseOcrVisionText,
     parseOcrVisionLines,
     ocrVisionWithRotation,
     createKeyState,

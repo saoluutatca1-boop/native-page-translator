@@ -18,9 +18,7 @@
     "https://api.openai.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://api-free.deepl.com/*",
-    "https://api.deepl.com/*"
-  ],
-  "optional_host_permissions": [
+    "https://api.deepl.com/*",
     "https://*/*",
     "http://*/*"
   ],

@@ -40,7 +40,7 @@
 
   function detectByUrl(urlString) {
     const url = new URL(String(urlString));
-    const hostname = url.hostname.toLowerCase();
+    const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
     const path = String(url.pathname || '/').toLowerCase();
 
     if (KNOWN_DOC_HOSTNAMES.has(hostname)) return hostname;

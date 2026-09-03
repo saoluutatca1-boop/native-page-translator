@@ -67,6 +67,15 @@ function main() {
     for (const file of manifest.content_scripts?.[0]?.js || []) {
       if (!fs.existsSync(path.join(root, file))) throw new Error(`content script thiếu file: ${file}`);
     }
+    const popupCode = fs.readFileSync(path.join(root, 'popup.js'), 'utf8');
+    const match = popupCode.match(/const CONTENT_SCRIPT_FILES = (\[[^\]]+\]);/);
+    if (match) {
+      const popupFiles = JSON.parse(match[1].replace(/'/g, '"'));
+      const manifestFiles = manifest.content_scripts?.[0]?.js || [];
+      if (JSON.stringify(popupFiles) !== JSON.stringify(manifestFiles)) {
+        throw new Error(`popup.js CONTENT_SCRIPT_FILES không khớp manifest: ${JSON.stringify(popupFiles)} vs ${JSON.stringify(manifestFiles)}`);
+      }
+    }
     const commands = manifest.commands || {};
     const suggestedKeys = Object.entries(commands).filter(([_, cmd]) => cmd?.suggested_key);
     if (suggestedKeys.length > 4) {

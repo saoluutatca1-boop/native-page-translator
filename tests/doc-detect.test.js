@@ -36,9 +36,10 @@ expectDoc('MDN', 'https://developer.mozilla.org/en-US/docs/Web/API', 'developer.
 expectDoc('GitHub repo', 'https://github.com/user/repo', 'github.com');
 expectDoc('StackOverflow', 'https://stackoverflow.com/questions/123/abc', 'stackoverflow.com');
 expectDoc('docs.rs', 'https://docs.rs/serde/latest/serde/', 'docs.rs');
-expectDoc('npmjs', 'https://www.npmjs.com/package/react'.replace('www.', ''), 'npmjs.com');
+expectDoc('npmjs', 'https://www.npmjs.com/package/react', 'npmjs.com');
 expectDoc('learn.microsoft.com', 'https://learn.microsoft.com/en-us/dotnet/', 'learn.microsoft.com');
 expectDoc('developer.chrome.com', 'https://developer.chrome.com/docs/extensions', 'developer.chrome.com');
+expectDoc('www.docs subdomain', 'https://www.docs.example.com/guide', 'docs.*');
 
 /* 2. Hostname suffix */
 expectDoc('stackexchange subdomain', 'https://unix.stackexchange.com/questions/1', '*.stackexchange.com');

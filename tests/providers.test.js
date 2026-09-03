@@ -63,7 +63,7 @@ async function run() {
     assert.equal(pro.url, 'https://api.deepl.com/v2/translate');
   }
 
-  // 3. buildRequest Gemini: URL chứa model, header x-goog-api-key, generationConfig (temperature: 0.1, thinkingBudget: 0)
+  // 3. buildRequest Gemini: URL chứa model, header x-goog-api-key, generationConfig (thinkingBudget: 0 cho 2.5, thinkingLevel: 'low' cho 3.x, không gửi cho 1.5)
   {
     const req = P.buildRequest({
       providerId: 'gemini', providerConfig: { model: 'gemini-2.5-flash' }, apiKey: 'gkey',
@@ -78,12 +78,21 @@ async function run() {
     assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);
 
     const req3 = P.buildRequest({
-      providerId: 'gemini', providerConfig: { model: 'gemini-3.1-flash-lite' }, apiKey: 'gkey',
+      providerId: 'gemini', providerConfig: { model: 'models/gemini-3.1-flash-lite' }, apiKey: 'gkey',
       source: 'x', context: '',
     });
+    assert.match(req3.url, /v1beta\/models\/gemini-3\.1-flash-lite:generateContent$/);
     const body3 = JSON.parse(req3.body);
     assert.equal(body3.generationConfig.temperature, 0.1);
-    assert.equal(body3.generationConfig.thinkingConfig.thinkingBudget, 0);
+    assert.equal(body3.generationConfig.thinkingConfig.thinkingLevel, 'low');
+
+    const req15 = P.buildRequest({
+      providerId: 'gemini', providerConfig: { model: 'gemini-1.5-flash' }, apiKey: 'gkey',
+      source: 'x', context: '',
+    });
+    const body15 = JSON.parse(req15.body);
+    assert.equal(body15.generationConfig.temperature, 0.1);
+    assert.equal(body15.generationConfig.thinkingConfig, undefined);
   }
 
   // 4. buildRequest OpenAI chat: Bearer + messages
@@ -1439,6 +1448,30 @@ async function run() {
 
     assert.deepEqual(sleepCalls, [30, 60], `sleepCalls phải là [30, 60], nhận được: ${JSON.stringify(sleepCalls)}`);
     assert.equal(state.nextDispatchTime, 1090);
+  }
+
+  // 73. buildOcrVisionRequest & parseOcrVisionText
+  {
+    const req = P.buildOcrVisionRequest({
+      providerConfig: { model: 'models/gemini-2.5-flash' },
+      apiKey: '  test-ocr-key  ',
+      mimeType: 'image/png',
+      imageBase64: 'BASE64DATA',
+    });
+    assert.match(req.url, /v1beta\/models\/gemini-2\.5-flash:generateContent$/);
+    assert.equal(req.headers['x-goog-api-key'], 'test-ocr-key');
+    const body = JSON.parse(req.body);
+    assert.equal(body.contents[0].parts[1].inline_data.data, 'BASE64DATA');
+
+    // Test parse plain text
+    assert.equal(P.parseOcrVisionText('Dòng chữ nhận diện\nThêm dòng 2'), 'Dòng chữ nhận diện\nThêm dòng 2');
+    // Test parse markdown fenced
+    assert.equal(P.parseOcrVisionText('```\nDòng trong codeblock\n```'), 'Dòng trong codeblock');
+    // Test parse JSON array
+    assert.equal(P.parseOcrVisionText('[{"text":"dòng 1"},{"text":"dòng 2"}]'), 'dòng 1\ndòng 2');
+    // Test parse lines
+    const lines = P.parseOcrVisionLines('Dòng 1\nDòng 2');
+    assert.deepEqual(lines, [{ text: 'Dòng 1' }, { text: 'Dòng 2' }]);
   }
 
   console.log('Tất cả test providers.js đều PASS ✔');

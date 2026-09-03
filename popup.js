@@ -26,7 +26,7 @@ const TEMPLATE_KEYS = { templates: 'tm-prompt-templates', active: 'tm-active-tem
 
 // Đúng thứ tự content_scripts trong manifest — reinjection thiếu file nào thì
 // tính năng của file đó chết lặng lẽ sau khi khôi phục.
-const CONTENT_SCRIPT_FILES = ['fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js'];
+const CONTENT_SCRIPT_FILES = ['icons.js', 'fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js'];
 
 // Trang hiện tại: đọc từ content script chứ không đoán theo lần bấm gần nhất.
 let activeTab = null;
@@ -437,18 +437,23 @@ function initTabContext() {
 
   const ocrButton = $('#btnOcr');
   if (ocrButton) {
-    ocrButton.addEventListener('click', () => {
+    ocrButton.addEventListener('click', async () => {
       if (activeTab?.id) {
-        chrome.tabs.sendMessage(activeTab.id, { type: 'startOcrMode' }).catch(() => {});
+        try {
+          await ensureInjected(activeTab.id);
+          await chrome.tabs.sendMessage(activeTab.id, { type: 'startOcrMode' });
+        } catch (_) {}
       }
       window.close();
     });
   }
   if (!/^https?:\/\//i.test(url)) {
-    for (const control of [$('#btnSummarize'), $('#siteAuto'), $('#siteBlocked'),
+    for (const control of [$('#btnSummarize'), $('#btnOcr'), $('#siteAuto'), $('#siteBlocked'),
       ...document.querySelectorAll('[data-lang]')]) {
-      control.disabled = true;
-      control.title = 'Extension không chạy được trên trang này';
+      if (control) {
+        control.disabled = true;
+        control.title = 'Extension không chạy được trên trang này';
+      }
     }
     $('#siteHost').textContent = 'Trang hệ thống — không dịch được';
     $('#siteState').textContent = '—';

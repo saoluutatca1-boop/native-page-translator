@@ -242,11 +242,13 @@ async function translateAll() {
       }
 
       batch.forEach((item, index) => {
-        pages[item.pageIndex].paragraphs[item.paraIndex].translation = result.translations?.[index] || '';
+        const text = result.translations?.[index] || '';
+        pages[item.pageIndex].paragraphs[item.paraIndex].translation = text;
+        const el = document.getElementById(`trans-${pages[item.pageIndex].pageNumber}-${item.paraIndex}`);
+        if (el) el.textContent = text || '…';
       });
       done += batch.length;
       setProgress(`Đang dịch… ${done}/${pending.length} đoạn`, 0.3 + 0.7 * (done / pending.length));
-      renderPages();
     }
   };
 
@@ -256,7 +258,6 @@ async function translateAll() {
   );
 
   if (failure) {
-    renderPages();
     showError(
       `Dịch thất bại: ${failure}. Kiểm tra API key/provider trong trang Cài đặt.`,
       { settings: true },
@@ -281,7 +282,8 @@ function renderPages() {
     heading.textContent = `Trang ${page.pageNumber}`;
     block.appendChild(heading);
 
-    for (const para of page.paragraphs) {
+    for (let pIdx = 0; pIdx < page.paragraphs.length; pIdx++) {
+      const para = page.paragraphs[pIdx];
       const row = document.createElement('div');
       row.className = 'para';
       const orig = document.createElement('p');
@@ -289,6 +291,7 @@ function renderPages() {
       orig.textContent = para.original;
       const trans = document.createElement('p');
       trans.className = 'trans';
+      trans.id = `trans-${page.pageNumber}-${pIdx}`;
       trans.textContent = para.translation || '…';
       row.append(orig, trans);
       block.appendChild(row);

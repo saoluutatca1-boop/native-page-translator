@@ -4698,7 +4698,38 @@
     }
   }
 
+  function cropImage(dataUrl, rect) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const vW = window.innerWidth || document.documentElement.clientWidth || 1;
+          const vH = window.innerHeight || document.documentElement.clientHeight || 1;
+          const scaleX = img.naturalWidth / vW;
+          const scaleY = img.naturalHeight / vH;
+
+          const cropX = Math.max(0, Math.round(rect.x * scaleX));
+          const cropY = Math.max(0, Math.round(rect.y * scaleY));
+          const cropW = Math.max(1, Math.min(img.naturalWidth - cropX, Math.round(rect.width * scaleX)));
+          const cropH = Math.max(1, Math.min(img.naturalHeight - cropY, Math.round(rect.height * scaleY)));
+
+          const canvas = document.createElement('canvas');
+          canvas.width = cropW;
+          canvas.height = cropH;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+          resolve(canvas.toDataURL('image/png'));
+        } catch (_) {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
+
   function startOcrMode() {
+    if (window !== window.top) return;
     if (ocrOverlay) closeOcrOverlay();
 
     ocrOverlay = document.createElement('div');
@@ -4789,56 +4820,33 @@
 
       try {
         // Đợi tí cho reflow
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 120));
 
         const captureResponse = await chrome.runtime.sendMessage({
           type: 'ocrTakeScreenshot'
         });
 
-        ocrOverlay.style.opacity = '1';
-
         if (!captureResponse || !captureResponse.ok) {
           throw new Error(captureResponse?.error || 'Lỗi chụp màn hình');
         }
 
+        // Cắt ảnh đúng khung chữ người dùng đã chọn
+        const croppedDataUrl = await cropImage(captureResponse.dataUrl, { x, y, width: w, height: h });
+
         const response = await chrome.runtime.sendMessage({
           type: 'ocrProcessScreenshot',
           payload: {
-            dataUrl: captureResponse.dataUrl,
-            rect: { x, y, width: w, height: h },
-            viewport: { width: window.innerWidth, height: window.innerHeight }
+            dataUrl: croppedDataUrl,
+            rect: { x, y, width: w, height: h }
           }
         });
 
         if (!response || !response.ok) {
-          throw new Error(response?.error || 'Lỗi chụp màn hình');
+          throw new Error(response?.error || 'Lỗi xử lý OCR');
         }
 
-        // Lọc các bounding box nằm trong vùng chọn
-        const selectedLines = [];
-        const vW = window.innerWidth;
-        const vH = window.innerHeight;
-
-        const normX = x / vW * 1000;
-        const normY = y / vH * 1000;
-        const normW = w / vW * 1000;
-        const normH = h / vH * 1000;
-        const normRight = normX + normW;
-        const normBottom = normY + normH;
-
-        for (const line of response.lines || []) {
-          if (!line.box) {
-            selectedLines.push(line.text);
-            continue;
-          }
-          const [ymin, xmin, ymax, xmax] = line.box;
-          // Có giao nhau với vùng chọn ko
-          if (xmin < normRight && xmax > normX && ymin < normBottom && ymax > normY) {
-            selectedLines.push(line.text);
-          }
-        }
-
-        showOcrResultPanel(selectedLines.join('\n'));
+        const extractedText = (response.text || (response.lines || []).map(l => (typeof l === 'string' ? l : l.text)).join('\n') || '').trim();
+        showOcrResultPanel(extractedText || 'Không nhận diện được văn bản trong vùng chọn.');
 
       } catch (err) {
         ocrOverlay.style.opacity = '1';
@@ -4851,8 +4859,16 @@
     document.body.appendChild(ocrOverlay);
   }
 
+  let activeOcrPanel = null;
+
   function showOcrResultPanel(text) {
+    if (activeOcrPanel) {
+      try { activeOcrPanel.remove(); } catch (_) {}
+      activeOcrPanel = null;
+    }
+
     const panel = document.createElement('div');
+    activeOcrPanel = panel;
     const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
 
     Object.assign(panel.style, {
@@ -4974,6 +4990,7 @@
     panel.remove = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      if (activeOcrPanel === panel) activeOcrPanel = null;
       originalRemove();
     };
 
@@ -4981,7 +4998,13 @@
   }
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeOcrOverlay();
+    if (e.key === 'Escape') {
+      closeOcrOverlay();
+      if (activeOcrPanel) {
+        activeOcrPanel.remove();
+        activeOcrPanel = null;
+      }
+    }
   });
 
   chrome.runtime.onMessage.addListener((message) => {
