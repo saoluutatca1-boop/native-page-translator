@@ -908,8 +908,6 @@ async function handleQaSolveQuestion(payload, sender) {
       mimeType,
       fetchText: providerFetchText,
       keyState,
-      now: Date.now,
-      sleep: delay,
     });
 
     return {

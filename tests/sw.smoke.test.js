@@ -640,7 +640,23 @@ async function main() {
     assert.equal(badgeCalls.length, 0);
   }
 
-  console.log('SW smoke test PASS ✔ (background khởi động OK, seed key OK, nativeTranslate OK, providerTranslate OK, proxyFetch OK, dịch ảnh OK, deeplUsage OK, summarizePage OK, fetchPdf OK, menu PDF OK, cache dịch OK, commands OK, badge OK)');
+  // 18. qaSolveQuestion qua background message
+  {
+    const currentConfig = storageData.get('tm-multi-provider-config');
+    currentConfig.providers.gemini.enabled = true;
+    currentConfig.providers.gemini.keys = [{ key: 'gm-key-test', label: 'gm' }];
+    storageData.set('tm-multi-provider-config', currentConfig);
+    configCacheReset();
+
+    const res = await sendMessage({
+      type: 'qaSolveQuestion',
+      payload: { text: '2 + 2 = ?\nA. 4\nB. 5' },
+    });
+    assert.equal(res.ok, true, `qaSolveQuestion phải thành công: ${res.error}`);
+    assert.equal(res.answer, 'hello from gemini');
+  }
+
+  console.log('SW smoke test PASS ✔ (background khởi động OK, seed key OK, nativeTranslate OK, providerTranslate OK, proxyFetch OK, dịch ảnh OK, deeplUsage OK, summarizePage OK, fetchPdf OK, menu PDF OK, cache dịch OK, commands OK, badge OK, qaSolveQuestion OK)');
 }
 
 main().catch(error => {
