@@ -1407,6 +1407,149 @@
   }
 
   /* ------------------------------------------------------------------
+   * AI Quick Solver: Giải bài tập và câu hỏi nhanh với độ chính xác cao.
+   * ------------------------------------------------------------------ */
+  function buildQaInstructions() {
+    return [
+      'You are an expert exam solver and question-answering AI assistant.',
+      'Your HIGHEST PRIORITY is ABSOLUTE ACCURACY. Double-check your reasoning before producing the final answer.',
+      'Output format rules (strictly follow):',
+      '1. Line 1: State the single correct answer prominently in bold.',
+      '   - If multiple-choice: "**Đáp án: [A/B/C/D]**" or "**Đáp án: [A/B/C/D] - [Tóm tắt đáp án]**"',
+      '   - If direct question: "**Đáp án: [Câu trả lời chính xác ngắn gọn]**"',
+      '2. Subsequent lines: Provide a concise, highly factual explanation (1-3 sentences) explaining WHY it is correct and briefly pointing out why other options are wrong or common traps.',
+      '3. Be direct, clear, objective. No greetings, conversational filler, or unnecessary preamble.',
+      '4. Output in Vietnamese (unless the question specifically tests English grammar/vocabulary, in which case explain in Vietnamese).'
+    ].join('\n');
+  }
+
+  function buildQaRequest({ providerId, providerConfig, apiKey, text, imageBase64, mimeType }) {
+    const kind = providerKind(providerId);
+    if (kind === 'deepl') throw new Error('QA_REQUIRES_LLM');
+    if (imageBase64 && kind !== 'gemini') {
+      throw new Error('IMAGE_NEEDS_GEMINI');
+    }
+
+    const instructions = buildQaInstructions();
+    const prompt = String(text || '').trim() || (imageBase64 ? 'Hãy phân tích kỹ hình ảnh câu hỏi dưới đây và đưa ra đáp án chính xác nhất kèm giải thích ngắn.' : '');
+
+    if (kind === 'gemini') {
+      const rawModel = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      const model = rawModel.replace(/^models\//i, '');
+      const parts = [{ text: prompt }];
+      if (imageBase64) {
+        parts.push({
+          inline_data: {
+            mime_type: String(mimeType || 'image/png'),
+            data: String(imageBase64 || '')
+          }
+        });
+      }
+      return {
+        url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'x-goog-api-key': String(apiKey || '').trim(),
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: instructions }] },
+          contents: [{ role: 'user', parts }],
+          generationConfig: { temperature: 0.1 },
+          safetySettings: GEMINI_SAFETY_SETTINGS,
+        }),
+      };
+    }
+
+    if (kind === 'openai') {
+      const { url, model, format, headers } = resolveOpenAIRequest(providerConfig, apiKey);
+      let payload;
+      if (format === 'responses') {
+        payload = { model, instructions, input: prompt, max_output_tokens: 1500, temperature: 0.1, store: false };
+      } else if (format === 'chat') {
+        payload = {
+          model,
+          messages: [
+            { role: 'system', content: instructions },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.1,
+          stream: false,
+        };
+      } else {
+        throw new Error(`${PROVIDER_DEFS.openai.label}: format "${format}" không hỗ trợ giải câu hỏi`);
+      }
+      return { url, method: 'POST', headers, body: JSON.stringify(payload), openaiFormat: format };
+    }
+
+    throw new Error(`Provider không hỗ trợ: ${providerId}`);
+  }
+
+  async function solveQuestionWithRotation({ config, text, imageBase64, mimeType, fetchText, keyState, now, sleep }) {
+    if (!text && !imageBase64) throw new Error('Không có nội dung câu hỏi');
+
+    let eligibleProviders = {};
+    if (imageBase64) {
+      const gemini = config?.providers?.gemini;
+      if (!gemini?.enabled || !gemini.keys?.length) {
+        throw new Error('IMAGE_NEEDS_GEMINI');
+      }
+      eligibleProviders = { gemini };
+    } else {
+      for (const id of providerIdsOf(config)) {
+        if (providerKind(id) === 'deepl') continue;
+        const provider = config?.providers?.[id];
+        if (provider?.enabled) eligibleProviders[id] = provider;
+      }
+    }
+
+    const eligibleIds = Object.keys(eligibleProviders);
+    if (!eligibleIds.length) {
+      throw new Error(imageBase64 ? 'IMAGE_NEEDS_GEMINI' : 'QA_REQUIRES_LLM');
+    }
+
+    const solverConfig = {
+      ...config,
+      preferred: eligibleProviders[config?.preferred] ? config.preferred : eligibleIds[0],
+      providers: eligibleProviders,
+    };
+
+    const outcome = await withKeyRotation({
+      config: solverConfig,
+      keyState,
+      now,
+      sleep,
+      attempt: async ({ providerId, providerConfig, providerLabel, apiKey }) => {
+        const request = buildQaRequest({
+          providerId,
+          providerConfig,
+          apiKey,
+          text,
+          imageBase64,
+          mimeType,
+        });
+        const response = await fetchText(request);
+        const verdict = classifyResponse({
+          providerId,
+          providerLabel,
+          openaiFormat: request?.openaiFormat,
+          status: response.status,
+          bodyText: response.bodyText,
+          retryAfterMs: response.retryAfterMs,
+        });
+        return { verdict };
+      },
+    });
+
+    return {
+      answer: String(outcome.verdict?.text || '').trim(),
+      provider: outcome.provider,
+      providerLabel: outcome.providerLabel,
+    };
+  }
+
+  /* ------------------------------------------------------------------
    * Dịch ảnh (OCR + dịch) qua Gemini vision. CHỈ gemini hỗ trợ ảnh —
    * deepl/openai bị bỏ qua dù đang enabled.
    * ------------------------------------------------------------------ */
@@ -1651,6 +1794,9 @@
     parseOcrVisionText,
     parseOcrVisionLines,
     ocrVisionWithRotation,
+    buildQaInstructions,
+    buildQaRequest,
+    solveQuestionWithRotation,
     createKeyState,
     parseRetryAfter,
   };

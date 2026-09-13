@@ -15,6 +15,7 @@ const {
   summarizeWithRotation,
   translateVisionWithRotation,
   ocrVisionWithRotation,
+  solveQuestionWithRotation,
   createKeyState,
 } = globalThis.NPT_PROVIDERS;
 
@@ -888,6 +889,46 @@ async function handleOcrProcessScreenshot(payload, sender) {
   }
 }
 
+async function handleQaSolveQuestion(payload, sender) {
+  try {
+    const text = String(payload?.text || '').trim();
+    const dataUrl = String(payload?.dataUrl || payload?.imageBase64 || '');
+    const imageBase64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+    const mimeType = 'image/png';
+
+    if (!text && !imageBase64) {
+      return { ok: false, error: 'Không có câu hỏi để giải' };
+    }
+
+    const config = await ensureConfig();
+    const result = await solveQuestionWithRotation({
+      config,
+      text,
+      imageBase64,
+      mimeType,
+      fetchText: providerFetchText,
+      keyState,
+      now: Date.now,
+      sleep: delay,
+    });
+
+    return {
+      ok: true,
+      answer: result.answer,
+      provider: result.provider,
+      providerLabel: result.providerLabel,
+    };
+  } catch (error) {
+    let friendly = error?.message || String(error);
+    if (friendly.includes('IMAGE_NEEDS_GEMINI')) {
+      friendly = 'Giải câu hỏi bằng ảnh cần bật API key Gemini trong Cài đặt';
+    } else if (friendly.includes('QA_REQUIRES_LLM')) {
+      friendly = 'Cần cài đặt API key (Gemini hoặc OpenAI) trong Cài đặt để giải câu hỏi';
+    }
+    return { ok: false, error: friendly };
+  }
+}
+
 // Click menu PDF: mở pdf-viewer.html kèm ?src=<url pdf>. Kiểm tra lại đuôi .pdf
 // bằng regex phòng trường hợp documentUrlPatterns/targetUrlPatterns không khớp.
 function handlePdfMenuClick(info) {
@@ -919,7 +960,7 @@ chrome.commands.onCommand.addListener(async (command) => {
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          files: ['icons.js', 'fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js'],
+          files: ['icons.js', 'fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js', 'qa-solver.js'],
         });
         await chrome.tabs.sendMessage(tab.id, { type: 'startOcrMode' });
       } catch (_) {}
@@ -1048,6 +1089,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'ocrProcessScreenshot') {
     handleOcrProcessScreenshot(message.payload, sender).then(sendResponse).catch(error => {
+      sendResponse({ ok: false, error: error?.message || String(error) });
+    });
+    return true;
+  }
+
+  if (message?.type === 'qaSolveQuestion') {
+    handleQaSolveQuestion(message.payload, sender).then(sendResponse).catch(error => {
       sendResponse({ ok: false, error: error?.message || String(error) });
     });
     return true;

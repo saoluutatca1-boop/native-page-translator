@@ -26,6 +26,7 @@ const SYNTAX_CHECK_FILES = [
   'glossary.js',
   'doc-detect.js',
   'tts.js',
+  'qa-solver.js',
 ];
 
 function runNode(args, label) {

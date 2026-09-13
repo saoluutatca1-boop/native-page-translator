@@ -26,7 +26,7 @@ const TEMPLATE_KEYS = { templates: 'tm-prompt-templates', active: 'tm-active-tem
 
 // Đúng thứ tự content_scripts trong manifest — reinjection thiếu file nào thì
 // tính năng của file đó chết lặng lẽ sau khi khôi phục.
-const CONTENT_SCRIPT_FILES = ['icons.js', 'fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js'];
+const CONTENT_SCRIPT_FILES = ['icons.js', 'fancy-text.js', 'glossary.js', 'doc-detect.js', 'tts.js', 'content.js', 'qa-solver.js'];
 
 // Trang hiện tại: đọc từ content script chứ không đoán theo lần bấm gần nhất.
 let activeTab = null;
