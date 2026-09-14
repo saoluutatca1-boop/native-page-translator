@@ -7,6 +7,14 @@ Bản 4.3 tập trung vào **tốc độ, quota và giao diện**: cache bản d
 Bản 4.2 thêm bộ tuỳ chọn **dịch trang nâng cao**: chế độ song ngữ, văn phong dịch, dịch lướt theo khung nhìn, nội dung động & SPA...
 Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini · OpenAI-compatible) với xoay vòng key tự động.
 
+## Có gì mới ở v4.5.1
+
+**AI Quick Solver (Giải câu hỏi siêu tốc & Stealth Mode)**
+
+- **Giải văn bản bôi đen (`Alt + Q`)** — Bôi đen câu hỏi trắc nghiệm hoặc bài tập trên trang, bấm `Alt + Q` (hoặc click nút mini 💡) để nhận ngay đáp án chính xác và lời giải thích súc tích từ AI (Gemini / OpenAI) trong ~1s.
+- **Khoanh vùng màn hình giải bằng AI Vision (`Alt + Shift + Q`)** — Bấm `Alt + Shift + Q` để kéo chuột khoanh vùng câu hỏi trên màn hình. AI đọc trực tiếp từ hình ảnh (Vision) giúp xử lý hoàn hảo biểu đồ, công thức toán, hình vẽ, và các trang web chống bôi đen/copy.
+- **Tàng hình tuyệt đối (Anti-Detection / Stealth)** — Toàn bộ giao diện card nổi và overlay quét ảnh được bọc trong **Closed Shadow DOM (`mode: 'closed'`)**, ngăn chặn 100% việc script trang web quét DOM trộm. Sự kiện phím tắt được chặn tại Capture Phase (`stopImmediatePropagation`) giúp tránh bị ghi nhận phím bởi keylogger của các trang thi trực tuyến.
+
 ## Có gì mới ở v4.5
 
 **Tối ưu tốc độ dịch Gemini & Viewport-First Priority**
