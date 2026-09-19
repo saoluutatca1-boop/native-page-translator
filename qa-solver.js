@@ -480,6 +480,26 @@
     }
   }
 
+  // Extension vừa reload/update thì content script trong tab cũ bị mồ côi —
+  // mọi lệnh gọi background đều lỗi "Extension context invalidated".
+  const CONTEXT_DEAD_MESSAGE = '⚠️ Extension vừa cập nhật/nạp lại — hãy F5 (Reload) trang web này để tiếp tục dùng nhé!';
+
+  function isExtensionContextAlive() {
+    try {
+      return Boolean(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function friendlyError(err) {
+    const msg = String(err?.message || err || '');
+    if (/Extension context invalidated/i.test(msg)) {
+      return CONTEXT_DEAD_MESSAGE;
+    }
+    return msg;
+  }
+
   /* ------------------------------------------------------------------
    * Toast thông báo nhẹ
    * ------------------------------------------------------------------ */
@@ -824,6 +844,11 @@
       return;
     }
 
+    if (!isExtensionContextAlive()) {
+      showToast(CONTEXT_DEAD_MESSAGE, 5000);
+      return;
+    }
+
     const isExtended = opts.extendedThinking === true;
 
     const card = opts.existingCard || showSolverCard({
@@ -855,7 +880,7 @@
         providerLabel: response.providerLabel,
       });
     } catch (err) {
-      card.setError(err.message || String(err));
+      card.setError(friendlyError(err));
     }
   }
 
@@ -864,6 +889,11 @@
    * Đặt hoàn toàn trong Closed Shadow DOM
    * ------------------------------------------------------------------ */
   function startCropSolver() {
+    if (!isExtensionContextAlive()) {
+      showToast(CONTEXT_DEAD_MESSAGE, 5000);
+      return;
+    }
+
     closeCropOverlay();
     const root = ensureShadowRoot();
 
@@ -992,7 +1022,7 @@
                 providerLabel: resp.providerLabel,
               });
             } catch (err) {
-              card.setError(err.message || String(err));
+              card.setError(friendlyError(err));
             }
           },
         });
@@ -1004,7 +1034,7 @@
         });
       } catch (err) {
         closeCropOverlay();
-        showToast(`Lỗi: ${err.message || String(err)}`);
+        showToast(friendlyError(err), 5000);
       }
     });
 
@@ -1030,10 +1060,21 @@
 
   if (typeof document !== 'undefined') {
     document.addEventListener('mouseup', (e) => {
+    // Nếu extension đã reload thì bỏ qua
+    if (!isExtensionContextAlive()) {
+      removeMiniTrigger();
+      return;
+    }
+
     // Nếu click vào Shadow DOM thì không xóa
     if (shadowHost && shadowHost.contains(e.target)) return;
 
     setTimeout(() => {
+      if (!isExtensionContextAlive()) {
+        removeMiniTrigger();
+        return;
+      }
+
       const selection = window.getSelection();
       let text = extractSmartTextFromSelection(selection);
       if (text && selection.rangeCount > 0) {
@@ -1125,6 +1166,11 @@
       e.preventDefault();
       e.stopImmediatePropagation();
       removeMiniTrigger();
+
+      if (!isExtensionContextAlive()) {
+        showToast(CONTEXT_DEAD_MESSAGE, 5000);
+        return;
+      }
 
       if (e.shiftKey) {
         // Alt + Shift + Q: Khoanh vùng giải ảnh
