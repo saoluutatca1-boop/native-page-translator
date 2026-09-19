@@ -167,7 +167,7 @@
       // Chỉ kiểu OpenAI-compatible mới cần tên riêng: có nhiều slot cùng kiểu.
       ...(def.needsUrl ? { name: '' } : {}),
       ...(def.needsModel ? { model: def.defaultModel } : {}),
-      ...(providerKind(id) === 'gemini' ? { googleSearch: true } : {}),
+      ...(providerKind(id) === 'gemini' ? { googleSearch: true, extendedThinking: false } : {}),
       ...(def.needsUrl ? { url: def.defaultUrl, format: 'auto' } : {}),
     };
   }

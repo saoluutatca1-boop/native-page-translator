@@ -483,6 +483,24 @@ function renderProviderFields(card, providerId) {
     searchWrap.style.fontSize = '12px';
     searchWrap.style.cursor = 'pointer';
     fields.appendChild(searchWrap);
+
+    const extendedWrap = el('label', 'checkbox-label');
+    const extendedCheck = document.createElement('input');
+    extendedCheck.type = 'checkbox';
+    extendedCheck.checked = provider.extendedThinking === true;
+    extendedCheck.addEventListener('change', () => {
+      provider.extendedThinking = extendedCheck.checked;
+      markDirty();
+    });
+    extendedWrap.appendChild(extendedCheck);
+    extendedWrap.appendChild(document.createTextNode(' 🧠 Mặc định bật Giải toán sâu (Gemini 3.8 Flash Extended Thinking)'));
+    extendedWrap.style.marginTop = '6px';
+    extendedWrap.style.display = 'flex';
+    extendedWrap.style.alignItems = 'center';
+    extendedWrap.style.gap = '6px';
+    extendedWrap.style.fontSize = '12px';
+    extendedWrap.style.cursor = 'pointer';
+    fields.appendChild(extendedWrap);
   }
 
   card.appendChild(fields);

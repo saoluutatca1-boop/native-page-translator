@@ -919,14 +919,16 @@ async function handleQaSolveQuestion(payload, sender) {
     const imageBase64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
     const mimeMatch = dataUrl.match(/^data:(image\/\w+);base64,/);
     const mimeType = mimeMatch ? mimeMatch[1] : (payload?.mimeType || 'image/jpeg');
-    const extendedThinking = payload?.extendedThinking === true;
+    const config = await ensureConfig();
+    const extendedThinking = payload?.extendedThinking !== undefined
+      ? Boolean(payload.extendedThinking)
+      : Boolean(config?.providers?.gemini?.extendedThinking);
     const thinkingLevel = payload?.thinkingLevel || 'high';
 
     if (!text && !imageBase64) {
       return { ok: false, error: 'Không có câu hỏi để giải' };
     }
 
-    const config = await ensureConfig();
     const result = await solveQuestionWithRotation({
       config,
       text,
