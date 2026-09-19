@@ -149,6 +149,84 @@ async function run() {
     assert.ok(!html.includes('$\\lambda$'), 'HTML không được chứa dấu $ thô');
   }
 
+  // 6. Kiểm tra compressAndResizeCanvas
+  {
+    const Q = require('../qa-solver.js');
+    assert.equal(typeof Q.compressAndResizeCanvas, 'function', 'compressAndResizeCanvas phải là function');
+
+    const mockCtx = {
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: '',
+      drawImage: (img, sx, sy, sw, sh) => {},
+    };
+    const createdCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => mockCtx,
+      toDataURL: (type, q) => `data:${type};base64,mockjpegdata_${createdCanvas.width}x${createdCanvas.height}_q${q}`,
+    };
+
+    const origCreateElement = global.document?.createElement;
+    if (!global.document) global.document = {};
+    global.document.createElement = (tag) => {
+      if (tag === 'canvas') return createdCanvas;
+      return {};
+    };
+
+    try {
+      const largeCanvas = {
+        width: 3200,
+        height: 1600,
+        toDataURL: () => 'data:image/png;base64,orig',
+      };
+      const result = Q.compressAndResizeCanvas(largeCanvas, 1600, 0.85);
+      assert.match(result, /^data:image\/jpeg/);
+      assert.equal(createdCanvas.width, 1600);
+      assert.equal(createdCanvas.height, 800);
+    } finally {
+      if (origCreateElement) {
+        global.document.createElement = origCreateElement;
+      } else {
+        delete global.document;
+      }
+    }
+  }
+
+  // 7. Kiểm tra formatMarkdown bảo vệ snake_case và chống double-escaping
+  {
+    const Q = require('../qa-solver.js');
+    const input = 'Biến `user_id` và token_count thỏa mãn $x < 5$ và $y > 10$.';
+    const html = Q.formatMarkdown(input);
+    assert.ok(html.includes('token_count'), 'token_count không được bị chuyển thành token<sub>count</sub>');
+    assert.ok(!html.includes('&amp;lt;'), 'Không được double escape ký tự <');
+    assert.ok(html.includes('&lt; 5'), 'Ký tự < phải được escape thành &lt;');
+    assert.ok(html.includes('&gt; 10'), 'Ký tự > phải được escape thành &gt;');
+  }
+
+  // 8. Kiểm tra expandSelectionIfIncomplete
+  {
+    const Q = require('../qa-solver.js');
+    assert.equal(typeof Q.expandSelectionIfIncomplete, 'function', 'expandSelectionIfIncomplete phải là function');
+
+    // Trường hợp đã có đáp án đầy đủ -> giữ nguyên
+    const fullText = 'Câu 1: 1+1=?\nA. 1\nB. 2\nC. 3\nD. 4';
+    assert.equal(Q.expandSelectionIfIncomplete(null, fullText), fullText);
+
+    // Trường hợp thiếu đáp án và có parent element
+    const mockContainer = {
+      innerText: 'Câu hỏi: Đâu là khẳng định đúng?\nA. Trái đất hình tròn\nB. Trái đất hình vuông',
+    };
+    const mockRange = {
+      commonAncestorContainer: {
+        nodeType: 1,
+        closest: (sel) => mockContainer,
+      },
+    };
+    const incompleteText = 'Câu hỏi: Đâu là khẳng định đúng?';
+    const expanded = Q.expandSelectionIfIncomplete(mockRange, incompleteText);
+    assert.match(expanded, /A\. Trái đất hình tròn/);
+  }
+
   console.log('Tất cả test qa-solver.test.js đều PASS ✔');
 }
 

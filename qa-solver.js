@@ -62,7 +62,42 @@
 
   /* ------------------------------------------------------------------
    * Helper: Crop ảnh canvas
+  /* ------------------------------------------------------------------
+   * Helper: Nén ảnh và scale down canvas (tối đa maxDim, chất lượng JPEG)
+   * Giảm 70-80% payload gửi sang API và tăng tốc độ xử lý vision
    * ------------------------------------------------------------------ */
+  function compressAndResizeCanvas(sourceCanvas, maxDim = 1600, quality = 0.85) {
+    if (!sourceCanvas) return '';
+    const sw = sourceCanvas.width;
+    const sh = sourceCanvas.height;
+    if (!sw || !sh) {
+      return sourceCanvas.toDataURL ? sourceCanvas.toDataURL('image/jpeg', quality) : '';
+    }
+
+    let targetW = sw;
+    let targetH = sh;
+    const maxSide = Math.max(sw, sh);
+    if (maxSide > maxDim) {
+      const scale = maxDim / maxSide;
+      targetW = Math.round(sw * scale);
+      targetH = Math.round(sh * scale);
+    }
+
+    if (typeof document !== 'undefined' && document.createElement) {
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(sourceCanvas, 0, 0, targetW, targetH);
+      }
+      return canvas.toDataURL ? canvas.toDataURL('image/jpeg', quality) : '';
+    }
+    return sourceCanvas.toDataURL ? sourceCanvas.toDataURL('image/jpeg', quality) : '';
+  }
+
   function cropImage(dataUrl, rect) {
     return new Promise((resolve) => {
       const img = new Image();
@@ -83,7 +118,7 @@
           canvas.height = cropH;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-          resolve(canvas.toDataURL('image/png'));
+          resolve(compressAndResizeCanvas(canvas, 1600, 0.85));
         } catch (_) {
           resolve(dataUrl);
         }
@@ -282,12 +317,12 @@
       return token;
     });
 
-    // 3. Escape HTML an toàn
+    // 3. Escape HTML an toàn cho phần văn bản thông thường
     let safe;
-    if (typeof document !== 'undefined') {
+    if (typeof document !== 'undefined' && document.createElement) {
       const div = document.createElement('div');
       div.textContent = processed;
-      safe = div.innerHTML;
+      safe = div.innerHTML !== undefined ? div.innerHTML : processed;
     } else {
       safe = processed
         .replace(/&/g, '&amp;')
@@ -295,13 +330,17 @@
         .replace(/>/g, '&gt;');
     }
 
-    // 4. Nếu AI viết ký hiệu TeX mà quên dấu $ (ví dụ \lambda, \ell^2, \le, \mathbb{N})
-    safe = renderLatexSnippet(safe);
+    // 4. TeX loose command modifiers (chỉ thay các lệnh TeX cụ thể có backslash, KHÔNG thay _ bừa bãi làm vỡ snake_case)
+    for (const [cmd, sym] of Object.entries(LATEX_SYMBOLS)) {
+      if (cmd.startsWith('\\')) {
+        safe = safe.split(cmd).join(sym);
+      }
+    }
 
-    // 5. Markdown (bold, italic, code, newlines)
+    // 5. Markdown (bold, code, italic, newlines)
     safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    safe = safe.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>');
     safe = safe.replace(/`([^`\n]+?)`/g, '<code style="background:rgba(128,128,128,0.2); padding:1px 4px; border-radius:3px; font-family:monospace; font-size:12px;">$1</code>');
+    safe = safe.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>');
     safe = safe.replace(/\n/g, '<br>');
 
     // 6. Khôi phục các math tokens
@@ -477,9 +516,43 @@
   }
 
   /* ------------------------------------------------------------------
+   * Helper: Mở rộng vùng chọn thông minh nếu người dùng bôi đen thiếu A, B, C, D
+   * ------------------------------------------------------------------ */
+  function expandSelectionIfIncomplete(range, originalText) {
+    const text = String(originalText || '').trim();
+    if (!text) return text;
+
+    // Nếu đã có đủ lựa chọn trắc nghiệm dạng A., B., C. hoặc A), B)... thì giữ nguyên
+    const hasChoices = /[A-D][\.\)\:]\s*\S/i.test(text);
+    if (hasChoices) return text;
+
+    // Nếu không có range hoặc không chạy trong browser
+    if (!range || !range.commonAncestorContainer) return text;
+
+    try {
+      let node = range.commonAncestorContainer;
+      if (node.nodeType === 3) node = node.parentElement;
+      if (!node) return text;
+
+      const container = node.closest
+        ? node.closest('.question, .quiz-question, .exam-question, tr, li, [class*="question"], [id*="question"], div, section, article')
+        : null;
+
+      if (container && (typeof document === 'undefined' || container !== document.body)) {
+        const parentText = String(container.innerText || container.textContent || '').trim();
+        if (/[A-D][\.\)\:]\s*\S/i.test(parentText) && parentText.length > text.length) {
+          return `${text}\n\n[Ngữ cảnh xung quanh câu hỏi]:\n${parentText}`;
+        }
+      }
+    } catch (_) {}
+
+    return text;
+  }
+
+  /* ------------------------------------------------------------------
    * Floating Card: Hiển thị đáp án trong Closed Shadow DOM
    * ------------------------------------------------------------------ */
-  function showSolverCard({ title = 'AI Quick Solver', initialStatus = 'Đang phân tích câu hỏi...' }) {
+  function showSolverCard({ title = 'AI Quick Solver', initialStatus = 'Đang phân tích câu hỏi...', extendedThinking = false, onToggleExtendedThinking = null }) {
     closeSolverCard();
 
     const root = ensureShadowRoot();
@@ -521,44 +594,31 @@
       userSelect: 'none',
     });
 
-    const headerLeft = document.createElement('div');
-    headerLeft.style.display = 'flex';
-    headerLeft.style.alignItems = 'center';
-    headerLeft.style.gap = '8px';
-
-    const icon = document.createElement('span');
-    icon.textContent = '💡';
-    icon.style.fontSize = '16px';
-
     const headerTitle = document.createElement('span');
     headerTitle.textContent = title;
     headerTitle.style.fontWeight = '600';
     headerTitle.style.fontSize = '13px';
-    headerTitle.style.letterSpacing = '0.3px';
-
-    headerLeft.appendChild(icon);
-    headerLeft.appendChild(headerTitle);
+    headerTitle.style.color = isDark ? '#38bdf8' : '#0284c7';
 
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
     closeBtn.title = 'Đóng (Esc)';
     Object.assign(closeBtn.style, {
+      background: 'none',
       border: 'none',
-      background: 'transparent',
       color: isDark ? '#94a3b8' : '#64748b',
       cursor: 'pointer',
       fontSize: '14px',
-      padding: '4px 8px',
-      borderRadius: '4px',
+      padding: '0 4px',
       lineHeight: '1',
     });
     closeBtn.addEventListener('click', closeSolverCard);
 
-    header.appendChild(headerLeft);
+    header.appendChild(headerTitle);
     header.appendChild(closeBtn);
     panel.appendChild(header);
 
-    // Xử lý kéo thả Panel
+    // Kéo thả Panel
     let isDragging = false;
     let dragStartX = 0;
     let dragStartY = 0;
@@ -611,7 +671,7 @@
 
     panel.appendChild(body);
 
-    // 3. Footer (Sao chép & Thoát)
+    // 3. Footer (Sao chép & Chế độ Giải sâu)
     const footer = document.createElement('div');
     Object.assign(footer.style, {
       padding: '8px 14px',
@@ -619,6 +679,7 @@
       display: 'flex',
       justifyContent: 'space-between',
       alignItems: 'center',
+      gap: '8px',
       backgroundColor: isDark ? '#111827' : '#f8fafc',
     });
 
@@ -648,18 +709,53 @@
       }
     });
 
+    // Toggle Giải toán sâu (Gemini 3.8 Extended)
+    const toggleContainer = document.createElement('label');
+    Object.assign(toggleContainer.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '5px',
+      fontSize: '11px',
+      color: isDark ? '#94a3b8' : '#64748b',
+      cursor: 'pointer',
+      userSelect: 'none',
+    });
+    const toggleCheckbox = document.createElement('input');
+    toggleCheckbox.type = 'checkbox';
+    toggleCheckbox.checked = !!extendedThinking;
+    toggleCheckbox.style.cursor = 'pointer';
+    const toggleText = document.createElement('span');
+    toggleText.textContent = '🧠 Giải sâu (3.8)';
+    toggleContainer.appendChild(toggleCheckbox);
+    toggleContainer.appendChild(toggleText);
+
+    if (typeof onToggleExtendedThinking === 'function') {
+      toggleCheckbox.addEventListener('change', () => {
+        onToggleExtendedThinking(toggleCheckbox.checked);
+      });
+    }
+
     const hint = document.createElement('span');
-    hint.textContent = 'Esc để đóng';
+    hint.textContent = 'Esc';
     hint.style.fontSize = '11px';
     hint.style.color = isDark ? '#64748b' : '#94a3b8';
 
     footer.appendChild(copyBtn);
+    footer.appendChild(toggleContainer);
     footer.appendChild(hint);
     panel.appendChild(footer);
 
     root.appendChild(panel);
 
     return {
+      setStatus: (msg) => {
+        body.innerHTML = '';
+        const sEl = document.createElement('div');
+        sEl.innerHTML = `<span style="display:inline-block; animation:nptPulse 1.2s infinite">⏳</span> ${msg}`;
+        sEl.style.color = isDark ? '#94a3b8' : '#64748b';
+        sEl.style.fontSize = '13px';
+        body.appendChild(sEl);
+      },
       setResult: ({ answer, providerLabel }) => {
         currentAnswerText = cleanMathToPlainText(answer);
         body.innerHTML = '';
@@ -721,22 +817,33 @@
   /* ------------------------------------------------------------------
    * Giải câu hỏi dạng Text (bôi đen)
    * ------------------------------------------------------------------ */
-  async function solveTextQuestion(questionText) {
+  async function solveTextQuestion(questionText, opts = {}) {
     const text = String(questionText || '').trim();
     if (!text) {
-      showToast('💡 Bôi đen câu hỏi rồi bấm Alt+Q (hoặc Alt+Shift+Q để quét ảnh)');
+      showToast('💡 Bôi đen câu hỏi rồi bấm Alt+Q (hoặc bấm Alt+Shift+Q để quét ảnh)');
       return;
     }
 
-    const card = showSolverCard({
+    const isExtended = opts.extendedThinking === true;
+
+    const card = opts.existingCard || showSolverCard({
       title: 'AI Quick Solver',
-      initialStatus: 'Đang giải câu hỏi...'
+      initialStatus: isExtended ? 'AI đang suy luận chuyên sâu (Gemini 3.8 Extended)...' : 'Đang giải câu hỏi...',
+      extendedThinking: isExtended,
+      onToggleExtendedThinking: (checked) => {
+        card.setStatus(checked ? 'AI đang suy luận chuyên sâu (Gemini 3.8 Extended)...' : 'Đang giải câu hỏi...');
+        solveTextQuestion(text, { extendedThinking: checked, existingCard: card });
+      },
     });
 
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'qaSolveQuestion',
-        payload: { text }
+        payload: {
+          text,
+          extendedThinking: isExtended,
+          thinkingLevel: 'high',
+        }
       });
 
       if (!response || !response.ok) {
@@ -856,23 +963,44 @@
         const croppedDataUrl = await cropImage(capture.dataUrl, { x, y, width: w, height: h });
         closeCropOverlay();
 
+        const requestCrop = async (ext) => {
+          const response = await chrome.runtime.sendMessage({
+            type: 'qaSolveQuestion',
+            payload: {
+              imageBase64: croppedDataUrl,
+              mimeType: 'image/jpeg',
+              extendedThinking: ext,
+              thinkingLevel: 'high',
+            }
+          });
+          if (!response || !response.ok) {
+            throw new Error(response?.error || 'Không nhận được phản hồi từ AI');
+          }
+          return response;
+        };
+
         const card = showSolverCard({
           title: 'AI Quick Solver (Vision)',
-          initialStatus: 'AI đang phân tích câu hỏi trong hình ảnh...'
+          initialStatus: 'AI đang phân tích câu hỏi trong hình ảnh...',
+          extendedThinking: false,
+          onToggleExtendedThinking: async (checked) => {
+            try {
+              card.setStatus(checked ? 'AI đang suy luận chuyên sâu qua ảnh (Gemini 3.8 Extended)...' : 'AI đang phân tích câu hỏi trong hình ảnh...');
+              const resp = await requestCrop(checked);
+              card.setResult({
+                answer: resp.answer,
+                providerLabel: resp.providerLabel,
+              });
+            } catch (err) {
+              card.setError(err.message || String(err));
+            }
+          },
         });
 
-        const response = await chrome.runtime.sendMessage({
-          type: 'qaSolveQuestion',
-          payload: { imageBase64: croppedDataUrl }
-        });
-
-        if (!response || !response.ok) {
-          throw new Error(response?.error || 'Không nhận được phản hồi từ AI');
-        }
-
+        const initialResp = await requestCrop(false);
         card.setResult({
-          answer: response.answer,
-          providerLabel: response.providerLabel,
+          answer: initialResp.answer,
+          providerLabel: initialResp.providerLabel,
         });
       } catch (err) {
         closeCropOverlay();
@@ -907,7 +1035,10 @@
 
     setTimeout(() => {
       const selection = window.getSelection();
-      const text = extractSmartTextFromSelection(selection);
+      let text = extractSmartTextFromSelection(selection);
+      if (text && selection.rangeCount > 0) {
+        text = expandSelectionIfIncomplete(selection.getRangeAt(0), text);
+      }
 
       // Chỉ hiện khi bôi đen chuỗi đủ dài (> 10 ký tự)
       if (text && text.length > 10 && selection.rangeCount > 0) {
@@ -1000,7 +1131,11 @@
         startCropSolver();
       } else {
         // Alt + Q: Bôi đen giải chữ
-        const selected = extractSmartTextFromSelection(window.getSelection());
+        const selection = window.getSelection();
+        let selected = extractSmartTextFromSelection(selection);
+        if (selected && selection.rangeCount > 0) {
+          selected = expandSelectionIfIncomplete(selection.getRangeAt(0), selected);
+        }
         if (selected) {
           solveTextQuestion(selected);
         } else {
@@ -1017,6 +1152,8 @@
     cleanMathToPlainText,
     formatMarkdown,
     extractSmartTextFromSelection,
+    expandSelectionIfIncomplete,
+    compressAndResizeCanvas,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
