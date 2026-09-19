@@ -1,11 +1,27 @@
-# Native Page Translator VI / EN — Extension v4.5
+# Native Page Translator VI / EN — Extension v4.6
 
 Dịch toàn trang VI/EN và đổi tiếng Việt đang gõ thành tiếng Anh tự nhiên.
-Bản 4.5 tập trung vào **tối ưu tốc độ dịch Gemini & chống Rate Limit**: Viewport Priority Queue (dịch phần tầm mắt trước < 0.5s), Adaptive Concurrency Pool (3 batch song song, micro-staggering 30ms), ép `temperature: 0.1` và `thinkingBudget: 0` cho các request Gemini.
-Bản 4.4 thêm **dịch theo ngữ cảnh trang** cho các provider AI (Gemini/OpenAI): model nhìn host, tiêu đề và mô tả trang để chọn đúng nghĩa của từ đa nghĩa — "feed" trên mạng xã hội là "bảng tin", trên web thú cưng là "cho ăn/thức ăn".
-Bản 4.3 tập trung vào **tốc độ, quota và giao diện**: cache bản dịch dùng chung mọi tab, quét DOM một lượt, popup bám theo trạng thái trang thật, theme sáng/tối.
-Bản 4.2 thêm bộ tuỳ chọn **dịch trang nâng cao**: chế độ song ngữ, văn phong dịch, dịch lướt theo khung nhìn, nội dung động & SPA...
-Bản 4.1 thêm **hỗ trợ nhiều API key** (DeepL · Google AI Studio/Gemini · OpenAI-compatible) với xoay vòng key tự động.
+Bản 4.6 nâng cấp toàn diện **AI Solver với Gemini 3.8 Flash, Extended Thinking (Giải toán sâu), nén ảnh crop JPEG/1600px và mở rộng ngữ cảnh thông minh**.
+Bản 4.5 tập trung vào **tối ưu tốc độ dịch Gemini & chống Rate Limit**: Viewport Priority Queue (dịch phần tầm mắt trước < 0.5s), Adaptive Concurrency Pool (3 batch song song, micro-staggering 30ms).
+Bản 4.4 thêm **dịch theo ngữ cảnh trang** cho các provider AI (Gemini/OpenAI).
+Bản 4.3 tập trung vào **tốc độ, quota và giao diện**: cache bản dịch dùng chung mọi tab, quét DOM một lượt.
+
+## Có gì mới ở v4.6
+
+**Nâng cấp AI Solver: Gemini 3.8 Flash & Extended Thinking (Giải toán sâu)**
+
+- **Dòng mô hình Gemini 3 Series mới nhất** — Tích hợp `gemini-3.8-flash` (mô hình cờ đầu suy luận sâu), `gemini-3.5-flash-lite` (siêu tốc ~350 tokens/s làm mặc định cho giải nhanh & dịch trang), và `gemini-3.5-flash`. Toàn bộ các model cũ 2.0 / 2.5 đã được dọn sạch khỏi danh sách gợi ý.
+- **Chế độ "Giải toán sâu (Gemini 3.8 Extended Thinking)"** — Bổ sung nút toggle `🧠 Giải sâu (3.8)` ngay trên thẻ giải bài (QA Card) và trong trang Cài đặt. Khi bật, hệ thống tự động gọi `gemini-3.8-flash` với cấu hình chuẩn Google AI Studio REST API:
+  ```json
+  "generationConfig": {
+    "thinkingConfig": { "thinkingLevel": "high" },
+    "temperature": 1.0
+  }
+  ```
+  Giúp mô hình suy luận đa bước, giải quyết hoàn hảo các bài toán cao cấp, phương trình vi phân và các câu hỏi hóc búa. Có cơ chế tự động fallback nếu key không hỗ trợ.
+- **Nén ảnh chụp màn hình (Canvas Crop Optimization)** — Tự động resize kích thước tối đa 1600px trên màn hình Retina / 4K và nén ảnh sang định dạng JPEG chất lượng 85% thay vì PNG thô. Giảm 70-80% dung lượng payload, tăng tốc độ gửi ảnh và nhận bài giải từ AI Vision gấp 2-3 lần.
+- **Mở rộng vùng chọn thông minh (Smart Context Expansion)** — Khi bôi đen nhanh thiếu các đáp án A, B, C, D hoặc thiếu câu hỏi dẫn, extension tự động quét phần tử cha (`.question, tr, li, p, div...`) để gom đầy đủ ngữ cảnh gửi cho AI.
+- **Khắc phục lỗi Regex & Hiển thị Toán học** — Bảo vệ tuyệt đối các định danh biến dạng `snake_case` (`user_id`, `var_name`) không bị biến thành chữ thụt đáy (subscript). Ngăn chặn triệt để hiện tượng double-escaping HTML (`&amp;lt;`), giúp hiển thị công thức toán học chứa `<` và `>` luôn sắc nét và chuẩn xác.
 
 ## Có gì mới ở v4.5.1
 
@@ -82,9 +98,9 @@ Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options
 
 - **DeepL** — hỗ trợ tiếng Việt. Key free kết thúc bằng `:fx` (endpoint `api-free.deepl.com`), key Pro tự nhận diện.
   Extension **seed sẵn 1 key DeepL Free mặc định** để dùng ngay — xoá được trong Cài đặt.
-- **Google AI Studio (Gemini)** — lấy key tại <https://aistudio.google.com/apikey>, model mặc định `gemini-3.1-flash-lite` (rẻ, nhanh, ít token — hợp dịch). Có thể đổi sang `gemini-3.5-flash` nếu muốn chất lượng cao nhất.
+- **Google AI Studio (Gemini)** — lấy key tại <https://aistudio.google.com/apikey>, model mặc định `gemini-3.5-flash-lite` (siêu tốc ~350 tok/s, tiết kiệm token). Có thể dùng `gemini-3.8-flash` cho suy luận sâu và các câu hỏi phức tạp.
   - **Key chuẩn phải bắt đầu bằng `AIza`.** Nếu AI Studio trả về key dạng `AQ.`, tài khoản Google của bạn đang bị giới hạn — Gemini API sẽ từ chối key đó. Cách xử lý: tạo key trong project mới, dùng tài khoản Google khác, hoặc tạo API key tại [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (bật Generative Language API).
-  - Với model dòng 2.5, extension tự tắt "thinking" để tiết kiệm token.
+  - Tích hợp tuỳ chọn Google Search Grounding và Extended Thinking (`thinkingLevel: "high"`) khi giải câu hỏi khó.
 - **OpenAI-compatible** — endpoint tùy ý (OpenAI, LibreTranslate, API tự host...), có thể không cần key.
 
 ### Nhiều nhà cung cấp chạy song song
