@@ -43,7 +43,7 @@ async function run() {
     assert.equal(cfg.preferred, 'deepl');
     assert.equal(cfg.providers.deepl.keys.length, 1);
     assert.equal(cfg.providers.deepl.keys[0].key, 'a:fx');
-    assert.equal(cfg.providers.gemini.model, 'gemini-3.1-flash-lite');
+    assert.equal(cfg.providers.gemini.model, 'gemini-3.5-flash-lite');
     assert.equal(cfg.providers.openai.enabled, false);
   }
 
@@ -1472,6 +1472,33 @@ async function run() {
     // Test parse lines
     const lines = P.parseOcrVisionLines('Dòng 1\nDòng 2');
     assert.deepEqual(lines, [{ text: 'Dòng 1' }, { text: 'Dòng 2' }]);
+  }
+
+  // 74. buildQaRequest with Gemini 3.8 and extended thinking
+  {
+    const reqExtended = P.buildQaRequest({
+      providerId: 'gemini',
+      providerConfig: { model: 'gemini-3.5-flash-lite' },
+      apiKey: 'AIzaSyFakeKey123',
+      text: 'Giải phương trình vi phân y\'\' + y = 0',
+      extendedThinking: true
+    });
+    assert.match(reqExtended.url, /gemini-3\.8-flash/);
+    const bodyExtended = JSON.parse(reqExtended.body);
+    assert.deepEqual(bodyExtended.generationConfig.thinkingConfig, { thinkingLevel: 'high' });
+    assert.equal(bodyExtended.generationConfig.temperature, 1.0);
+
+    const reqNormal = P.buildQaRequest({
+      providerId: 'gemini',
+      providerConfig: { model: 'gemini-3.5-flash-lite' },
+      apiKey: 'AIzaSyFakeKey123',
+      text: 'Thủ đô của Việt Nam là gì?',
+      extendedThinking: false
+    });
+    assert.match(reqNormal.url, /gemini-3\.5-flash-lite/);
+    const bodyNormal = JSON.parse(reqNormal.body);
+    assert.equal(bodyNormal.generationConfig.thinkingConfig, undefined);
+    assert.equal(bodyNormal.generationConfig.temperature, 0.1);
   }
 
   console.log('Tất cả test providers.js đều PASS ✔');

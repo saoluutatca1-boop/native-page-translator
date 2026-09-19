@@ -917,7 +917,10 @@ async function handleQaSolveQuestion(payload, sender) {
     const text = String(payload?.text || '').trim();
     const dataUrl = String(payload?.dataUrl || payload?.imageBase64 || '');
     const imageBase64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
-    const mimeType = 'image/png';
+    const mimeMatch = dataUrl.match(/^data:(image\/\w+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : (payload?.mimeType || 'image/jpeg');
+    const extendedThinking = payload?.extendedThinking === true;
+    const thinkingLevel = payload?.thinkingLevel || 'high';
 
     if (!text && !imageBase64) {
       return { ok: false, error: 'Không có câu hỏi để giải' };
@@ -929,6 +932,8 @@ async function handleQaSolveQuestion(payload, sender) {
       text,
       imageBase64,
       mimeType,
+      extendedThinking,
+      thinkingLevel,
       fetchText: providerFetchText,
       keyState,
     });

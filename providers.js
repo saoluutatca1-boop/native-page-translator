@@ -32,12 +32,11 @@
       keyPlaceholder: 'Key chuẩn bắt đầu bằng AIza... (key dạng AQ. bị Google giới hạn)',
       needsModel: true,
       needsUrl: false,
-      defaultModel: 'gemini-3.1-flash-lite',
+      defaultModel: 'gemini-3.5-flash-lite',
       suggestedModels: [
-        'gemini-3.1-flash-lite',
+        'gemini-3.8-flash',
+        'gemini-3.5-flash-lite',
         'gemini-3.5-flash',
-        'gemini-2.5-flash-lite',
-        'gemini-2.5-flash',
       ],
       site: 'https://aistudio.google.com/apikey',
     },
@@ -1430,7 +1429,7 @@
     ].join('\n');
   }
 
-  function buildQaRequest({ providerId, providerConfig, apiKey, text, imageBase64, mimeType }) {
+  function buildQaRequest({ providerId, providerConfig, apiKey, text, imageBase64, mimeType, extendedThinking, thinkingLevel }) {
     const kind = providerKind(providerId);
     if (kind === 'deepl') throw new Error('QA_REQUIRES_LLM');
     if (imageBase64 && kind !== 'gemini') {
@@ -1441,21 +1440,37 @@
     const prompt = String(text || '').trim() || (imageBase64 ? 'Hãy phân tích kỹ hình ảnh câu hỏi dưới đây và đưa ra đáp án chính xác nhất kèm giải thích ngắn.' : '');
 
     if (kind === 'gemini') {
-      const rawModel = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      const isExtended = extendedThinking === true || providerConfig?.extendedThinking === true;
+      let rawModel = String(providerConfig?.model || PROVIDER_DEFS.gemini.defaultModel).trim();
+      if (isExtended && !rawModel.includes('3.8')) {
+        rawModel = 'gemini-3.8-flash';
+      }
       const model = rawModel.replace(/^models\//i, '');
       const parts = [{ text: prompt }];
       if (imageBase64) {
         parts.push({
           inline_data: {
-            mime_type: String(mimeType || 'image/png'),
+            mime_type: String(mimeType || 'image/jpeg'),
             data: String(imageBase64 || '')
           }
         });
       }
+
+      const generationConfig = isExtended
+        ? {
+            temperature: 1.0,
+            thinkingConfig: {
+              thinkingLevel: String(thinkingLevel || 'high').toLowerCase()
+            }
+          }
+        : {
+            temperature: 0.1
+          };
+
       const bodyPayload = {
         systemInstruction: { parts: [{ text: instructions }] },
         contents: [{ role: 'user', parts }],
-        generationConfig: { temperature: 0.1 },
+        generationConfig,
         safetySettings: GEMINI_SAFETY_SETTINGS,
       };
 
@@ -1500,7 +1515,7 @@
     throw new Error(`Provider không hỗ trợ: ${providerId}`);
   }
 
-  async function solveQuestionWithRotation({ config, text, imageBase64, mimeType, fetchText, keyState, now, sleep }) {
+  async function solveQuestionWithRotation({ config, text, imageBase64, mimeType, extendedThinking, thinkingLevel, fetchText, keyState, now, sleep }) {
     if (!text && !imageBase64) throw new Error('Không có nội dung câu hỏi');
 
     let eligibleProviders = {};
@@ -1542,6 +1557,8 @@
           text,
           imageBase64,
           mimeType,
+          extendedThinking,
+          thinkingLevel,
         });
         const response = await fetchText(request);
         let verdict = classifyResponse({
@@ -1553,17 +1570,25 @@
           retryAfterMs: response.retryAfterMs,
         });
 
-        // Nếu Gemini bị lỗi do tools/search (ví dụ 400 do model/key không hỗ trợ search tool), thử lại ngay không tools
-        if (verdict.kind !== 'ok' && providerKind(providerId) === 'gemini' && providerConfig?.googleSearch !== false) {
+        // Nếu Gemini bị lỗi do tools/search hoặc thinking (ví dụ 400), thử lại ngay với cấu hình an toàn
+        if (verdict.kind !== 'ok' && providerKind(providerId) === 'gemini') {
           const lower = String(verdict.message || response.bodyText || '').toLowerCase();
-          if (lower.includes('tool') || lower.includes('search') || response.status === 400) {
+          const isToolError = providerConfig?.googleSearch !== false && (lower.includes('tool') || lower.includes('search') || response.status === 400);
+          const isThinkingError = (extendedThinking || providerConfig?.extendedThinking) && (lower.includes('thinking') || response.status === 400);
+          if (isToolError || isThinkingError) {
             const fallbackReq = buildQaRequest({
               providerId,
-              providerConfig: { ...providerConfig, googleSearch: false },
+              providerConfig: {
+                ...providerConfig,
+                ...(isToolError ? { googleSearch: false } : {}),
+                ...(isThinkingError ? { extendedThinking: false } : {})
+              },
               apiKey,
               text,
               imageBase64,
               mimeType,
+              extendedThinking: isThinkingError ? false : extendedThinking,
+              thinkingLevel,
             });
             const fallbackResp = await fetchText(fallbackReq);
             const fallbackVerdict = classifyResponse({
