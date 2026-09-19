@@ -363,6 +363,48 @@ async function run() {
     assert.match(msg, /thêm 1-2 API key Gemini phụ/, 'Phải gợi ý thêm key phụ');
   }
 
+  // 12. Kiểm tra render các ký hiệu toán nâng cao: \cong, \smile, \deg, cases environment, α2, ≠q
+  {
+    const Q = require('../qa-solver.js');
+    const userSample = 'Đáp án: H^*(Sn; ℤ) \\cong ℤ[α]/(α2) và H^*(Sn; ℤ/2) \\cong (ℤ/2)[β]/(β2) (với \\deg(α) = \\deg(β) = n).\n' +
+      'Giải thích chi tiết:\n' +
+      '- Cấu trúc nhóm đối đồng điều: Với mặt cầu Sn (n ≥ 5 liên thông):\n' +
+      '- Hk(Sn; ℤ) \\cong \\begin{cases} ℤ & khi k = 0 hoặc k = n \\\\ 0 & khi k ≠q 0, n \\end{cases}\n' +
+      '- Cấu trúc vành (tích cup \\smile): Do tích của hai phần tử bậc n...';
+
+    // A. Kiểm tra cleanMathToPlainText (chức năng copy clipboard)
+    const plain = Q.cleanMathToPlainText(userSample);
+    assert.ok(!plain.includes('\\cong'), 'Plain text không được chứa \\cong');
+    assert.ok(!plain.includes('\\smile'), 'Plain text không được chứa \\smile');
+    assert.ok(!plain.includes('\\deg'), 'Plain text không được chứa \\deg');
+    assert.ok(!plain.includes('\\begin{cases}'), 'Plain text không được chứa \\begin{cases}');
+    assert.ok(!plain.includes('≠q'), 'Plain text không được chứa lỗi ≠q');
+    assert.match(plain, /≅/, 'Phải thay \\cong thành ≅');
+    assert.match(plain, /⌣/, 'Phải thay \\smile thành ⌣');
+    assert.match(plain, /deg\(α\)/, 'Phải chuyển \\deg(α) thành deg(α)');
+    assert.match(plain, /α²/, 'Phải chuyển α2 thành α²');
+    assert.match(plain, /\{ ℤ khi k = 0 hoặc k = n ; 0 khi k ≠ 0, n \}/, 'Cases phải chuyển thành chuỗi { ... } dễ đọc');
+
+    // B. Kiểm tra formatMarkdown (hiển thị UI)
+    const html = Q.formatMarkdown(userSample);
+    assert.ok(!html.includes('\\cong'), 'HTML không được chứa \\cong thô');
+    assert.ok(!html.includes('\\smile'), 'HTML không được chứa \\smile thô');
+    assert.match(html, /≅/);
+    assert.match(html, /⌣/);
+    assert.match(html, /npt-math-cases/, 'Môi trường cases phải sinh ra thẻ span npt-math-cases');
+    assert.match(html, /<sup>2<\/sup>|²/, 'α2 phải được định dạng số mũ');
+  }
+
+  // 13. Kiểm tra splitAnswerAndExplanation tách đúng Hero Answer và Accordion Explanation
+  {
+    const Q = require('../qa-solver.js');
+    const input = 'Đáp án: H^*(Sn; ℤ) \\cong ℤ[α]/(α2)\nGiải thích chi tiết:\n- Cấu trúc nhóm đối đồng điều: Với mặt cầu Sn';
+    const { answerText, explanationText } = Q.splitAnswerAndExplanation(input);
+    assert.equal(answerText, 'Đáp án: H^*(Sn; ℤ) \\cong ℤ[α]/(α2)');
+    assert.match(explanationText, /^Giải thích chi tiết:/);
+    assert.match(explanationText, /mặt cầu Sn/);
+  }
+
   console.log('Tất cả test qa-solver.test.js đều PASS ✔');
 }
 

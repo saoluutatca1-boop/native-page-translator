@@ -49,6 +49,17 @@
           0%, 100% { opacity: 1; }
           50% { opacity: 0.4; }
         }
+        .npt-math-font {
+          font-family: 'STIX Two Math', 'Cambria Math', 'KaTeX_Math', 'Latin Modern Math', 'Times New Roman', serif;
+          letter-spacing: 0.01em;
+        }
+        .npt-math-cases {
+          display: inline-flex;
+          align-items: center;
+          vertical-align: middle;
+          margin: 3px 4px;
+          font-style: normal;
+        }
       `;
       shadowRoot.appendChild(style);
 
@@ -152,9 +163,37 @@
     '\\mathbb{C}': 'ℂ', '\\mathbf{C}': 'ℂ',
     '\\mathbb{P}': 'ℙ', '\\mathbb{H}': 'ℍ',
     '\\ell': 'ℓ',
+    // Đồng cấu, quan hệ tương đương & phép toán topo / đại số
+    '\\cong': '≅',
+    '\\sim': '∼',
+    '\\simeq': '≃',
+    '\\approx': '≈',
+    '\\equiv': '≡',
+    '\\smile': '⌣', // Tích cup (tô pô đại số)
+    '\\frown': '⌢', // Tích cap
+    '\\perp': '⊥',
+    '\\parallel': '∥',
+    '\\oplus': '⊕',
+    '\\otimes': '⊗',
+    '\\odot': '⊙',
+    '\\vee': '∨',
+    '\\wedge': '∧',
+    '\\neg': '¬',
+    '\\propto': '∝',
+    '\\star': '⋆',
+    '\\ast': '∗',
+    '\\hbar': 'ℏ',
+    '\\deg': 'deg',
+    '\\angle': '∠',
+    '\\triangle': '△',
+    '\\square': '□',
+    '\\aleph': 'ℵ',
+    '\\Re': 'ℜ',
+    '\\Im': 'ℑ',
+    '\\mapsto': '↦',
     // Toán tử & Quan hệ
     '\\le': '≤', '\\leq': '≤', '\\ge': '≥', '\\geq': '≥',
-    '\\ne': '≠', '\\neq': '≠', '\\approx': '≈', '\\equiv': '≡',
+    '\\ne': '≠', '\\neq': '≠',
     '\\pm': '±', '\\mp': '∓', '\\times': '×', '\\div': '÷',
     '\\cdot': '·', '\\circ': '∘', '\\bullet': '•',
     '\\to': '→', '\\rightarrow': '→', '\\implies': '⇒', '\\Rightarrow': '⇒',
@@ -167,8 +206,27 @@
     '\\emptyset': '∅', '\\varnothing': '∅',
     '\\partial': '∂', '\\nabla': '∇',
     '\\dots': '…', '\\ldots': '…', '\\cdots': '…', '\\vdots': '⋮', '\\ddots': '⋱',
-    '\\sum': '∑', '\\prod': '∏', '\\int': '∫',
+    '\\sum': '∑', '\\prod': '∏', '\\coprod': '∐', '\\int': '∫',
+    '\\iint': '∬', '\\iiint': '∭', '\\oint': '∮',
   };
+
+  /* ------------------------------------------------------------------
+   * Helper: Render môi trường cases (hệ phương trình / chia nhánh ngoặc nhọn {)
+   * ------------------------------------------------------------------ */
+  function renderCasesSnippet(content) {
+    const rawLines = String(content || '').split(/\\\\|\\cr/).map(l => l.trim()).filter(Boolean);
+    if (!rawLines.length) return '';
+    const rowSpans = rawLines.map(line => {
+      const parts = line.split('&').map(p => p.trim());
+      const val = renderLatexSnippet(parts[0] || '');
+      const cond = parts.slice(1).map(p => renderLatexSnippet(p)).join(' ');
+      if (cond) {
+        return `<span style="display:flex; justify-content:space-between; gap:14px; align-items:baseline;"><span>${val}</span><span style="opacity:0.85; font-size:0.95em;">${cond}</span></span>`;
+      }
+      return `<span>${val}</span>`;
+    });
+    return `<span class="npt-math-cases" style="display:inline-flex; align-items:center; vertical-align:middle; margin:3px 4px; font-style:normal;"><span style="font-size:2.2em; line-height:0.9; margin-right:6px; font-weight:200; font-family:'STIX Two Math','Cambria Math',serif; user-select:none;">{</span><span style="display:inline-flex; flex-direction:column; gap:3px; text-align:left; font-size:0.92em;">${rowSpans.join('')}</span></span>`;
+  }
 
   /* ------------------------------------------------------------------
    * Helper: Render một đoạn snippet TeX / LaTeX thành chuỗi HTML toán học đẹp
@@ -177,8 +235,14 @@
     if (!tex) return '';
     let s = String(tex).trim();
 
+    // 0. Xử lý môi trường cases trước khi escape
+    s = s.replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_, content) => renderCasesSnippet(content));
+
     // Escape ký tự HTML trước khi chèn thẻ <sup>, <sub>, <span>
     s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Chuẩn hóa lỗi tokenization / OCR
+    s = s.replace(/≠q\b/g, '≠');
 
     // 1. Tập hợp \mathbb{...}
     s = s.replace(/\\mathbb\{([A-Za-z])\}/g, (_, ch) => {
@@ -210,8 +274,10 @@
     // 5. Số mũ ^{...} và chỉ số dưới _{...}
     s = s.replace(/\^\{([^{}]+)\}/g, (_, p) => `<sup>${renderLatexSnippet(p)}</sup>`);
     s = s.replace(/\_\{([^{}]+)\}/g, (_, b) => `<sub>${renderLatexSnippet(b)}</sub>`);
-    s = s.replace(/\^([0-9a-zA-Z])/g, (_, p) => `<sup>${p}</sup>`);
+    s = s.replace(/\^([0-9a-zA-Z*])/g, (_, p) => `<sup>${p}</sup>`);
     s = s.replace(/\_([0-9a-zA-Z])/g, (_, b) => `<sub>${b}</sub>`);
+    s = s.replace(/([α-ωΑ-Ω])([0-9])\b/g, '$1<sup>$2</sup>');
+    s = s.replace(/\^\*/g, '<sup>*</sup>');
 
     // 6. Text, font modifiers
     s = s.replace(/\\text\{([^{}]+)\}/g, '$1');
@@ -221,8 +287,8 @@
     s = s.replace(/\\vec\{([^{}]+)\}/g, '$1⃗');
     s = s.replace(/\\overline\{([^{}]+)\}/g, '<span style="text-decoration:overline">$1</span>');
 
-    // 7. Hàm toán
-    s = s.replace(/\\(sin|cos|tan|cot|log|ln|exp|det|ker|dim|max|min|sup|inf|lim)\b/g, '$1');
+    // 7. Hàm toán học
+    s = s.replace(/\\(sin|cos|tan|cot|arcsin|arccos|arctan|sinh|cosh|tanh|log|ln|lg|exp|det|ker|dim|deg|gcd|hom|mod|rank|max|min|sup|inf|lim)\b/g, '$1');
 
     // 8. Dấu ngoặc & thanh chuẩn |
     s = s.replace(/\\left\(/g, '(').replace(/\\right\)/g, ')');
@@ -243,13 +309,24 @@
    * ------------------------------------------------------------------ */
   function cleanMathToPlainText(text) {
     if (!text) return '';
-    let s = String(text);
+    let s = String(text).replace(/≠q\b/g, '≠');
 
     // Gỡ các delimiter $ và $$
     s = s.replace(/\$\$([\s\S]+?)\$\$/g, '$1');
     s = s.replace(/\$([^\$\n]+?)\$/g, '$1');
     s = s.replace(/\\\[([\s\S]+?)\\\]/g, '$1');
     s = s.replace(/\\\(([\s\S]+?)\\\)/g, '$1');
+
+    const casesTokens = [];
+    // Cases environment sang dạng chuỗi plain text
+    s = s.replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_, content) => {
+      const cleaned = content.replace(/≠q\b/g, '≠');
+      const rows = cleaned.split(/\\\\|\\cr/).map(r => r.trim()).filter(Boolean);
+      const str = '{ ' + rows.map(r => r.split('&').map(c => c.trim()).join(' ')).join(' ; ') + ' }';
+      const token = `@@NPTCASESTOKEN${casesTokens.length}@@`;
+      casesTokens.push(str);
+      return token;
+    });
 
     // Chuyển LaTeX sang Unicode
     for (const [cmd, sym] of Object.entries(LATEX_SYMBOLS)) {
@@ -261,13 +338,15 @@
     });
 
     // Mũ số & chỉ số Unicode thông dụng
-    const supers = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '+': '⁺', '-': '⁻', 'n': 'ⁿ', 'x': 'ˣ' };
-    const subs = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉', '+': '₊', '-': '₋', 'n': 'ₙ', 'i': 'ᵢ', 'j': 'ⱼ' };
+    const supers = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '+': '⁺', '-': '⁻', 'n': 'ⁿ', 'x': 'ˣ', '*': '﹡' };
+    const subs = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉', '+': '₊', '-': '₋', 'n': 'ₙ', 'i': 'ᵢ', 'j': 'ⱼ', 'k': 'ₖ' };
 
-    s = s.replace(/\^\{([0-9+\-nx])\}/g, (_, ch) => supers[ch] || `^${ch}`);
-    s = s.replace(/\^([0-9+\-nx])\b/g, (_, ch) => supers[ch] || `^${ch}`);
-    s = s.replace(/\_\{([0-9+\-nixy])\}/g, (_, ch) => subs[ch] || `_${ch}`);
-    s = s.replace(/\_([0-9+\-nixy])\b/g, (_, ch) => subs[ch] || `_${ch}`);
+    s = s.replace(/\^\{([0-9+\-nx*])\}/g, (_, ch) => supers[ch] || `^${ch}`);
+    s = s.replace(/\^([0-9+\-nx*])\b/g, (_, ch) => supers[ch] || `^${ch}`);
+    s = s.replace(/\_\{([0-9+\-nixyk])\}/g, (_, ch) => subs[ch] || `_${ch}`);
+    s = s.replace(/\_([0-9+\-nixyk])\b/g, (_, ch) => subs[ch] || `_${ch}`);
+    s = s.replace(/([α-ωΑ-Ω])([0-9])\b/g, (_, g, n) => g + (supers[n] || n));
+    s = s.replace(/\^\*/g, '*');
 
     let fracLimit = 5;
     while (/\\frac\{([^{}]+)\}\{([^{}]+)\}/.test(s) && fracLimit-- > 0) {
@@ -280,11 +359,16 @@
     s = s.replace(/\\mathbf\{([^{}]+)\}/g, '$1');
     s = s.replace(/\\mathit\{([^{}]+)\}/g, '$1');
     s = s.replace(/\\vec\{([^{}]+)\}/g, '$1⃗');
-    s = s.replace(/\\(sin|cos|tan|cot|log|ln|exp|det|ker|dim|max|min|sup|inf|lim)\b/g, '$1');
+    s = s.replace(/\\(sin|cos|tan|cot|arcsin|arccos|arctan|sinh|cosh|tanh|log|ln|lg|exp|det|ker|dim|deg|gcd|hom|mod|rank|max|min|sup|inf|lim)\b/g, '$1');
     s = s.replace(/\\left[()\[\]|{}]/g, '');
     s = s.replace(/\\right[()\[\]|{}]/g, '');
     s = s.replace(/\\(quad|qquad|,|;|!)/g, ' ');
     s = s.replace(/[{}]/g, '');
+
+    // Khôi phục cases tokens
+    casesTokens.forEach((cStr, idx) => {
+      s = s.split(`@@NPTCASESTOKEN${idx}@@`).join(cStr);
+    });
 
     s = s.replace(/\*\*(.+?)\*\*/g, '$1');
     return s.trim();
@@ -299,12 +383,20 @@
     const mathTokens = [];
     let processed = String(text);
 
+    // 0. Cases math environment (kể cả khi không nằm trong $)
+    processed = processed.replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_, content) => {
+      const rendered = renderCasesSnippet(content);
+      const token = `@@NPTCASES${mathTokens.length}@@`;
+      mathTokens.push(rendered);
+      return token;
+    });
+
     // 1. Block math: $$ ... $$ hoặc \[ ... \]
     processed = processed.replace(/\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g, (_, p1, p2) => {
       const formula = (p1 || p2 || '').trim();
       const rendered = renderLatexSnippet(formula);
       const token = `@@NPTBLOCK${mathTokens.length}@@`;
-      mathTokens.push(`<div class="npt-math-block" style="text-align:center; margin:8px 0; font-family:'Cambria Math','KaTeX_Math','Times New Roman',serif; font-style:italic; font-size:1.05em; color:inherit;">${rendered}</div>`);
+      mathTokens.push(`<div class="npt-math-block" style="text-align:center; margin:8px 0; font-family:'STIX Two Math','Cambria Math','KaTeX_Math','Times New Roman',serif; font-style:italic; font-size:1.05em; color:inherit;">${rendered}</div>`);
       return token;
     });
 
@@ -313,7 +405,7 @@
       const formula = (p1 || p2 || '').trim();
       const rendered = renderLatexSnippet(formula);
       const token = `@@NPTINLINE${mathTokens.length}@@`;
-      mathTokens.push(`<span class="npt-math-inline" style="font-family:'Cambria Math','KaTeX_Math','Times New Roman',serif; font-style:italic; padding:0 2px; color:inherit;">${rendered}</span>`);
+      mathTokens.push(`<span class="npt-math-inline" style="font-family:'STIX Two Math','Cambria Math','KaTeX_Math','Times New Roman',serif; font-style:italic; padding:0 2px; color:inherit;">${rendered}</span>`);
       return token;
     });
 
@@ -337,6 +429,16 @@
       }
     }
 
+    // 4b. Chuẩn hóa ký hiệu rời & chỉ số ngoài $
+    safe = safe.replace(/≠q\b/g, '≠');
+    safe = safe.replace(/\\deg\b(?:\(([^)]+)\))?/g, (_, arg) => arg ? `deg(${arg})` : 'deg');
+    safe = safe.replace(/\^\*/g, '<sup>*</sup>');
+    safe = safe.replace(/([α-ωΑ-Ω])([0-9])\b/g, '$1<sup>$2</sup>');
+    safe = safe.replace(/\\mathbb\{([A-Za-z])\}/g, (_, ch) => {
+      const sets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
+      return sets[ch] || ch;
+    });
+
     // 5. Markdown (bold, code, italic, newlines)
     safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     safe = safe.replace(/`([^`\n]+?)`/g, '<code style="background:rgba(128,128,128,0.2); padding:1px 4px; border-radius:3px; font-family:monospace; font-size:12px;">$1</code>');
@@ -345,11 +447,37 @@
 
     // 6. Khôi phục các math tokens
     mathTokens.forEach((renderedHtml, idx) => {
+      safe = safe.split(`@@NPTCASES${idx}@@`).join(renderedHtml);
       safe = safe.split(`@@NPTBLOCK${idx}@@`).join(renderedHtml);
       safe = safe.split(`@@NPTINLINE${idx}@@`).join(renderedHtml);
     });
 
     return safe;
+  }
+
+  /* ------------------------------------------------------------------
+   * Helper: Tách thông minh Đáp án & Giải thích chi tiết
+   * ------------------------------------------------------------------ */
+  function splitAnswerAndExplanation(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return { answerText: '', explanationText: '' };
+
+    // Tìm vị trí của tiêu đề giải thích (Giải thích, Giải thích chi tiết, Lời giải, Lý do, Bước giải...)
+    const expMatch = text.match(/\n\s*(?:(?:\*\*|#{1,4}\s*)?(?:Giải thích(?: chi tiết)?|Lời giải(?: chi tiết)?|Lý do|Hướng dẫn giải|Phân tích|Bước giải):?(?:\*\*)?)/i);
+
+    if (expMatch && expMatch.index !== undefined) {
+      const answerText = text.slice(0, expMatch.index).trim();
+      const explanationText = text.slice(expMatch.index).trim();
+      if (answerText) {
+        return { answerText, explanationText };
+      }
+    }
+
+    // Nếu không có từ khóa giải thích rõ ràng, tách dòng 1 làm đáp án, phần còn lại làm giải thích
+    const lines = text.split('\n');
+    const answerText = (lines[0] || '').trim();
+    const explanationText = lines.slice(1).join('\n').trim();
+    return { answerText, explanationText };
   }
 
   /* ------------------------------------------------------------------
@@ -587,8 +715,9 @@
       position: 'fixed',
       top: '75px',
       right: '25px',
-      width: '360px',
-      maxHeight: '480px',
+      width: '440px',
+      maxWidth: 'calc(100vw - 32px)',
+      maxHeight: '580px',
       backgroundColor: isDark ? '#1e293b' : '#ffffff',
       color: isDark ? '#f8fafc' : '#0f172a',
       border: `1px solid ${isDark ? '#334155' : '#e2e8f0'}`,
@@ -707,8 +836,8 @@
     });
 
     const copyBtn = document.createElement('button');
-    copyBtn.textContent = '📋 Sao chép';
-    copyBtn.title = 'Copy đáp án vào clipboard';
+    copyBtn.textContent = '📋 Chép tất cả';
+    copyBtn.title = 'Copy toàn bộ đáp án và giải thích vào clipboard';
     Object.assign(copyBtn.style, {
       padding: '6px 12px',
       border: `1px solid ${isDark ? '#475569' : '#cbd5e1'}`,
@@ -787,30 +916,164 @@
           headerTitle.textContent = `${title} (${providerLabel})`;
         }
 
-        const lines = answer.split('\n');
-        const firstLine = (lines[0] || '').trim();
-        const explanation = lines.slice(1).join('\n').trim();
+        const { answerText, explanationText } = splitAnswerAndExplanation(answer);
 
-        // Khung đáp án nổi bật
-        const answerBox = document.createElement('div');
-        Object.assign(answerBox.style, {
-          backgroundColor: isDark ? '#064e3b' : '#ecfdf5',
-          border: `1px solid ${isDark ? '#059669' : '#a7f3d0'}`,
-          color: isDark ? '#6ee7b7' : '#065f46',
-          padding: '10px 14px',
-          borderRadius: '8px',
-          fontWeight: '600',
-          fontSize: '15px',
+        // Khung đáp án nổi bật (Hero Answer Card)
+        const answerCard = document.createElement('div');
+        Object.assign(answerCard.style, {
+          backgroundColor: isDark ? 'rgba(6, 78, 59, 0.45)' : '#ecfdf5',
+          border: `1.5px solid ${isDark ? '#059669' : '#10b981'}`,
+          borderRadius: '10px',
+          padding: '12px 14px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px',
+          boxShadow: isDark ? '0 4px 12px rgba(0, 0, 0, 0.25)' : '0 2px 8px rgba(16, 185, 129, 0.12)',
         });
-        answerBox.innerHTML = formatMarkdown(firstLine);
-        body.appendChild(answerBox);
 
-        if (explanation) {
-          const expBox = document.createElement('div');
-          expBox.style.fontSize = '13px';
-          expBox.style.color = isDark ? '#cbd5e1' : '#334155';
-          expBox.innerHTML = formatMarkdown(explanation);
-          body.appendChild(expBox);
+        // Top bar của khung đáp án: Badge + Nút Copy riêng cho Đáp án
+        const answerTopBar = document.createElement('div');
+        Object.assign(answerTopBar.style, {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          userSelect: 'none',
+        });
+
+        const badge = document.createElement('span');
+        badge.textContent = '🎯 ĐÁP ÁN CHÍNH XÁC';
+        Object.assign(badge.style, {
+          fontSize: '11px',
+          fontWeight: '700',
+          letterSpacing: '0.05em',
+          color: isDark ? '#34d399' : '#059669',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '4px',
+        });
+
+        const copyAnswerBtn = document.createElement('button');
+        copyAnswerBtn.textContent = '📋 Chép đáp án';
+        copyAnswerBtn.title = 'Chép riêng phần đáp án này';
+        Object.assign(copyAnswerBtn.style, {
+          background: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)',
+          border: `1px solid ${isDark ? 'rgba(52, 211, 153, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+          color: isDark ? '#a7f3d0' : '#065f46',
+          borderRadius: '5px',
+          padding: '2px 8px',
+          fontSize: '11px',
+          fontWeight: '500',
+          cursor: 'pointer',
+          transition: 'all 0.15s ease',
+        });
+
+        const cleanAnswerOnly = cleanMathToPlainText(answerText);
+        copyAnswerBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(cleanAnswerOnly);
+            copyAnswerBtn.textContent = '✔ Đã chép!';
+            setTimeout(() => { copyAnswerBtn.textContent = '📋 Chép đáp án'; }, 1600);
+          } catch (_) {
+            showToast('Không thể sao chép');
+          }
+        });
+
+        answerTopBar.appendChild(badge);
+        answerTopBar.appendChild(copyAnswerBtn);
+        answerCard.appendChild(answerTopBar);
+
+        // Nội dung đáp án (Font toán học học thuật, rõ nét, ngắt dòng đẹp khi câu dài)
+        const answerContent = document.createElement('div');
+        Object.assign(answerContent.style, {
+          fontSize: '15px',
+          lineHeight: '1.6',
+          fontWeight: '600',
+          color: isDark ? '#f0fdf4' : '#064e3b',
+          fontFamily: "'STIX Two Text', 'Cambria Math', 'KaTeX_Math', 'Segoe UI', -apple-system, sans-serif",
+          wordBreak: 'break-word',
+          letterSpacing: '0.01em',
+        });
+        answerContent.innerHTML = formatMarkdown(answerText);
+        answerCard.appendChild(answerContent);
+
+        body.appendChild(answerCard);
+
+        // Phần giải thích với Accordion Thu nhỏ / Mở rộng
+        if (explanationText) {
+          const expContainer = document.createElement('div');
+          Object.assign(expContainer.style, {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+            marginTop: '2px',
+          });
+
+          // Thanh Accordion Header có thể bấm để Thu nhỏ / Mở rộng
+          let isExpanded = true;
+          const expToggleBar = document.createElement('div');
+          Object.assign(expToggleBar.style, {
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '8px 12px',
+            backgroundColor: isDark ? '#1e293b' : '#f1f5f9',
+            border: `1px solid ${isDark ? '#334155' : '#e2e8f0'}`,
+            borderRadius: '8px',
+            cursor: 'pointer',
+            userSelect: 'none',
+            fontSize: '12px',
+            fontWeight: '600',
+            color: isDark ? '#94a3b8' : '#475569',
+            transition: 'background-color 0.15s ease',
+          });
+
+          const expTitle = document.createElement('span');
+          expTitle.innerHTML = '💡 <strong>Giải thích chi tiết</strong>';
+
+          const expArrow = document.createElement('span');
+          expArrow.textContent = '▾ Thu gọn';
+          expArrow.style.fontSize = '11px';
+          expArrow.style.color = isDark ? '#38bdf8' : '#0284c7';
+
+          expToggleBar.appendChild(expTitle);
+          expToggleBar.appendChild(expArrow);
+          expContainer.appendChild(expToggleBar);
+
+          // Nội dung giải thích
+          const expContent = document.createElement('div');
+          Object.assign(expContent.style, {
+            fontSize: '13px',
+            lineHeight: '1.65',
+            color: isDark ? '#cbd5e1' : '#334155',
+            padding: '10px 12px',
+            backgroundColor: isDark ? 'rgba(15, 23, 42, 0.4)' : 'rgba(248, 250, 252, 0.8)',
+            borderLeft: `3px solid ${isDark ? '#38bdf8' : '#0284c7'}`,
+            borderRadius: '0 8px 8px 0',
+            overflowX: 'auto',
+            transition: 'all 0.2s ease',
+            fontFamily: "'STIX Two Text', 'Cambria Math', 'Segoe UI', -apple-system, sans-serif",
+          });
+
+          // Bỏ qua dòng tiêu đề "Giải thích chi tiết:" nếu có để tránh lặp với expToggleBar
+          let cleanExpBody = explanationText;
+          cleanExpBody = cleanExpBody.replace(/^(?:(?:\*\*|#{1,4}\s*)?(?:Giải thích(?: chi tiết)?|Lời giải(?: chi tiết)?|Lý do|Hướng dẫn giải|Phân tích|Bước giải):?(?:\*\*)?)\s*\n?/i, '').trim();
+
+          expContent.innerHTML = formatMarkdown(cleanExpBody || explanationText);
+          expContainer.appendChild(expContent);
+
+          expToggleBar.addEventListener('click', () => {
+            isExpanded = !isExpanded;
+            if (isExpanded) {
+              expContent.style.display = 'block';
+              expArrow.textContent = '▾ Thu gọn';
+            } else {
+              expContent.style.display = 'none';
+              expArrow.textContent = '▸ Xem giải thích';
+            }
+          });
+
+          body.appendChild(expContainer);
         }
       },
       setError: (errorMessage) => {
@@ -1197,13 +1460,16 @@
 
   const api = {
     LATEX_SYMBOLS,
+    renderCasesSnippet,
     renderLatexSnippet,
     cleanMathToPlainText,
     formatMarkdown,
+    splitAnswerAndExplanation,
     extractSmartTextFromSelection,
     expandSelectionIfIncomplete,
     compressAndResizeCanvas,
     friendlyError,
+    showSolverCard,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
