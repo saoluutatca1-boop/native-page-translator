@@ -484,6 +484,14 @@ function renderProviderFields(card, providerId) {
     searchWrap.style.cursor = 'pointer';
     fields.appendChild(searchWrap);
 
+    const searchHint = el('div', 'hint-text');
+    searchHint.textContent = '💡 Google Search trên Free tier có hạn mức riêng (1-5 lượt/phút). Extension sẽ tự động bỏ search để giải tiếp nếu hết quota.';
+    searchHint.style.fontSize = '11px';
+    searchHint.style.color = '#6b7280';
+    searchHint.style.marginLeft = '20px';
+    searchHint.style.marginTop = '2px';
+    fields.appendChild(searchHint);
+
     const extendedWrap = el('label', 'checkbox-label');
     const extendedCheck = document.createElement('input');
     extendedCheck.type = 'checkbox';

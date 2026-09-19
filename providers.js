@@ -717,8 +717,30 @@
     }
 
     if (status === 429) {
-      // Provider nói rõ chờ bao lâu thì nghe theo; không có header mới đoán 2 phút.
-      const hinted = Number(retryAfterMs) > 0 ? Math.min(Number(retryAfterMs), MAX_RETRY_AFTER_MS) : 0;
+      // Provider nói rõ chờ bao lâu thì nghe theo; kiểm tra cả header lẫn detail/message trong bodyText
+      let retryMs = Number(retryAfterMs) > 0 ? Number(retryAfterMs) : 0;
+      if (!retryMs && bodyText) {
+        try {
+          const parsed = JSON.parse(bodyText);
+          const details = Array.isArray(parsed?.error?.details) ? parsed.error.details : [];
+          for (const d of details) {
+            if (d?.retryDelay) {
+              const m = String(d.retryDelay).match(/^([0-9.]+)\s*s/i);
+              if (m) {
+                retryMs = Math.round(parseFloat(m[1]) * 1000);
+                break;
+              }
+            }
+          }
+          if (!retryMs && parsed?.error?.message) {
+            const m = String(parsed.error.message).match(/retry\s+(?:after|in)\s+([0-9.]+)\s*s/i);
+            if (m) {
+              retryMs = Math.round(parseFloat(m[1]) * 1000);
+            }
+          }
+        } catch (_) {}
+      }
+      const hinted = retryMs > 0 ? Math.min(retryMs, MAX_RETRY_AFTER_MS) : 0;
       const cooldownMs = hinted ? Math.max(5000, hinted) : 2 * 60 * 1000;
       return { kind: 'keyFailed', message: `${def.label}: bị giới hạn tốc độ (HTTP 429)`, cooldownMs };
     }
@@ -1550,14 +1572,27 @@
       now,
       sleep,
       attempt: async ({ providerId, providerConfig, providerLabel, apiKey }) => {
+        const currentTime = now ? now() : Date.now();
+        // Kiểm tra xem tool search có đang bị tạm ngưng do cạn quota search grounding không
+        const isSearchCoolingDown = Boolean(keyState?.searchCooldownUntil && keyState.searchCooldownUntil > currentTime);
+        const allowSearch = providerConfig?.googleSearch !== false && !isSearchCoolingDown;
+
+        // Kiểm tra xem Extended Thinking có đang bị tạm ngưng do cạn TPM token không
+        const isThinkingCoolingDown = Boolean(keyState?.extendedThinkingCooldownUntil && keyState.extendedThinkingCooldownUntil > currentTime);
+        const allowExtended = (extendedThinking || providerConfig?.extendedThinking) && !isThinkingCoolingDown;
+
         const request = buildQaRequest({
           providerId,
-          providerConfig,
+          providerConfig: {
+            ...providerConfig,
+            googleSearch: allowSearch,
+            extendedThinking: allowExtended,
+          },
           apiKey,
           text,
           imageBase64,
           mimeType,
-          extendedThinking,
+          extendedThinking: allowExtended,
           thinkingLevel,
         });
         const response = await fetchText(request);
@@ -1570,24 +1605,30 @@
           retryAfterMs: response.retryAfterMs,
         });
 
-        // Nếu Gemini bị lỗi do tools/search hoặc thinking (ví dụ 400), thử lại ngay với cấu hình an toàn
+        // Nếu Gemini bị lỗi (429 Rate Limit do cạn quota Search Grounding/TPM, lỗi 400 do tools/thinking, hoặc providerFailed):
+        // Thử lại ngay các cấp độ fallback an toàn trên cùng API key trước khi đánh dấu keyFailed.
         if (verdict.kind !== 'ok' && providerKind(providerId) === 'gemini') {
-          const lower = String(verdict.message || response.bodyText || '').toLowerCase();
-          const isToolError = providerConfig?.googleSearch !== false && (lower.includes('tool') || lower.includes('search') || response.status === 400);
-          const isThinkingError = (extendedThinking || providerConfig?.extendedThinking) && (lower.includes('thinking') || response.status === 400);
-          if (isToolError || isThinkingError) {
+          const rawErr = `${verdict.message || ''} ${response.bodyText || ''}`.toLowerCase();
+          const is429 = response.status === 429 || verdict.kind === 'keyFailed' || rawErr.includes('429') || rawErr.includes('resource_exhausted');
+          const isToolIssue = allowSearch && (is429 || rawErr.includes('tool') || rawErr.includes('search') || rawErr.includes('grounding') || response.status === 400);
+
+          // Cấp 1: Fallback gỡ bỏ Search Grounding (khắc phục 95% lỗi 429 Free Tier do cạn quota Grounding Search Queries)
+          if (isToolIssue) {
+            if (keyState) {
+              keyState.searchCooldownUntil = currentTime + 60000;
+            }
             const fallbackReq = buildQaRequest({
               providerId,
               providerConfig: {
                 ...providerConfig,
-                ...(isToolError ? { googleSearch: false } : {}),
-                ...(isThinkingError ? { extendedThinking: false } : {})
+                googleSearch: false,
+                extendedThinking: allowExtended,
               },
               apiKey,
               text,
               imageBase64,
               mimeType,
-              extendedThinking: isThinkingError ? false : extendedThinking,
+              extendedThinking: allowExtended,
               thinkingLevel,
             });
             const fallbackResp = await fetchText(fallbackReq);
@@ -1600,8 +1641,79 @@
               retryAfterMs: fallbackResp.retryAfterMs,
             });
             if (fallbackVerdict.kind === 'ok') {
-              verdict = fallbackVerdict;
+              return { verdict: fallbackVerdict };
             }
+            verdict = fallbackVerdict;
+          }
+
+          // Cấp 2: Fallback tắt Extended Thinking / hạ về Gemini 3.5 Flash Lite
+          // (khắc phục lỗi 429 do cạn TPM token của Gemini 3.8 Flash Deep Thinking)
+          if (verdict.kind !== 'ok' && (allowExtended || is429)) {
+            if (keyState && allowExtended) {
+              keyState.extendedThinkingCooldownUntil = currentTime + 60000;
+            }
+            const liteReq = buildQaRequest({
+              providerId,
+              providerConfig: {
+                ...providerConfig,
+                model: 'gemini-3.5-flash-lite',
+                googleSearch: false,
+                extendedThinking: false,
+              },
+              apiKey,
+              text,
+              imageBase64,
+              mimeType,
+              extendedThinking: false,
+            });
+            const liteResp = await fetchText(liteReq);
+            const liteVerdict = classifyResponse({
+              providerId,
+              providerLabel,
+              openaiFormat: liteReq?.openaiFormat,
+              status: liteResp.status,
+              bodyText: liteResp.bodyText,
+              retryAfterMs: liteResp.retryAfterMs,
+            });
+            if (liteVerdict.kind === 'ok') {
+              return { verdict: liteVerdict };
+            }
+            verdict = liteVerdict;
+          }
+
+          // Cấp 3: Nếu vẫn bị 429 do burst spike tạm thời (bắn request quá nhanh), chờ 1.5s rồi thử lại 1 lần với bản Lite an toàn
+          if (verdict.kind !== 'ok' && (response.status === 429 || verdict.kind === 'keyFailed')) {
+            const waitMs = Number(response.retryAfterMs) > 0 ? Math.min(Number(response.retryAfterMs), 3000) : 1500;
+            if (sleep) {
+              await sleep(waitMs);
+            }
+            const retryReq = buildQaRequest({
+              providerId,
+              providerConfig: {
+                ...providerConfig,
+                model: 'gemini-3.5-flash-lite',
+                googleSearch: false,
+                extendedThinking: false,
+              },
+              apiKey,
+              text,
+              imageBase64,
+              mimeType,
+              extendedThinking: false,
+            });
+            const retryResp = await fetchText(retryReq);
+            const retryVerdict = classifyResponse({
+              providerId,
+              providerLabel,
+              openaiFormat: retryReq?.openaiFormat,
+              status: retryResp.status,
+              bodyText: retryResp.bodyText,
+              retryAfterMs: retryResp.retryAfterMs,
+            });
+            if (retryVerdict.kind === 'ok') {
+              return { verdict: retryVerdict };
+            }
+            verdict = retryVerdict;
           }
         }
 

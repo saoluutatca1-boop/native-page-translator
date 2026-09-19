@@ -952,6 +952,8 @@ async function handleQaSolveQuestion(payload, sender) {
       friendly = 'Giải câu hỏi bằng ảnh cần bật API key Gemini trong Cài đặt';
     } else if (friendly.includes('QA_REQUIRES_LLM')) {
       friendly = 'Cần cài đặt API key (Gemini hoặc OpenAI) trong Cài đặt để giải câu hỏi';
+    } else if (/429|giới hạn tốc độ|rate limit|resource_exhausted/i.test(friendly)) {
+      friendly = '⚠️ API Key tạm thời chạm giới hạn tốc độ (Rate Limit 429). Bạn hãy đợi vài giây rồi thử lại, hoặc thêm 1-2 API key Gemini phụ trong Cài đặt để tự động xoay tua không bị gián đoạn.';
     }
     return { ok: false, error: friendly };
   }

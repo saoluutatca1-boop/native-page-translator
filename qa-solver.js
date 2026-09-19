@@ -497,6 +497,9 @@
     if (/Extension context invalidated/i.test(msg)) {
       return CONTEXT_DEAD_MESSAGE;
     }
+    if (/429|giới hạn tốc độ|rate limit|resource_exhausted/i.test(msg)) {
+      return '⚠️ API Key tạm thời chạm giới hạn tốc độ (Rate Limit 429). Mẹo: Hãy đợi vài giây thử lại, hoặc thêm 1-2 API key Gemini phụ trong Cài đặt để tự động xoay tua!';
+    }
     return msg;
   }
 
@@ -1200,6 +1203,7 @@
     extractSmartTextFromSelection,
     expandSelectionIfIncomplete,
     compressAndResizeCanvas,
+    friendlyError,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
