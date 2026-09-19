@@ -19,6 +19,7 @@
   let shadowHost = null;
   let shadowRoot = null;
   let activePanel = null;
+  let persistentExtendedThinking = false;
   let activeCropOverlay = null;
   let miniTriggerBtn = null;
 
@@ -244,10 +245,11 @@
     // Chuẩn hóa lỗi tokenization / OCR
     s = s.replace(/≠q\b/g, '≠');
 
-    // 1. Tập hợp \mathbb{...}
-    s = s.replace(/\\mathbb\{([A-Za-z])\}/g, (_, ch) => {
-      const sets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
-      return sets[ch] || ch;
+    // 1. Tập hợp \mathbb{...} hoặc \mathbb X
+    const mathSets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
+    s = s.replace(/\\mathbb(?:\{([A-Za-z])\}|\s*([A-Za-z]))/g, (_, ch1, ch2) => {
+      const ch = ch1 || ch2;
+      return mathSets[ch] || ch;
     });
 
     // 2. Chuyển các ký hiệu LaTeX thông dụng
@@ -332,9 +334,10 @@
     for (const [cmd, sym] of Object.entries(LATEX_SYMBOLS)) {
       s = s.split(cmd).join(sym);
     }
-    s = s.replace(/\\mathbb\{([A-Za-z])\}/g, (_, ch) => {
-      const sets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
-      return sets[ch] || ch;
+    const mathSets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
+    s = s.replace(/\\mathbb(?:\{([A-Za-z])\}|\s*([A-Za-z]))/g, (_, ch1, ch2) => {
+      const ch = ch1 || ch2;
+      return mathSets[ch] || ch;
     });
 
     // Mũ số & chỉ số Unicode thông dụng
@@ -434,10 +437,21 @@
     safe = safe.replace(/\\deg\b(?:\(([^)]+)\))?/g, (_, arg) => arg ? `deg(${arg})` : 'deg');
     safe = safe.replace(/\^\*/g, '<sup>*</sup>');
     safe = safe.replace(/([α-ωΑ-Ω])([0-9])\b/g, '$1<sup>$2</sup>');
-    safe = safe.replace(/\\mathbb\{([A-Za-z])\}/g, (_, ch) => {
-      const sets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
-      return sets[ch] || ch;
+    const mathSets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
+    safe = safe.replace(/\\mathbb(?:\{([A-Za-z])\}|\s*([A-Za-z]))/g, (_, ch1, ch2) => {
+      const ch = ch1 || ch2;
+      return mathSets[ch] || ch;
     });
+    safe = safe.replace(/\\mathbf(?:\{([A-Za-z0-9])\}|\s*([A-Za-z0-9]))/g, (_, ch1, ch2) => ch1 || ch2);
+    safe = safe.replace(/\\mathrm(?:\{([A-Za-z0-9]+)\}|\s*([A-Za-z0-9]+))/g, (_, ch1, ch2) => ch1 || ch2);
+    safe = safe.replace(/\\pi\b/g, 'π');
+    safe = safe.replace(/\\eta\b/g, 'η');
+    safe = safe.replace(/\\nu\b/g, 'ν');
+    safe = safe.replace(/\\sigma\b/g, 'σ');
+    safe = safe.replace(/\\cong\b/g, '≅');
+    safe = safe.replace(/\\oplus\b/g, '⊕');
+    safe = safe.replace(/\\otimes\b/g, '⊗');
+    safe = safe.replace(/\\times\b/g, '×');
 
     // 5. Markdown (bold, code, italic, newlines)
     safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -457,14 +471,24 @@
 
   /* ------------------------------------------------------------------
    * Helper: Tách thông minh Đáp án & Giải thích chi tiết
+   * Hỗ trợ mọi cấu trúc: Đáp án ở đầu, Đáp án ở cuối (Chain of Thought), hoặc nhãn rõ ràng.
    * ------------------------------------------------------------------ */
   function splitAnswerAndExplanation(raw) {
     const text = String(raw || '').trim();
     if (!text) return { answerText: '', explanationText: '' };
 
-    // Tìm vị trí của tiêu đề giải thích (Giải thích, Giải thích chi tiết, Lời giải, Lý do, Bước giải...)
-    const expMatch = text.match(/\n\s*(?:(?:\*\*|#{1,4}\s*)?(?:Giải thích(?: chi tiết)?|Lời giải(?: chi tiết)?|Lý do|Hướng dẫn giải|Phân tích|Bước giải):?(?:\*\*)?)/i);
+    // 1. Tìm dòng/khối "Đáp án: ..." (ở đầu, ở cuối hoặc giữa văn bản)
+    const answerRegex = /(?:^|\n)\s*((?:\*\*|#{1,4}\s*)?(?:Đáp án|Kết luận|Chọn|Answer|Conclusion)\s*(?::|\.|\s*-\s*|\*\*)\s*[^\n]+(?:\n(?!\s*(?:Giải thích|Lời giải|Phân tích|Bước giải|Lý do))[^\n]+)?)/i;
+    const ansMatch = text.match(answerRegex);
 
+    if (ansMatch && ansMatch[1]) {
+      const matchedAnswer = ansMatch[1].trim();
+      const remaining = text.replace(ansMatch[0], '').trim();
+      return { answerText: matchedAnswer, explanationText: remaining };
+    }
+
+    // 2. Fallback: Nếu không tìm thấy nhãn Đáp án rõ ràng, kiểm tra tiêu đề Giải thích
+    const expMatch = text.match(/\n\s*(?:(?:\*\*|#{1,4}\s*)?(?:Giải thích(?: chi tiết)?|Lời giải(?: chi tiết)?|Lý do|Hướng dẫn giải|Phân tích|Bước giải):?(?:\*\*)?)/i);
     if (expMatch && expMatch.index !== undefined) {
       const answerText = text.slice(0, expMatch.index).trim();
       const explanationText = text.slice(expMatch.index).trim();
@@ -473,7 +497,7 @@
       }
     }
 
-    // Nếu không có từ khóa giải thích rõ ràng, tách dòng 1 làm đáp án, phần còn lại làm giải thích
+    // 3. Fallback cuối cùng: dòng 1 là đáp án, phần còn lại là giải thích
     const lines = text.split('\n');
     const answerText = (lines[0] || '').trim();
     const explanationText = lines.slice(1).join('\n').trim();
@@ -1115,13 +1139,15 @@
       return;
     }
 
-    const isExtended = opts.extendedThinking === true;
+    const isExtended = opts.extendedThinking !== undefined ? Boolean(opts.extendedThinking) : persistentExtendedThinking;
+    persistentExtendedThinking = isExtended;
 
     const card = opts.existingCard || showSolverCard({
       title: 'AI Quick Solver',
       initialStatus: isExtended ? 'AI đang suy luận chuyên sâu (Gemini 3.8 Extended)...' : 'Đang giải câu hỏi...',
       extendedThinking: isExtended,
       onToggleExtendedThinking: (checked) => {
+        persistentExtendedThinking = checked;
         card.setStatus(checked ? 'AI đang suy luận chuyên sâu (Gemini 3.8 Extended)...' : 'Đang giải câu hỏi...');
         solveTextQuestion(text, { extendedThinking: checked, existingCard: card });
       },
@@ -1275,12 +1301,14 @@
           return response;
         };
 
+        const ext = persistentExtendedThinking;
         const card = showSolverCard({
           title: 'AI Quick Solver (Vision)',
-          initialStatus: 'AI đang phân tích câu hỏi trong hình ảnh...',
-          extendedThinking: false,
+          initialStatus: ext ? 'AI đang suy luận chuyên sâu qua ảnh (Gemini 3.8 Extended)...' : 'AI đang phân tích câu hỏi trong hình ảnh...',
+          extendedThinking: ext,
           onToggleExtendedThinking: async (checked) => {
             try {
+              persistentExtendedThinking = checked;
               card.setStatus(checked ? 'AI đang suy luận chuyên sâu qua ảnh (Gemini 3.8 Extended)...' : 'AI đang phân tích câu hỏi trong hình ảnh...');
               const resp = await requestCrop(checked);
               card.setResult({
@@ -1293,7 +1321,7 @@
           },
         });
 
-        const initialResp = await requestCrop(false);
+        const initialResp = await requestCrop(ext);
         card.setResult({
           answer: initialResp.answer,
           providerLabel: initialResp.providerLabel,

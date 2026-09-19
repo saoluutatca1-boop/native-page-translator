@@ -405,6 +405,38 @@ async function run() {
     assert.match(explanationText, /mặt cầu Sn/);
   }
 
+  // 14. Kiểm tra splitAnswerAndExplanation với mô hình Chain-of-Thought (Giải thích trước, chốt Đáp án ở cuối)
+  {
+    const Q = require('../qa-solver.js');
+    const cotInput = 'Giải thích chi tiết:\n' +
+      '- Do n ≥ 9 > 7 + 1, ta đã ở miền ổn định, nên pi_{n+7}(S^n) đẳng cấu với nhóm homotopy ổn định pi_7^s.\n' +
+      '- Theo dãy phổ Adams tại p=2, lớp h_2 phát hiện phần tử sigma có bậc 8 (hoặc 16 tùy quy ước), kết hợp với các nguyên tố 3 và 5 cho tổng cấp là 16 * 3 * 5 = 240.\n' +
+      '- Do đó pi_7^s đẳng cấu với Z/240.\n\n' +
+      '**Đáp án: C. $\\mathbb{Z}/240$**';
+
+    const { answerText, explanationText } = Q.splitAnswerAndExplanation(cotInput);
+    assert.equal(answerText, '**Đáp án: C. $\\mathbb{Z}/240$**', 'Phải trích xuất đúng dòng đáp án ở cuối văn bản');
+    assert.match(explanationText, /^Giải thích chi tiết:/, 'Phần giải thích phải chứa toàn bộ các bước suy luận trước đó');
+    assert.ok(!explanationText.includes('**Đáp án: C'), 'Phần giải thích không được để sót dòng đáp án đã trích xuất');
+  }
+
+  // 15. Kiểm tra render \mathbb Z không có ngoặc nhọn {} (sửa lỗi hiển thị font \mathbb Z/24)
+  {
+    const Q = require('../qa-solver.js');
+    const unbracedSample = 'Đáp án: B. \\mathbb Z/24 hoặc C. \\mathbb{Z}/240 và \\pi_7^s \\cong \\mathbb Z/240';
+    const html = Q.formatMarkdown(unbracedSample);
+    assert.ok(!html.includes('\\mathbb Z'), 'HTML không được sót \\mathbb Z');
+    assert.ok(!html.includes('\\mathbb{Z}'), 'HTML không được sót \\mathbb{Z}');
+    assert.match(html, /ℤ\/24/, 'Phải chuyển \\mathbb Z/24 thành ℤ/24');
+    assert.match(html, /ℤ\/240/, 'Phải chuyển \\mathbb{Z}/240 thành ℤ/240');
+    assert.match(html, /≅/, 'Phải chuyển \\cong thành ≅');
+
+    const plain = Q.cleanMathToPlainText(unbracedSample);
+    assert.match(plain, /ℤ\/24/);
+    assert.match(plain, /ℤ\/240/);
+    assert.ok(!plain.includes('\\mathbb'));
+  }
+
   console.log('Tất cả test qa-solver.test.js đều PASS ✔');
 }
 

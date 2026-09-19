@@ -1433,23 +1433,29 @@
    * ------------------------------------------------------------------ */
   function buildQaInstructions() {
     return [
-      'You are an expert exam solver and question-answering AI assistant.',
-      'Your HIGHEST PRIORITY is ABSOLUTE ACCURACY. Double-check your reasoning before producing the final answer.',
-      'Output format rules (strictly follow):',
-      '1. Line 1: State the single correct answer prominently in bold.',
-      '   - If multiple-choice: "**Đáp án: [A/B/C/D]**" or "**Đáp án: [A/B/C/D] - [Tóm tắt đáp án]**"',
-      '   - If direct question: "**Đáp án: [Câu trả lời chính xác ngắn gọn]**"',
-      '2. Subsequent lines: Provide a concise, highly factual explanation (1-3 sentences) explaining WHY it is correct and briefly pointing out why other options are wrong or common traps.',
-      '   - Start the explanation with "Giải thích chi tiết:" on a new line.',
-      '3. Be direct, clear, objective. No greetings, conversational filler, or unnecessary preamble.',
-      '4. Output in Vietnamese (unless the question specifically tests English grammar/vocabulary, in which case explain in Vietnamese).',
-      '5. Mathematical and scientific formatting:',
-      '   - Present formulas, variables, and equations cleanly and readably using standard Unicode symbols (e.g. ≅, ⌣, ⌢, λ, α, β, ≤, ≥, ≠, ±, ∈, ∉, ⊂, ∩, ∪, →, ∞, √, ², ³, ₁, ₂, ℝ, ℕ, ℤ, ℂ, ℓ², v.v.) or concise LaTeX enclosed in $...$.',
-      '   - Never output raw unrendered LaTeX like \\cong, \\smile, \\deg outside delimiters (write ≅, ⌣, deg).',
+      'You are a world-class exam solver and advanced reasoning AI assistant.',
+      'Your HIGHEST PRIORITY is ABSOLUTE ACCURACY and rigorous mathematical/scientific verification.',
+      '',
+      'CRITICAL REASONING & CHAIN-OF-THOUGHT INSTRUCTIONS:',
+      '1. Mathematical and scientific formatting & Rigorous Reasoning:',
+      '   - ALWAYS think and solve the problem step-by-step FIRST. Never guess an option without full derivation.',
+      '   - Parse all definitions, dimensions, indices, and conditions (e.g. degrees, stable stems, spectral sequences, equations).',
+      '   - Carefully evaluate every single option (A, B, C, D) and check for common confusions before committing to the final answer.',
+      '   - Present formulas, variables, and equations cleanly and readably using standard Unicode symbols (e.g. ≅, ⌣, ⌢, λ, α, β, ≤, ≥, ≠, ±, ∈, ∉, ⊂, ∩, ∪, →, ∞, √, ², ³, ₁, ₂, ℝ, ℕ, ℤ, ℂ, ℓ², v.v.) or concise LaTeX enclosed in $...$ (e.g. $\\mathbb{Z}/240$, $\\pi_7^s$).',
+      '   - Never output raw unrendered LaTeX like \\cong, \\smile, \\deg, \\mathbb without $...$ delimiters.',
       '   - Ensure all options and equations are written clearly without broken or raw code.',
-      '6. Real-time and factual verification:',
+      '',
+      '2. Output Structure (strictly follow):',
+      '   - Start with your thorough reasoning under: "Giải thích chi tiết:"',
+      '   - Provide the complete, rigorous mathematical derivation, explaining WHY the correct option holds and why other options are false.',
+      '   - Conclude at the end with the final answer on its own line: "**Đáp án: [A/B/C/D] - [Tóm tắt đáp án]**" (for multiple choice) or "**Đáp án: [Kết quả chính xác ngắn gọn]**" (for direct questions).',
+      '',
+      '3. Real-time and factual verification:',
       '   - When a question involves specific dates, historical timelines, current events, real-time facts, or complex verifiable claims you are not 100% certain about, ALWAYS use Google Search to verify the facts before finalizing the answer.',
-      '   - Never guess or extrapolate uncertain dates or facts.'
+      '   - Never guess or extrapolate uncertain dates or facts.',
+      '4. Language & Tone:',
+      '   - Output in clear, natural Vietnamese (unless testing foreign language vocabulary/grammar).',
+      '   - Be direct, clear, objective. No greetings, conversational filler, or unnecessary preamble.'
     ].join('\n');
   }
 
@@ -1461,7 +1467,7 @@
     }
 
     const instructions = buildQaInstructions();
-    const prompt = String(text || '').trim() || (imageBase64 ? 'Hãy phân tích kỹ hình ảnh câu hỏi dưới đây và đưa ra đáp án chính xác nhất kèm giải thích ngắn.' : '');
+    const prompt = String(text || '').trim() || (imageBase64 ? 'Hãy quan sát kỹ hình ảnh câu hỏi dưới đây, đọc chính xác mọi công thức toán/ký hiệu/chỉ số, suy luận từng bước giải chi tiết và đưa ra đáp án chính xác nhất.' : '');
 
     if (kind === 'gemini') {
       const isExtended = extendedThinking === true || providerConfig?.extendedThinking === true;
@@ -1579,9 +1585,11 @@
         const isSearchCoolingDown = Boolean(keyState?.searchCooldownUntil && keyState.searchCooldownUntil > currentTime);
         const allowSearch = providerConfig?.googleSearch !== false && !isSearchCoolingDown;
 
-        // Kiểm tra xem Extended Thinking có đang bị tạm ngưng do cạn TPM token không
+        // Nếu người dùng chủ động chọn giải sâu (extendedThinking === true), luôn tôn trọng chỉ định của người dùng
         const isThinkingCoolingDown = Boolean(keyState?.extendedThinkingCooldownUntil && keyState.extendedThinkingCooldownUntil > currentTime);
-        const allowExtended = (extendedThinking || providerConfig?.extendedThinking) && !isThinkingCoolingDown;
+        const allowExtended = extendedThinking === true
+          ? true
+          : (Boolean(providerConfig?.extendedThinking) && !isThinkingCoolingDown);
 
         const request = buildQaRequest({
           providerId,
@@ -1651,7 +1659,7 @@
           // Cấp 2: Fallback tắt Extended Thinking / hạ về Gemini 3.5 Flash Lite
           // (khắc phục lỗi 429 do cạn TPM token của Gemini 3.8 Flash Deep Thinking)
           if (verdict.kind !== 'ok' && (allowExtended || is429)) {
-            if (keyState && allowExtended) {
+            if (keyState && !extendedThinking) {
               keyState.extendedThinkingCooldownUntil = currentTime + 60000;
             }
             const liteReq = buildQaRequest({
@@ -1678,7 +1686,7 @@
               retryAfterMs: liteResp.retryAfterMs,
             });
             if (liteVerdict.kind === 'ok') {
-              return { verdict: liteVerdict };
+              return { verdict: liteVerdict, fallbackUsed: true };
             }
             verdict = liteVerdict;
           }
@@ -1713,7 +1721,7 @@
               retryAfterMs: retryResp.retryAfterMs,
             });
             if (retryVerdict.kind === 'ok') {
-              return { verdict: retryVerdict };
+              return { verdict: retryVerdict, fallbackUsed: true };
             }
             verdict = retryVerdict;
           }
@@ -1723,10 +1731,15 @@
       },
     });
 
+    const isFallback = Boolean(outcome.verdict?.fallbackUsed || outcome.fallbackUsed);
+    const finalProviderLabel = isFallback
+      ? `${outcome.providerLabel} (Flash Lite Fallback)`
+      : (extendedThinking ? `${outcome.providerLabel} (3.8 Extended)` : outcome.providerLabel);
+
     return {
       answer: String(outcome.verdict?.text || '').trim(),
       provider: outcome.provider,
-      providerLabel: outcome.providerLabel,
+      providerLabel: finalProviderLabel,
     };
   }
 
