@@ -465,6 +465,26 @@ function renderProviderFields(card, providerId) {
     fields.appendChild(model);
   }
 
+  if (providerKind(providerId) === 'gemini') {
+    const searchWrap = el('label', 'checkbox-label');
+    const searchCheck = document.createElement('input');
+    searchCheck.type = 'checkbox';
+    searchCheck.checked = provider.googleSearch !== false;
+    searchCheck.addEventListener('change', () => {
+      provider.googleSearch = searchCheck.checked;
+      markDirty();
+    });
+    searchWrap.appendChild(searchCheck);
+    searchWrap.appendChild(document.createTextNode(' 🔍 Bật Google Search tra cứu thực tế (cho sự kiện, ngày tháng và câu hỏi khó)'));
+    searchWrap.style.marginTop = '8px';
+    searchWrap.style.display = 'flex';
+    searchWrap.style.alignItems = 'center';
+    searchWrap.style.gap = '6px';
+    searchWrap.style.fontSize = '12px';
+    searchWrap.style.cursor = 'pointer';
+    fields.appendChild(searchWrap);
+  }
+
   card.appendChild(fields);
 }
 

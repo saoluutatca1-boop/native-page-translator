@@ -40,6 +40,17 @@ async function run() {
     assert.equal(body.generationConfig.temperature, 0.1, 'Temperature phải là 0.1 để độ chính xác cao nhất');
     assert.match(body.systemInstruction.parts[0].text, /ACCURACY/);
     assert.equal(body.contents[0].parts[0].text, '1 + 1 bằng mấy?\nA. 1\nB. 2\nC. 3\nD. 4');
+    assert.deepEqual(body.tools, [{ google_search: {} }], 'Mặc định phải có tool google_search cho Gemini');
+
+    // Test khi tắt googleSearch
+    const reqNoSearch = P.buildQaRequest({
+      providerId: 'gemini',
+      providerConfig: { model: 'gemini-2.5-flash', googleSearch: false },
+      apiKey: 'test-gemini-key',
+      text: '1 + 1 = ?',
+    });
+    const bodyNoSearch = JSON.parse(reqNoSearch.body);
+    assert.equal(bodyNoSearch.tools, undefined, 'Khi googleSearch: false thì không được có tools');
   }
 
   // 2. Kiểm tra buildQaRequest cho Gemini với Image (Vision)
@@ -97,6 +108,45 @@ async function run() {
 
     assert.equal(result.answer, '**Đáp án: B**\nGiải thích: 1 cộng 1 bằng 2 theo phép tính số học cơ bản.');
     assert.equal(result.provider, 'gemini');
+  }
+
+  // 4. Kiểm tra buildQaInstructions có quy tắc định dạng toán học và ký hiệu khoa học
+  {
+    const instructions = P.buildQaInstructions();
+    assert.match(instructions, /Mathematical and scientific formatting/, 'Instructions phải có hướng dẫn định dạng toán học');
+    assert.match(instructions, /Unicode/, 'Instructions phải khuyến khích dùng Unicode toán học');
+  }
+
+  // 5. Kiểm tra qa-solver.js math rendering và clean plain text
+  {
+    const Q = require('../qa-solver.js');
+    assert.equal(typeof Q.renderLatexSnippet, 'function');
+    assert.equal(typeof Q.cleanMathToPlainText, 'function');
+    assert.equal(typeof Q.formatMarkdown, 'function');
+
+    // Test renderLatexSnippet
+    assert.equal(Q.renderLatexSnippet('\\lambda'), 'λ');
+    assert.equal(Q.renderLatexSnippet('\\le'), '≤');
+    assert.equal(Q.renderLatexSnippet('\\mathbb{N}'), 'ℕ');
+    assert.equal(Q.renderLatexSnippet('\\ell'), 'ℓ');
+    assert.equal(Q.renderLatexSnippet('\\dots'), '…');
+    assert.match(Q.renderLatexSnippet('\\ell^2(\\mathbb{N})'), /ℓ<sup>2<\/sup>\(ℕ\)/);
+
+    // Test cleanMathToPlainText (cho chức năng copy vào clipboard)
+    const rawAnswer = 'Đáp án: B. $T$ có vectơ riêng ứng với mọi $\\lambda$ mà $|\\lambda| < 1$.\nToán tử $T$ trên không gian $\\ell^2(\\mathbb{N})$ với phổ $|\\lambda| \\le 1$.';
+    const plainText = Q.cleanMathToPlainText(rawAnswer);
+    assert.match(plainText, /Đáp án: B\. T có vectơ riêng ứng với mọi λ mà \|λ\| < 1\./);
+    assert.match(plainText, /Toán tử T trên không gian ℓ²\(ℕ\) với phổ \|λ\| ≤ 1\./);
+    assert.ok(!plainText.includes('$'), 'Plain text không được chứa ký tự $');
+    assert.ok(!plainText.includes('\\lambda'), 'Plain text không được chứa \\lambda thô');
+
+    // Test formatMarkdown cho giao diện UI
+    const html = Q.formatMarkdown('**Đáp án: B**\nToán tử $T$ trên không gian $\\ell^2(\\mathbb{N})$ thỏa mãn $|\\lambda| < 1$.');
+    assert.match(html, /<strong>Đáp án: B<\/strong>/);
+    assert.match(html, /<br>/);
+    assert.match(html, /npt-math-inline/);
+    assert.match(html, /&lt; 1/); // HTML escape ký tự <
+    assert.ok(!html.includes('$\\lambda$'), 'HTML không được chứa dấu $ thô');
   }
 
   console.log('Tất cả test qa-solver.test.js đều PASS ✔');

@@ -844,24 +844,47 @@ async function handleImageTranslate(info, tab) {
 }
 
 async function handleOcrTakeScreenshot(sender) {
-  const tabId = sender.tab?.id;
+  const tabId = sender?.tab?.id;
   if (!Number.isInteger(tabId)) return { ok: false, error: 'No active tab' };
 
   try {
     let dataUrl;
-    try {
-      const windowId = Number.isInteger(sender.tab?.windowId) ? sender.tab.windowId : null;
-      dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
-    } catch (_) {
-      // Fallback: chụp cửa sổ active hiện tại
-      dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+    const windowId = Number.isInteger(sender?.tab?.windowId) ? sender.tab.windowId : null;
+
+    // 1. Thử chụp với windowId của sender tab
+    if (windowId !== null) {
+      try {
+        dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+      } catch (_) {}
     }
+
+    // 2. Fallback: chụp cửa sổ active hiện tại (null = current window)
     if (!dataUrl) {
-      return { ok: false, error: 'Không thể chụp màn hình' };
+      try {
+        dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+      } catch (_) {}
+    }
+
+    // 3. Fallback: query active tab của lastFocusedWindow
+    if (!dataUrl) {
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (activeTab?.windowId && activeTab.windowId !== windowId) {
+          dataUrl = await chrome.tabs.captureVisibleTab(activeTab.windowId, { format: 'png' });
+        }
+      } catch (_) {}
+    }
+
+    if (!dataUrl) {
+      return { ok: false, error: 'Không thể chụp màn hình. Hãy đảm bảo tab đang hiển thị và cấp quyền cho tiện ích.' };
     }
     return { ok: true, dataUrl };
   } catch (error) {
-    return { ok: false, error: error?.message || String(error) };
+    let msg = error?.message || String(error);
+    if (msg.includes('permission') || msg.includes('activeTab') || msg.includes('all_urls')) {
+      msg = 'Tiện ích cần quyền truy cập tab hiện tại để chụp ảnh (vào Quản lý tiện ích -> Bật quyền truy cập trang).';
+    }
+    return { ok: false, error: msg };
   }
 }
 

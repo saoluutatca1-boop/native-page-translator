@@ -12,15 +12,14 @@
     "contextMenus"
   ],
   "host_permissions": [
+    "<all_urls>",
     "https://translate.googleapis.com/*",
     "https://translate.google.com/*",
     "https://api.mymemory.translated.net/*",
     "https://api.openai.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://api-free.deepl.com/*",
-    "https://api.deepl.com/*",
-    "https://*/*",
-    "http://*/*"
+    "https://api.deepl.com/*"
   ],
   "background": {
     "service_worker": "background.js"

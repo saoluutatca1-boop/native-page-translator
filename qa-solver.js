@@ -10,11 +10,11 @@
  *    log phím bấm.
  * 3. Miễn nhiễm CSS: CSS của trang web thi không thể làm vỡ giao diện card.
  * ------------------------------------------------------------------ */
-(() => {
+(function attachQaSolver(global) {
   'use strict';
 
-  // Chỉ chạy ở window top
-  if (window !== window.top) return;
+  // Chỉ chạy ở window top trong trình duyệt
+  if (typeof window !== 'undefined' && window !== window.top) return;
 
   let shadowHost = null;
   let shadowRoot = null;
@@ -94,16 +94,351 @@
   }
 
   /* ------------------------------------------------------------------
-   * Helper: Format Markdown cơ bản (bold, newlines)
+   * Bảng ký hiệu LaTeX -> Unicode ký tự toán học chuẩn
+   * ------------------------------------------------------------------ */
+  const LATEX_SYMBOLS = {
+    // Ký tự Hy Lạp thường
+    '\\alpha': 'α', '\\beta': 'β', '\\gamma': 'γ', '\\delta': 'δ',
+    '\\epsilon': 'ε', '\\varepsilon': 'ε', '\\zeta': 'ζ', '\\eta': 'η',
+    '\\theta': 'θ', '\\vartheta': 'ϑ', '\\iota': 'ι', '\\kappa': 'κ',
+    '\\lambda': 'λ', '\\mu': 'μ', '\\nu': 'ν', '\\xi': 'ξ',
+    '\\pi': 'π', '\\varpi': 'ϖ', '\\rho': 'ρ', '\\varrho': 'ϱ',
+    '\\sigma': 'σ', '\\varsigma': 'ς', '\\tau': 'τ', '\\upsilon': 'υ',
+    '\\phi': 'φ', '\\varphi': 'φ', '\\chi': 'χ', '\\psi': 'ψ', '\\omega': 'ω',
+    // Ký tự Hy Lạp hoa
+    '\\Gamma': 'Γ', '\\Delta': 'Δ', '\\Theta': 'Θ', '\\Lambda': 'Λ',
+    '\\Xi': 'Ξ', '\\Pi': 'Π', '\\Sigma': 'Σ', '\\Upsilon': 'Υ',
+    '\\Phi': 'Φ', '\\Psi': 'Ψ', '\\Omega': 'Ω',
+    // Tập hợp số & không gian
+    '\\mathbb{N}': 'ℕ', '\\mathbf{N}': 'ℕ',
+    '\\mathbb{Z}': 'ℤ', '\\mathbf{Z}': 'ℤ',
+    '\\mathbb{Q}': 'ℚ', '\\mathbf{Q}': 'ℚ',
+    '\\mathbb{R}': 'ℝ', '\\mathbf{R}': 'ℝ',
+    '\\mathbb{C}': 'ℂ', '\\mathbf{C}': 'ℂ',
+    '\\mathbb{P}': 'ℙ', '\\mathbb{H}': 'ℍ',
+    '\\ell': 'ℓ',
+    // Toán tử & Quan hệ
+    '\\le': '≤', '\\leq': '≤', '\\ge': '≥', '\\geq': '≥',
+    '\\ne': '≠', '\\neq': '≠', '\\approx': '≈', '\\equiv': '≡',
+    '\\pm': '±', '\\mp': '∓', '\\times': '×', '\\div': '÷',
+    '\\cdot': '·', '\\circ': '∘', '\\bullet': '•',
+    '\\to': '→', '\\rightarrow': '→', '\\implies': '⇒', '\\Rightarrow': '⇒',
+    '\\gets': '←', '\\leftarrow': '←', '\\iff': '⇔', '\\Leftrightarrow': '⇔',
+    '\\leftrightarrow': '↔',
+    '\\infty': '∞', '\\in': '∈', '\\notin': '∉',
+    '\\subset': '⊂', '\\subseteq': '⊆', '\\supset': '⊃', '\\supseteq': '⊇',
+    '\\cap': '∩', '\\cup': '∪', '\\setminus': '∖',
+    '\\forall': '∀', '\\exists': '∃', '\\nexists': '∄',
+    '\\emptyset': '∅', '\\varnothing': '∅',
+    '\\partial': '∂', '\\nabla': '∇',
+    '\\dots': '…', '\\ldots': '…', '\\cdots': '…', '\\vdots': '⋮', '\\ddots': '⋱',
+    '\\sum': '∑', '\\prod': '∏', '\\int': '∫',
+  };
+
+  /* ------------------------------------------------------------------
+   * Helper: Render một đoạn snippet TeX / LaTeX thành chuỗi HTML toán học đẹp
+   * ------------------------------------------------------------------ */
+  function renderLatexSnippet(tex) {
+    if (!tex) return '';
+    let s = String(tex).trim();
+
+    // Escape ký tự HTML trước khi chèn thẻ <sup>, <sub>, <span>
+    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // 1. Tập hợp \mathbb{...}
+    s = s.replace(/\\mathbb\{([A-Za-z])\}/g, (_, ch) => {
+      const sets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
+      return sets[ch] || ch;
+    });
+
+    // 2. Chuyển các ký hiệu LaTeX thông dụng
+    for (const [cmd, sym] of Object.entries(LATEX_SYMBOLS)) {
+      s = s.split(cmd).join(sym);
+    }
+
+    // 3. Phân số \frac{a}{b}
+    let fracLimit = 5;
+    while (/\\frac\{([^{}]+)\}\{([^{}]+)\}/.test(s) && fracLimit-- > 0) {
+      s = s.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, (_, num, den) => {
+        return `<span style="display:inline-flex; flex-direction:column; vertical-align:middle; text-align:center; padding:0 2px; font-size:0.9em;"><span style="border-bottom:1px solid currentColor; padding-bottom:1px; line-height:1.1;">${renderLatexSnippet(num)}</span><span style="line-height:1.1; padding-top:1px;">${renderLatexSnippet(den)}</span></span>`;
+      });
+    }
+
+    // 4. Căn bậc hai \sqrt{x}
+    let sqrtLimit = 5;
+    while (/\\sqrt\{([^{}]+)\}/.test(s) && sqrtLimit-- > 0) {
+      s = s.replace(/\\sqrt\{([^{}]+)\}/g, (_, val) => {
+        return `<span style="white-space:nowrap;">√<span style="border-top:1px solid currentColor; padding-top:1px; margin-left:1px;">${renderLatexSnippet(val)}</span></span>`;
+      });
+    }
+
+    // 5. Số mũ ^{...} và chỉ số dưới _{...}
+    s = s.replace(/\^\{([^{}]+)\}/g, (_, p) => `<sup>${renderLatexSnippet(p)}</sup>`);
+    s = s.replace(/\_\{([^{}]+)\}/g, (_, b) => `<sub>${renderLatexSnippet(b)}</sub>`);
+    s = s.replace(/\^([0-9a-zA-Z])/g, (_, p) => `<sup>${p}</sup>`);
+    s = s.replace(/\_([0-9a-zA-Z])/g, (_, b) => `<sub>${b}</sub>`);
+
+    // 6. Text, font modifiers
+    s = s.replace(/\\text\{([^{}]+)\}/g, '$1');
+    s = s.replace(/\\mathrm\{([^{}]+)\}/g, '$1');
+    s = s.replace(/\\mathbf\{([^{}]+)\}/g, '<b>$1</b>');
+    s = s.replace(/\\mathit\{([^{}]+)\}/g, '<i>$1</i>');
+    s = s.replace(/\\vec\{([^{}]+)\}/g, '$1⃗');
+    s = s.replace(/\\overline\{([^{}]+)\}/g, '<span style="text-decoration:overline">$1</span>');
+
+    // 7. Hàm toán
+    s = s.replace(/\\(sin|cos|tan|cot|log|ln|exp|det|ker|dim|max|min|sup|inf|lim)\b/g, '$1');
+
+    // 8. Dấu ngoặc & thanh chuẩn |
+    s = s.replace(/\\left\(/g, '(').replace(/\\right\)/g, ')');
+    s = s.replace(/\\left\[/g, '[').replace(/\\right\]/g, ']');
+    s = s.replace(/\\left\\\{/g, '{').replace(/\\right\\\}/g, '}');
+    s = s.replace(/\\left\|/g, '|').replace(/\\right\|/g, '|');
+    s = s.replace(/\\\{/g, '{').replace(/\\\}/g, '}');
+
+    // 9. Khoảng trắng LaTeX
+    s = s.replace(/\\(quad|qquad|,|;|!)/g, ' ');
+
+    return s;
+  }
+
+  /* ------------------------------------------------------------------
+   * Helper: Chuẩn hóa câu trả lời toán học thành Plain Text thuần
+   * (Dùng khi người dùng bấm nút Sao chép để dán vào Word/Chat/Notion đẹp)
+   * ------------------------------------------------------------------ */
+  function cleanMathToPlainText(text) {
+    if (!text) return '';
+    let s = String(text);
+
+    // Gỡ các delimiter $ và $$
+    s = s.replace(/\$\$([\s\S]+?)\$\$/g, '$1');
+    s = s.replace(/\$([^\$\n]+?)\$/g, '$1');
+    s = s.replace(/\\\[([\s\S]+?)\\\]/g, '$1');
+    s = s.replace(/\\\(([\s\S]+?)\\\)/g, '$1');
+
+    // Chuyển LaTeX sang Unicode
+    for (const [cmd, sym] of Object.entries(LATEX_SYMBOLS)) {
+      s = s.split(cmd).join(sym);
+    }
+    s = s.replace(/\\mathbb\{([A-Za-z])\}/g, (_, ch) => {
+      const sets = { N: 'ℕ', Z: 'ℤ', Q: 'ℚ', R: 'ℝ', C: 'ℂ', P: 'ℙ', H: 'ℍ' };
+      return sets[ch] || ch;
+    });
+
+    // Mũ số & chỉ số Unicode thông dụng
+    const supers = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '+': '⁺', '-': '⁻', 'n': 'ⁿ', 'x': 'ˣ' };
+    const subs = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉', '+': '₊', '-': '₋', 'n': 'ₙ', 'i': 'ᵢ', 'j': 'ⱼ' };
+
+    s = s.replace(/\^\{([0-9+\-nx])\}/g, (_, ch) => supers[ch] || `^${ch}`);
+    s = s.replace(/\^([0-9+\-nx])\b/g, (_, ch) => supers[ch] || `^${ch}`);
+    s = s.replace(/\_\{([0-9+\-nixy])\}/g, (_, ch) => subs[ch] || `_${ch}`);
+    s = s.replace(/\_([0-9+\-nixy])\b/g, (_, ch) => subs[ch] || `_${ch}`);
+
+    let fracLimit = 5;
+    while (/\\frac\{([^{}]+)\}\{([^{}]+)\}/.test(s) && fracLimit-- > 0) {
+      s = s.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1)/($2)');
+    }
+    s = s.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
+
+    s = s.replace(/\\text\{([^{}]+)\}/g, '$1');
+    s = s.replace(/\\mathrm\{([^{}]+)\}/g, '$1');
+    s = s.replace(/\\mathbf\{([^{}]+)\}/g, '$1');
+    s = s.replace(/\\mathit\{([^{}]+)\}/g, '$1');
+    s = s.replace(/\\vec\{([^{}]+)\}/g, '$1⃗');
+    s = s.replace(/\\(sin|cos|tan|cot|log|ln|exp|det|ker|dim|max|min|sup|inf|lim)\b/g, '$1');
+    s = s.replace(/\\left[()\[\]|{}]/g, '');
+    s = s.replace(/\\right[()\[\]|{}]/g, '');
+    s = s.replace(/\\(quad|qquad|,|;|!)/g, ' ');
+    s = s.replace(/[{}]/g, '');
+
+    s = s.replace(/\*\*(.+?)\*\*/g, '$1');
+    return s.trim();
+  }
+
+  /* ------------------------------------------------------------------
+   * Helper: Format Markdown & LaTeX thành HTML giao diện
    * ------------------------------------------------------------------ */
   function formatMarkdown(text) {
     if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    let safe = div.innerHTML;
+
+    const mathTokens = [];
+    let processed = String(text);
+
+    // 1. Block math: $$ ... $$ hoặc \[ ... \]
+    processed = processed.replace(/\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g, (_, p1, p2) => {
+      const formula = (p1 || p2 || '').trim();
+      const rendered = renderLatexSnippet(formula);
+      const token = `@@NPTBLOCK${mathTokens.length}@@`;
+      mathTokens.push(`<div class="npt-math-block" style="text-align:center; margin:8px 0; font-family:'Cambria Math','KaTeX_Math','Times New Roman',serif; font-style:italic; font-size:1.05em; color:inherit;">${rendered}</div>`);
+      return token;
+    });
+
+    // 2. Inline math: $ ... $ hoặc \( ... \)
+    processed = processed.replace(/\$([^\$\n]+?)\$|\\\(([\s\S]+?)\\\)/g, (_, p1, p2) => {
+      const formula = (p1 || p2 || '').trim();
+      const rendered = renderLatexSnippet(formula);
+      const token = `@@NPTINLINE${mathTokens.length}@@`;
+      mathTokens.push(`<span class="npt-math-inline" style="font-family:'Cambria Math','KaTeX_Math','Times New Roman',serif; font-style:italic; padding:0 2px; color:inherit;">${rendered}</span>`);
+      return token;
+    });
+
+    // 3. Escape HTML an toàn
+    let safe;
+    if (typeof document !== 'undefined') {
+      const div = document.createElement('div');
+      div.textContent = processed;
+      safe = div.innerHTML;
+    } else {
+      safe = processed
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    // 4. Nếu AI viết ký hiệu TeX mà quên dấu $ (ví dụ \lambda, \ell^2, \le, \mathbb{N})
+    safe = renderLatexSnippet(safe);
+
+    // 5. Markdown (bold, italic, code, newlines)
     safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    safe = safe.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>');
+    safe = safe.replace(/`([^`\n]+?)`/g, '<code style="background:rgba(128,128,128,0.2); padding:1px 4px; border-radius:3px; font-family:monospace; font-size:12px;">$1</code>');
     safe = safe.replace(/\n/g, '<br>');
+
+    // 6. Khôi phục các math tokens
+    mathTokens.forEach((renderedHtml, idx) => {
+      safe = safe.split(`@@NPTBLOCK${idx}@@`).join(renderedHtml);
+      safe = safe.split(`@@NPTINLINE${idx}@@`).join(renderedHtml);
+    });
+
     return safe;
+  }
+
+  /* ------------------------------------------------------------------
+   * Helper: Trích xuất Text & Công thức Toán học thông minh từ Selection
+   * Hỗ trợ: KaTeX, MathJax, MathML, <sup>/<sub>, ảnh công thức (alt/data-latex),
+   * và giữ đúng dấu xuống dòng giữa các câu hỏi/phương án A, B, C, D.
+   * ------------------------------------------------------------------ */
+  function extractSmartTextFromSelection(selection) {
+    if (!selection || selection.rangeCount === 0) return '';
+    const rawString = (selection.toString() || '').trim();
+    if (typeof document === 'undefined') return rawString;
+
+    let range;
+    try {
+      range = selection.getRangeAt(0);
+    } catch (_) {
+      return rawString;
+    }
+    if (!range || range.collapsed) return rawString;
+
+    try {
+      const fragment = range.cloneContents();
+      if (!fragment || !fragment.childNodes || fragment.childNodes.length === 0) {
+        return rawString;
+      }
+
+      const container = document.createElement('div');
+      container.appendChild(fragment);
+
+      // 1. KaTeX: Thay bằng mã LaTeX gốc nếu có annotation
+      container.querySelectorAll('.katex').forEach((katexEl) => {
+        const annotation = katexEl.querySelector('annotation[encoding*="tex"], annotation');
+        if (annotation && annotation.textContent.trim()) {
+          const tex = annotation.textContent.trim();
+          const textNode = document.createTextNode(` $${tex}$ `);
+          katexEl.parentNode?.replaceChild(textNode, katexEl);
+        } else {
+          katexEl.querySelectorAll('.katex-html').forEach((h) => h.remove());
+        }
+      });
+
+      // 2. MathJax: mjx-container, script type="math/tex", hoặc annotation
+      container.querySelectorAll('mjx-container, .MathJax, .MathJax_Display').forEach((mjxEl) => {
+        const tex = mjxEl.getAttribute('data-tex') ||
+                    mjxEl.getAttribute('data-formula') ||
+                    mjxEl.querySelector('annotation[encoding*="tex"], annotation')?.textContent?.trim() ||
+                    mjxEl.querySelector('script[type*="math/tex"]')?.textContent?.trim();
+        if (tex) {
+          const textNode = document.createTextNode(` $${tex.trim()}$ `);
+          mjxEl.parentNode?.replaceChild(textNode, mjxEl);
+        }
+      });
+
+      // 3. Ảnh công thức toán (Wikipedia, LMS Canvas, web thi: img có alt/data-latex)
+      container.querySelectorAll('img').forEach((img) => {
+        const alt = img.getAttribute('alt') ||
+                    img.getAttribute('data-latex') ||
+                    img.getAttribute('data-formula') ||
+                    img.getAttribute('title');
+        if (alt && alt.trim()) {
+          const textNode = document.createTextNode(` ${alt.trim()} `);
+          img.parentNode?.replaceChild(textNode, img);
+        }
+      });
+
+      // 4. MathML: Xử lý các thẻ msup, msub, mfrac
+      container.querySelectorAll('math').forEach((mathEl) => {
+        const annotation = mathEl.querySelector('annotation[encoding*="tex"], annotation');
+        if (annotation && annotation.textContent.trim()) {
+          const textNode = document.createTextNode(` $${annotation.textContent.trim()}$ `);
+          mathEl.parentNode?.replaceChild(textNode, mathEl);
+          return;
+        }
+        mathEl.querySelectorAll('msup').forEach((el) => {
+          const children = Array.from(el.children);
+          if (children.length >= 2) {
+            const base = children[0].textContent.trim();
+            const exp = children[1].textContent.trim();
+            el.replaceWith(document.createTextNode(`${base}^{${exp}}`));
+          }
+        });
+        mathEl.querySelectorAll('msub').forEach((el) => {
+          const children = Array.from(el.children);
+          if (children.length >= 2) {
+            const base = children[0].textContent.trim();
+            const sub = children[1].textContent.trim();
+            el.replaceWith(document.createTextNode(`${base}_{${sub}}`));
+          }
+        });
+        mathEl.querySelectorAll('mfrac').forEach((el) => {
+          const children = Array.from(el.children);
+          if (children.length >= 2) {
+            const num = children[0].textContent.trim();
+            const den = children[1].textContent.trim();
+            el.replaceWith(document.createTextNode(`(${num})/(${den})`));
+          }
+        });
+      });
+
+      // 5. Thẻ sup và sub thông thường
+      container.querySelectorAll('sup').forEach((sup) => {
+        const text = sup.textContent.trim();
+        if (text) sup.replaceWith(document.createTextNode(`^{${text}}`));
+      });
+      container.querySelectorAll('sub').forEach((sub) => {
+        const text = sub.textContent.trim();
+        if (text) sub.replaceWith(document.createTextNode(`_{${text}}`));
+      });
+
+      // 6. Xuống dòng cho các block để các phương án A, B, C, D không bị dính liền
+      container.querySelectorAll('br').forEach((br) => {
+        br.replaceWith(document.createTextNode('\n'));
+      });
+      container.querySelectorAll('p, div, li, tr, h1, h2, h3, h4, h5, h6').forEach((block) => {
+        block.appendChild(document.createTextNode('\n'));
+      });
+
+      let extracted = container.innerText || container.textContent || '';
+      extracted = extracted
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n\s*\n\s*\n+/g, '\n\n')
+        .trim();
+
+      return extracted || rawString;
+    } catch (_) {
+      return rawString;
+    }
   }
 
   /* ------------------------------------------------------------------
@@ -326,7 +661,7 @@
 
     return {
       setResult: ({ answer, providerLabel }) => {
-        currentAnswerText = answer;
+        currentAnswerText = cleanMathToPlainText(answer);
         body.innerHTML = '';
 
         if (providerLabel) {
@@ -565,13 +900,14 @@
     }
   }
 
-  document.addEventListener('mouseup', (e) => {
+  if (typeof document !== 'undefined') {
+    document.addEventListener('mouseup', (e) => {
     // Nếu click vào Shadow DOM thì không xóa
     if (shadowHost && shadowHost.contains(e.target)) return;
 
     setTimeout(() => {
       const selection = window.getSelection();
-      const text = (selection?.toString() || '').trim();
+      const text = extractSmartTextFromSelection(selection);
 
       // Chỉ hiện khi bôi đen chuỗi đủ dài (> 10 ký tự)
       if (text && text.length > 10 && selection.rangeCount > 0) {
@@ -622,11 +958,13 @@
       }
     }, 15);
   });
+  }
 
   /* ------------------------------------------------------------------
    * Lắng nghe phím tắt ở Capture Phase (Chặn trang web log phím)
    * ------------------------------------------------------------------ */
-  window.addEventListener('keydown', (e) => {
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('keydown', (e) => {
     // Phím Escape: đóng mọi panel/overlay và triệt tiêu event
     if (e.key === 'Escape') {
       let handled = false;
@@ -662,7 +1000,7 @@
         startCropSolver();
       } else {
         // Alt + Q: Bôi đen giải chữ
-        const selected = (window.getSelection()?.toString() || '').trim();
+        const selected = extractSmartTextFromSelection(window.getSelection());
         if (selected) {
           solveTextQuestion(selected);
         } else {
@@ -671,5 +1009,16 @@
       }
     }
   }, true); // true = capture phase (bắt trước khi tới trang web)
+  }
 
-})();
+  const api = {
+    LATEX_SYMBOLS,
+    renderLatexSnippet,
+    cleanMathToPlainText,
+    formatMarkdown,
+    extractSmartTextFromSelection,
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  global.NPT_QA_SOLVER = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this);

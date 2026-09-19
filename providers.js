@@ -168,6 +168,7 @@
       // Chỉ kiểu OpenAI-compatible mới cần tên riêng: có nhiều slot cùng kiểu.
       ...(def.needsUrl ? { name: '' } : {}),
       ...(def.needsModel ? { model: def.defaultModel } : {}),
+      ...(providerKind(id) === 'gemini' ? { googleSearch: true } : {}),
       ...(def.needsUrl ? { url: def.defaultUrl, format: 'auto' } : {}),
     };
   }
@@ -1419,7 +1420,13 @@
       '   - If direct question: "**Đáp án: [Câu trả lời chính xác ngắn gọn]**"',
       '2. Subsequent lines: Provide a concise, highly factual explanation (1-3 sentences) explaining WHY it is correct and briefly pointing out why other options are wrong or common traps.',
       '3. Be direct, clear, objective. No greetings, conversational filler, or unnecessary preamble.',
-      '4. Output in Vietnamese (unless the question specifically tests English grammar/vocabulary, in which case explain in Vietnamese).'
+      '4. Output in Vietnamese (unless the question specifically tests English grammar/vocabulary, in which case explain in Vietnamese).',
+      '5. Mathematical and scientific formatting:',
+      '   - Present formulas, variables, and equations cleanly and readably using standard Unicode symbols (e.g. λ, α, β, ≤, ≥, ≠, ±, ∈, ∉, ⊂, ∩, ∪, →, ∞, √, ², ³, ₁, ₂, ℝ, ℕ, ℤ, ℂ, ℓ², v.v.) or concise LaTeX enclosed in $...$.',
+      '   - Ensure all options and equations are written clearly without broken or raw code.',
+      '6. Real-time and factual verification:',
+      '   - When a question involves specific dates, historical timelines, current events, real-time facts, or complex verifiable claims you are not 100% certain about, ALWAYS use Google Search to verify the facts before finalizing the answer.',
+      '   - Never guess or extrapolate uncertain dates or facts.'
     ].join('\n');
   }
 
@@ -1445,6 +1452,18 @@
           }
         });
       }
+      const bodyPayload = {
+        systemInstruction: { parts: [{ text: instructions }] },
+        contents: [{ role: 'user', parts }],
+        generationConfig: { temperature: 0.1 },
+        safetySettings: GEMINI_SAFETY_SETTINGS,
+      };
+
+      // Tự động kích hoạt Google Search Grounding để tra cứu sự kiện, ngày tháng và kiểm tra câu khó
+      if (providerConfig?.googleSearch !== false) {
+        bodyPayload.tools = [{ google_search: {} }];
+      }
+
       return {
         url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         method: 'POST',
@@ -1453,12 +1472,7 @@
           'Content-Type': 'application/json',
           'x-goog-api-key': String(apiKey || '').trim(),
         },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: instructions }] },
-          contents: [{ role: 'user', parts }],
-          generationConfig: { temperature: 0.1 },
-          safetySettings: GEMINI_SAFETY_SETTINGS,
-        }),
+        body: JSON.stringify(bodyPayload),
       };
     }
 
@@ -1530,7 +1544,7 @@
           mimeType,
         });
         const response = await fetchText(request);
-        const verdict = classifyResponse({
+        let verdict = classifyResponse({
           providerId,
           providerLabel,
           openaiFormat: request?.openaiFormat,
@@ -1538,6 +1552,34 @@
           bodyText: response.bodyText,
           retryAfterMs: response.retryAfterMs,
         });
+
+        // Nếu Gemini bị lỗi do tools/search (ví dụ 400 do model/key không hỗ trợ search tool), thử lại ngay không tools
+        if (verdict.kind !== 'ok' && providerKind(providerId) === 'gemini' && providerConfig?.googleSearch !== false) {
+          const lower = String(verdict.message || response.bodyText || '').toLowerCase();
+          if (lower.includes('tool') || lower.includes('search') || response.status === 400) {
+            const fallbackReq = buildQaRequest({
+              providerId,
+              providerConfig: { ...providerConfig, googleSearch: false },
+              apiKey,
+              text,
+              imageBase64,
+              mimeType,
+            });
+            const fallbackResp = await fetchText(fallbackReq);
+            const fallbackVerdict = classifyResponse({
+              providerId,
+              providerLabel,
+              openaiFormat: fallbackReq?.openaiFormat,
+              status: fallbackResp.status,
+              bodyText: fallbackResp.bodyText,
+              retryAfterMs: fallbackResp.retryAfterMs,
+            });
+            if (fallbackVerdict.kind === 'ok') {
+              verdict = fallbackVerdict;
+            }
+          }
+        }
+
         return { verdict };
       },
     });
