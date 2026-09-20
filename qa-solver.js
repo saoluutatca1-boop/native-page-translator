@@ -1148,6 +1148,50 @@
   }
 
   /* ------------------------------------------------------------------
+   * Helper: Trình diễn tiến trình suy luận động (Dynamic Loading States)
+   * Giúp người dùng nắm bắt từng pha xử lý của AI (Blind Solve -> Python -> Verifying)
+   * ------------------------------------------------------------------ */
+  function startLoadingTicker(card, isExtended, isVision) {
+    if (!card || typeof card.setStatus !== 'function') return () => {};
+
+    const extendedStages = [
+      isVision
+        ? '🧠 AI đang đọc ảnh, trích xuất công thức & thiết lập mô hình giải mù...'
+        : '🧠 AI đang phân tích đề bài, trích xuất công thức & thiết lập mô hình giải mù...',
+      '🐍 Đang lập trình mã Python (SymPy) để giải tích và kiểm chứng biểu tượng...',
+      '⚡ Đang chạy Google Cloud Sandbox & kiểm tra tính hội tụ của vi tích phân...',
+      '🎯 Đang tổng hợp lời giải chi tiết và đối chiếu thứ nguyên toán học...',
+      '✨ Sắp hoàn tất, đang hoàn thiện định dạng và đáp án chính xác...',
+    ];
+
+    const standardStages = [
+      isVision
+        ? '📷 Đang phân tích câu hỏi trong hình ảnh...'
+        : '📖 Đang đọc câu hỏi và phân tích ngữ cảnh đề bài...',
+      '🔍 Đang suy luận từng bước giải chi tiết...',
+      '⚡ Đang tính toán và xác minh đáp án...',
+      '✨ Sắp hoàn tất, đang định dạng lời giải...',
+    ];
+
+    const stages = isExtended ? extendedStages : standardStages;
+    card.setStatus(stages[0]);
+
+    let stageIdx = 0;
+    const intervalId = setInterval(() => {
+      stageIdx = (stageIdx + 1) % stages.length;
+      try {
+        card.setStatus(stages[stageIdx]);
+      } catch (_) {
+        clearInterval(intervalId);
+      }
+    }, isExtended ? 2800 : 2200);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }
+
+  /* ------------------------------------------------------------------
    * Giải câu hỏi dạng Text (bôi đen)
    * ------------------------------------------------------------------ */
   async function solveTextQuestion(questionText, opts = {}) {
@@ -1167,15 +1211,15 @@
 
     const card = opts.existingCard || showSolverCard({
       title: 'AI Quick Solver',
-      initialStatus: isExtended ? 'AI đang suy luận chuyên sâu (Gemini 3.8 Extended)...' : 'Đang giải câu hỏi...',
+      initialStatus: isExtended ? '🧠 AI đang phân tích đề bài & thiết lập mô hình giải mù...' : '📖 Đang đọc câu hỏi và phân tích ngữ cảnh đề bài...',
       extendedThinking: isExtended,
       onToggleExtendedThinking: (checked) => {
         persistentExtendedThinking = checked;
-        card.setStatus(checked ? 'AI đang suy luận chuyên sâu (Gemini 3.8 Extended)...' : 'Đang giải câu hỏi...');
         solveTextQuestion(text, { extendedThinking: checked, existingCard: card });
       },
     });
 
+    const stopTicker = startLoadingTicker(card, isExtended, false);
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'qaSolveQuestion',
@@ -1196,6 +1240,8 @@
       });
     } catch (err) {
       card.setError(friendlyError(err));
+    } finally {
+      stopTicker();
     }
   }
 
@@ -1327,12 +1373,12 @@
         const ext = persistentExtendedThinking;
         const card = showSolverCard({
           title: 'AI Quick Solver (Vision)',
-          initialStatus: ext ? 'AI đang suy luận chuyên sâu qua ảnh (Gemini 3.8 Extended)...' : 'AI đang phân tích câu hỏi trong hình ảnh...',
+          initialStatus: ext ? '🧠 AI đang đọc ảnh, trích xuất công thức & thiết lập mô hình giải mù...' : '📷 Đang phân tích câu hỏi trong hình ảnh...',
           extendedThinking: ext,
           onToggleExtendedThinking: async (checked) => {
+            const toggleTicker = startLoadingTicker(card, checked, true);
             try {
               persistentExtendedThinking = checked;
-              card.setStatus(checked ? 'AI đang suy luận chuyên sâu qua ảnh (Gemini 3.8 Extended)...' : 'AI đang phân tích câu hỏi trong hình ảnh...');
               const resp = await requestCrop(checked);
               card.setResult({
                 answer: resp.answer,
@@ -1340,15 +1386,24 @@
               });
             } catch (err) {
               card.setError(friendlyError(err));
+            } finally {
+              toggleTicker();
             }
           },
         });
 
-        const initialResp = await requestCrop(ext);
-        card.setResult({
-          answer: initialResp.answer,
-          providerLabel: initialResp.providerLabel,
-        });
+        const stopTicker = startLoadingTicker(card, ext, true);
+        try {
+          const initialResp = await requestCrop(ext);
+          card.setResult({
+            answer: initialResp.answer,
+            providerLabel: initialResp.providerLabel,
+          });
+        } catch (err) {
+          card.setError(friendlyError(err));
+        } finally {
+          stopTicker();
+        }
       } catch (err) {
         closeCropOverlay();
         showToast(friendlyError(err), 5000);
@@ -1521,6 +1576,7 @@
     compressAndResizeCanvas,
     friendlyError,
     showSolverCard,
+    startLoadingTicker,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

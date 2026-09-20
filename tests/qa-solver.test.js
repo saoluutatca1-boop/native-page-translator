@@ -141,6 +141,24 @@ async function run() {
     assert.match(instructions, /ANTI-RATIONALIZATION|ép số|ngụy biện/i, 'Instructions phải cấm ngụy biện ép số hậu nghiệm');
     assert.match(instructions, /CODE EXECUTION|Python/i, 'Instructions phải hướng dẫn dùng code execution tính toán tất định');
     assert.match(instructions, /CONSTRAINT & DIMENSION CHECK/i, 'Instructions phải yêu cầu kiểm tra thứ nguyên và giá trị biên');
+    assert.match(instructions, /MANDATORY TOOL TRIGGERING/i, 'Instructions phải có lệnh bắt buộc gọi tool code execution');
+    assert.match(instructions, /SANDBOX BEST PRACTICES|positive=True/i, 'Instructions phải có hướng dẫn tối ưu biến SymPy và tránh timeout');
+  }
+
+  // 4c. Kiểm tra startLoadingTicker quản lý trạng thái động mượt mà
+  {
+    const Q = require('../qa-solver.js');
+    assert.equal(typeof Q.startLoadingTicker, 'function', 'startLoadingTicker phải là function');
+
+    const statuses = [];
+    const mockCard = {
+      setStatus: (msg) => statuses.push(msg)
+    };
+
+    const stop = Q.startLoadingTicker(mockCard, true, false);
+    assert.ok(statuses.length >= 1, 'Phải cập nhật status ban đầu ngay lập tức');
+    assert.match(statuses[0], /AI đang phân tích đề bài/);
+    stop();
   }
 
   // 4b. Kiểm tra classifyResponse phân tích multi-part response (executableCode & codeExecutionResult)
