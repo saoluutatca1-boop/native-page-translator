@@ -51,6 +51,28 @@ async function run() {
     });
     const bodyNoSearch = JSON.parse(reqNoSearch.body);
     assert.equal(bodyNoSearch.tools, undefined, 'Khi googleSearch: false thì không được có tools');
+
+    // Test khi kích hoạt Extended Thinking: tự động kích hoạt code_execution
+    const reqExtended = P.buildQaRequest({
+      providerId: 'gemini',
+      providerConfig: { model: 'gemini-3.8-flash' },
+      apiKey: 'test-gemini-key',
+      text: 'Tính tích phân suy rộng Gaussian',
+      extendedThinking: true,
+      thinkingLevel: 'high',
+    });
+    const bodyExtended = JSON.parse(reqExtended.body);
+    assert.deepEqual(bodyExtended.tools, [{ code_execution: {} }], 'Khi extendedThinking: true thì phải kích hoạt tool code_execution');
+
+    // Test khi bật codeExecution trực tiếp qua providerConfig
+    const reqCodeExec = P.buildQaRequest({
+      providerId: 'gemini',
+      providerConfig: { model: 'gemini-2.5-flash', codeExecution: true },
+      apiKey: 'test-gemini-key',
+      text: 'Giải hệ phương trình vi phân',
+    });
+    const bodyCodeExec = JSON.parse(reqCodeExec.body);
+    assert.deepEqual(bodyCodeExec.tools, [{ code_execution: {} }], 'Khi providerConfig.codeExecution: true thì phải có tool code_execution');
   }
 
   // 2. Kiểm tra buildQaRequest cho Gemini với Image (Vision)
@@ -110,11 +132,55 @@ async function run() {
     assert.equal(result.provider, 'gemini');
   }
 
-  // 4. Kiểm tra buildQaInstructions có quy tắc định dạng toán học và ký hiệu khoa học
+  // 4. Kiểm tra buildQaInstructions có quy tắc định dạng toán học và ký hiệu khoa học & Blind Solving Protocol
   {
     const instructions = P.buildQaInstructions();
     assert.match(instructions, /Mathematical and scientific formatting/, 'Instructions phải có hướng dẫn định dạng toán học');
     assert.match(instructions, /Unicode/, 'Instructions phải khuyến khích dùng Unicode toán học');
+    assert.match(instructions, /BLIND SOLVING PROTOCOL|Giao thức Giải Mù/i, 'Instructions phải chứa Giao thức Giải Mù');
+    assert.match(instructions, /ANTI-RATIONALIZATION|ép số|ngụy biện/i, 'Instructions phải cấm ngụy biện ép số hậu nghiệm');
+    assert.match(instructions, /CODE EXECUTION|Python/i, 'Instructions phải hướng dẫn dùng code execution tính toán tất định');
+    assert.match(instructions, /CONSTRAINT & DIMENSION CHECK/i, 'Instructions phải yêu cầu kiểm tra thứ nguyên và giá trị biên');
+  }
+
+  // 4b. Kiểm tra classifyResponse phân tích multi-part response (executableCode & codeExecutionResult)
+  {
+    const geminiPayloadWithCode = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: 'Giải thích chi tiết:\nTa dùng Python tính tích phân Cov(R1, R2):\n' },
+              {
+                executableCode: {
+                  language: 'PYTHON',
+                  code: 'import sympy as sp\nr1, r2, lam = sp.symbols("r1 r2 lam", positive=True)\nres = (32 - 9*sp.pi) / (24*sp.pi*lam)\nprint(res)'
+                }
+              },
+              {
+                codeExecutionResult: {
+                  outcome: 'OUTCOME_OK',
+                  output: '(-9*pi + 32)/(24*pi*lam)\n'
+                }
+              },
+              { text: '\nTừ kết quả tính toán biểu tượng chính xác trên:\n**Đáp án: A - Cov = (32 - 9π) / (24πλ)**' }
+            ]
+          }
+        }
+      ]
+    };
+
+    const verdict = P.classifyResponse({
+      providerId: 'gemini',
+      status: 200,
+      bodyText: JSON.stringify(geminiPayloadWithCode)
+    });
+
+    assert.equal(verdict.kind, 'ok');
+    assert.match(verdict.text, /Giải thích chi tiết:/);
+    assert.match(verdict.text, /```python[\s\S]*import sympy as sp[\s\S]*```/);
+    assert.match(verdict.text, /Kết quả thực thi mã:[\s\S]*\(-9\*pi \+ 32\)\/\(24\*pi\*lam\)/);
+    assert.match(verdict.text, /\*\*Đáp án: A/);
   }
 
   // 5. Kiểm tra qa-solver.js math rendering và clean plain text
@@ -147,6 +213,15 @@ async function run() {
     assert.match(html, /npt-math-inline/);
     assert.match(html, /&lt; 1/); // HTML escape ký tự <
     assert.ok(!html.includes('$\\lambda$'), 'HTML không được chứa dấu $ thô');
+
+    // Test formatMarkdown với code block Python và kết quả tính toán
+    const codeMarkdown = 'Giải thích:\n```python\nimport math\nval = (32 - 9 * math.pi) / (24 * math.pi)\nprint(val)\n```\n*Kết quả thực thi mã:*\n```\n0.049405\n```';
+    const codeHtml = Q.formatMarkdown(codeMarkdown);
+    assert.match(codeHtml, /class="npt-code-block"/, 'Phải có container npt-code-block');
+    assert.match(codeHtml, /🐍 Python \(Kiểm chứng tất định\)/, 'Phải có nhãn Python đẹp mắt');
+    assert.match(codeHtml, /import math/, 'Code Python phải được giữ nguyên');
+    assert.match(codeHtml, /0\.049405/, 'Output thực thi phải được giữ nguyên');
+    assert.ok(!codeHtml.includes('<br>import math'), 'Trong pre/code block không được chèn thẻ <br>');
   }
 
   // 6. Kiểm tra compressAndResizeCanvas

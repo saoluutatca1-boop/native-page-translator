@@ -383,10 +383,29 @@
   function formatMarkdown(text) {
     if (!text) return '';
 
+    const codeTokens = [];
     const mathTokens = [];
     let processed = String(text);
 
-    // 0. Cases math environment (kể cả khi không nằm trong $)
+    // 0a. Code blocks (```lang ... ``` hoặc ``` ... ```)
+    processed = processed.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (_, rawLang, code) => {
+      const token = `@@NPTCODE${codeTokens.length}@@`;
+      const lang = (rawLang || '').trim().toLowerCase();
+      const safeCode = String(code || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+      const isPython = lang === 'python' || lang === 'py';
+      const langLabel = isPython ? '🐍 Python (Kiểm chứng tất định)' : (lang ? lang.toUpperCase() : 'Code / Kết quả');
+
+      const html = `<div class="npt-code-block" style="margin:10px 0; border-radius:8px; border:1px solid rgba(128,128,128,0.25); background:rgba(0,0,0,0.04); overflow:hidden; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; text-align:left;"><div style="background:rgba(128,128,128,0.12); padding:5px 10px; font-weight:600; font-size:11px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid rgba(128,128,128,0.15); color:inherit; user-select:none;"><span>${langLabel}</span></div><pre style="margin:0; padding:10px; overflow-x:auto; white-space:pre-wrap; word-break:break-all; line-height:1.45; font-size:12px; font-family:inherit;"><code>${safeCode.trim()}</code></pre></div>`;
+
+      codeTokens.push(html);
+      return token;
+    });
+
+    // 0b. Cases math environment (kể cả khi không nằm trong $)
     processed = processed.replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_, content) => {
       const rendered = renderCasesSnippet(content);
       const token = `@@NPTCASES${mathTokens.length}@@`;
@@ -459,11 +478,15 @@
     safe = safe.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>');
     safe = safe.replace(/\n/g, '<br>');
 
-    // 6. Khôi phục các math tokens
+    // 6. Khôi phục các math tokens & code tokens
     mathTokens.forEach((renderedHtml, idx) => {
       safe = safe.split(`@@NPTCASES${idx}@@`).join(renderedHtml);
       safe = safe.split(`@@NPTBLOCK${idx}@@`).join(renderedHtml);
       safe = safe.split(`@@NPTINLINE${idx}@@`).join(renderedHtml);
+    });
+
+    codeTokens.forEach((renderedHtml, idx) => {
+      safe = safe.split(`@@NPTCODE${idx}@@`).join(renderedHtml);
     });
 
     return safe;

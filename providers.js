@@ -798,7 +798,22 @@
       text = String(data?.translations?.[0]?.text || '').trim();
     } else if (kind === 'gemini') {
       const parts = data?.candidates?.[0]?.content?.parts || [];
-      text = parts.map(part => part?.text || '').join('').trim();
+      const textChunks = [];
+      for (const part of parts) {
+        if (part?.text) {
+          textChunks.push(part.text);
+        } else if (part?.executableCode) {
+          const lang = String(part.executableCode.language || 'python').toLowerCase();
+          const code = String(part.executableCode.code || '').trim();
+          textChunks.push(`\n\n\`\`\`${lang}\n${code}\n\`\`\`\n\n`);
+        } else if (part?.codeExecutionResult) {
+          const output = String(part.codeExecutionResult.output || '').trim();
+          const outcome = part.codeExecutionResult.outcome || '';
+          const resultText = output || (outcome === 'OUTCOME_OK' ? '(Thực thi thành công không có output)' : '(Thực thi thất bại)');
+          textChunks.push(`\n\n*Kết quả thực thi mã:*\n\`\`\`\n${resultText}\n\`\`\`\n\n`);
+        }
+      }
+      text = textChunks.join('').trim();
     } else {
       text = extractOpenAIText(data, openaiFormat || 'chat');
     }
@@ -1438,12 +1453,23 @@
       '',
       'CRITICAL REASONING & CHAIN-OF-THOUGHT INSTRUCTIONS:',
       '1. Mathematical and scientific formatting & Rigorous Reasoning:',
-      '   - ALWAYS think and solve the problem step-by-step FIRST. Never guess an option without full derivation.',
-      '   - Parse all definitions, dimensions, indices, and conditions (e.g. degrees, stable stems, spectral sequences, equations).',
-      '   - Carefully evaluate every single option (A, B, C, D) and check for common confusions before committing to the final answer.',
-      '   - Present formulas, variables, and equations cleanly and readably using standard Unicode symbols (e.g. ≅, ⌣, ⌢, λ, α, β, ≤, ≥, ≠, ±, ∈, ∉, ⊂, ∩, ∪, →, ∞, √, ², ³, ₁, ₂, ℝ, ℕ, ℤ, ℂ, ℓ², v.v.) or concise LaTeX enclosed in $...$ (e.g. $\\mathbb{Z}/240$, $\\pi_7^s$).',
-      '   - Never output raw unrendered LaTeX like \\cong, \\smile, \\deg, \\mathbb without $...$ delimiters.',
-      '   - Ensure all options and equations are written clearly without broken or raw code.',
+      '   - PROTOCOL PHASE 1: BLIND SOLVING PROTOCOL (Giao thức Giải Mù):',
+      '     * For multiple-choice questions, BLIND yourself to the options (A, B, C, D) initially.',
+      '     * Derive the solution from fundamental axioms, physical laws, and mathematical definitions independently without peeking at the choices.',
+      '     * STRICT ANTI-RATIONALIZATION: NEVER engage in post-hoc rationalization ("ép số" / ngụy biện gượng ép). Never invent justifications like "Theo tài liệu chuẩn..." or "Ta có thể ước lượng..." simply to force-match an available option. If your rigorous deduction yields a result, stand firmly by it.',
+      '   - PROTOCOL PHASE 2: DETERMINISTIC SYMBOLIC COMPUTATION & PYTHON CODE EXECUTION:',
+      '     * For complex calculus, multi-variable integrals, probability distributions (e.g. Poisson point process, joint density, covariance), linear algebra, or combinatorics, DO NOT rely on mental calculation.',
+      '     * Use the Python code execution tool to evaluate integrals, verify algebraic simplifications (via SymPy/NumPy/SciPy), and compute exact constants (e.g. tracking π and scale parameters precisely).',
+      '   - PROTOCOL PHASE 3: CONSTRAINT & DIMENSION CHECK:',
+      '     * Verify physical dimensions, units, scaling parameters (e.g. dependence on λ), and boundary/asymptotic conditions (e.g. limits as λ → 0 or λ → ∞).',
+      '   - PROTOCOL PHASE 4: OPTION MAPPING & CONCLUSION:',
+      '     * ONLY AFTER establishing your independently derived result, compare it against the options (A, B, C, D).',
+      '     * If it matches an option, select it and explain why other distractors are wrong.',
+      '     * If none match, identify the discrepancy or closest valid formulation without bending your math.',
+      '     * Parse all definitions, dimensions, indices, and conditions (e.g. degrees, stable stems, spectral sequences, equations).',
+      '     * Present formulas, variables, and equations cleanly and readably using standard Unicode symbols (e.g. ≅, ⌣, ⌢, λ, α, β, ≤, ≥, ≠, ±, ∈, ∉, ⊂, ∩, ∪, →, ∞, √, ², ³, ₁, ₂, ℝ, ℕ, ℤ, ℂ, ℓ², v.v.) or concise LaTeX enclosed in $...$ (e.g. $\\mathbb{Z}/240$, $\\pi_7^s$).',
+      '     * Never output raw unrendered LaTeX like \\cong, \\smile, \\deg, \\mathbb without $...$ delimiters.',
+      '     * Ensure all options and equations are written clearly without broken or raw code.',
       '',
       '2. Output Structure (strictly follow):',
       '   - Start with your thorough reasoning under: "Giải thích chi tiết:"',
@@ -1459,7 +1485,7 @@
     ].join('\n');
   }
 
-  function buildQaRequest({ providerId, providerConfig, apiKey, text, imageBase64, mimeType, extendedThinking, thinkingLevel }) {
+  function buildQaRequest({ providerId, providerConfig, apiKey, text, imageBase64, mimeType, extendedThinking, thinkingLevel, codeExecution }) {
     const kind = providerKind(providerId);
     if (kind === 'deepl') throw new Error('QA_REQUIRES_LLM');
     if (imageBase64 && kind !== 'gemini') {
@@ -1504,8 +1530,13 @@
         safetySettings: GEMINI_SAFETY_SETTINGS,
       };
 
-      // Tự động kích hoạt Google Search Grounding để tra cứu sự kiện, ngày tháng và kiểm tra câu khó
-      if (providerConfig?.googleSearch !== false) {
+      // Kích hoạt công cụ cho Gemini:
+      // 1. code_execution: Tự động chạy mã Python tính toán tất định khi giải sâu (extended thinking) hoặc khi cấu hình codeExecution
+      // 2. google_search: Tra cứu thông tin thời gian thực / ngày tháng khi không chạy code_execution
+      const useCodeExecution = (codeExecution === true || providerConfig?.codeExecution === true || isExtended) && providerConfig?.codeExecution !== false;
+      if (useCodeExecution) {
+        bodyPayload.tools = [{ code_execution: {} }];
+      } else if (providerConfig?.googleSearch !== false) {
         bodyPayload.tools = [{ google_search: {} }];
       }
 
@@ -1545,7 +1576,7 @@
     throw new Error(`Provider không hỗ trợ: ${providerId}`);
   }
 
-  async function solveQuestionWithRotation({ config, text, imageBase64, mimeType, extendedThinking, thinkingLevel, fetchText, keyState, now, sleep }) {
+  async function solveQuestionWithRotation({ config, text, imageBase64, mimeType, extendedThinking, thinkingLevel, codeExecution, fetchText, keyState, now, sleep }) {
     if (!text && !imageBase64) throw new Error('Không có nội dung câu hỏi');
 
     let eligibleProviders = {};
@@ -1604,6 +1635,7 @@
           mimeType,
           extendedThinking: allowExtended,
           thinkingLevel,
+          codeExecution,
         });
         const response = await fetchText(request);
         let verdict = classifyResponse({
@@ -1640,6 +1672,7 @@
               mimeType,
               extendedThinking: allowExtended,
               thinkingLevel,
+              codeExecution,
             });
             const fallbackResp = await fetchText(fallbackReq);
             const fallbackVerdict = classifyResponse({

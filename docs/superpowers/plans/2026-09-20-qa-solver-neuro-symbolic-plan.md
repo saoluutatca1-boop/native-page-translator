@@ -25,9 +25,9 @@
 - Consumes: `buildQaInstructions()`
 - Produces: Chuỗi prompt hướng dẫn giải toán 4 giai đoạn chuẩn mực, cấm ngụy biện hậu nghiệm.
 
-- [ ] **Step 1: Viết test kiểm tra các điều khoản của Blind Solving Protocol trong `tests/qa-solver.test.js`**
-- [ ] **Step 2: Cập nhật `buildQaInstructions()` trong `providers.js` theo 4 giai đoạn: Blind Solve ➔ Python Tool ➔ Constraint Check ➔ Option Mapping**
-- [ ] **Step 3: Chạy test và xác nhận PASS**
+- [x] **Step 1: Viết test kiểm tra các điều khoản của Blind Solving Protocol trong `tests/qa-solver.test.js`**
+- [x] **Step 2: Cập nhật `buildQaInstructions()` trong `providers.js` theo 4 giai đoạn: Blind Solve ➔ Python Tool ➔ Constraint Check ➔ Option Mapping**
+- [x] **Step 3: Chạy test và xác nhận PASS**
 
 ---
 
@@ -41,9 +41,9 @@
 - Consumes: `buildQaRequest({ providerId, providerConfig, apiKey, text, imageBase64, mimeType, extendedThinking, thinkingLevel })`
 - Produces: `tools: [{ code_execution: {} }]` được gắn vào payload gửi đến Gemini API.
 
-- [ ] **Step 1: Viết test kiểm tra `tools` chứa `code_execution` trong `tests/qa-solver.test.js`**
-- [ ] **Step 2: Cập nhật `buildQaRequest()` trong `providers.js` để gắn `code_execution: {}` khi provider là Gemini**
-- [ ] **Step 3: Chạy test và xác nhận PASS**
+- [x] **Step 1: Viết test kiểm tra `tools` chứa `code_execution` trong `tests/qa-solver.test.js`**
+- [x] **Step 2: Cập nhật `buildQaRequest()` trong `providers.js` để gắn `code_execution: {}` khi provider là Gemini**
+- [x] **Step 3: Chạy test và xác nhận PASS**
 
 ---
 
@@ -57,9 +57,9 @@
 - Consumes: `classifyResponse({ bodyText, ... })`
 - Produces: Trích xuất `text`, `executableCode` và `codeExecutionResult` và ghép thành văn bản Markdown hoàn chỉnh.
 
-- [ ] **Step 1: Viết test giả lập response chứa `executableCode` và `codeExecutionResult`**
-- [ ] **Step 2: Cập nhật `classifyResponse()` trong `providers.js` để nối các phần code và kết quả chạy thành Markdown có cấu trúc**
-- [ ] **Step 3: Chạy test và xác nhận PASS**
+- [x] **Step 1: Viết test giả lập response chứa `executableCode` và `codeExecutionResult`**
+- [x] **Step 2: Cập nhật `classifyResponse()` trong `providers.js` để nối các phần code và kết quả chạy thành Markdown có cấu trúc**
+- [x] **Step 3: Chạy test và xác nhận PASS**
 
 ---
 
@@ -73,9 +73,9 @@
 - Consumes: `formatMarkdown(text)`
 - Produces: Render các khối ```python ... ``` với giao diện code block đẹp mắt, có nút xem chi tiết tính toán.
 
-- [ ] **Step 1: Viết test render code block python trong `tests/qa-solver.test.js`**
-- [ ] **Step 2: Cập nhật hàm `formatMarkdown()` trong `qa-solver.js`**
-- [ ] **Step 3: Chạy test và xác nhận PASS**
+- [x] **Step 1: Viết test render code block python trong `tests/qa-solver.test.js`**
+- [x] **Step 2: Cập nhật hàm `formatMarkdown()` trong `qa-solver.js`**
+- [x] **Step 3: Chạy test và xác nhận PASS**
 
 ---
 
@@ -84,5 +84,5 @@
 **Files:**
 - Test: `tests/run-all.js`
 
-- [ ] **Step 1: Chạy toàn bộ test suites `npm test` (bao gồm smoke test và 21 suites)**
-- [ ] **Step 2: Commit và push mã nguồn lên nhánh chính**
+- [x] **Step 1: Chạy toàn bộ test suites `npm test` (bao gồm smoke test và 21 suites)**
+- [x] **Step 2: Commit và push mã nguồn lên nhánh chính**
