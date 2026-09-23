@@ -1,3 +1,5 @@
 .superpowers/
 .serena/
 *.png
+.env
+*.env

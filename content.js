@@ -359,9 +359,9 @@
     }
 
     function decodeEntities(value) {
-      const textarea = document.createElement('textarea');
-      textarea.innerHTML = String(value || '');
-      return textarea.value;
+      if (!value) return '';
+      const doc = new DOMParser().parseFromString(String(value), 'text/html');
+      return doc.body.textContent || '';
     }
 
     function request(options) {

@@ -29,9 +29,8 @@ const BUILTIN_ORIGINS = new Set([
   'https://api.deepl.com',
 ]);
 
-// Key DeepL Free được seed sẵn khi cài extension. Nằm trong chrome.storage.local
-// nên gỡ extension là mất hoàn toàn — xoá được trong trang Cài đặt.
-const DEFAULT_DEEPL_KEY = '16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx';
+// Không seed key cứng trong mã nguồn (chuẩn Chrome Web Store).
+const DEFAULT_DEEPL_KEY = '';
 
 // Trạng thái cooldown/con trỏ xoay vòng key, sống trong bộ nhớ service worker.
 const keyState = createKeyState();
@@ -99,7 +98,7 @@ async function ensureConfig() {
     providers: {
       deepl: {
         enabled: true,
-        keys: [{ key: DEFAULT_DEEPL_KEY, label: 'DeepL Free (mặc định)' }],
+        keys: DEFAULT_DEEPL_KEY ? [{ key: DEFAULT_DEEPL_KEY, label: 'DeepL Free (mặc định)' }] : [],
       },
     },
   });

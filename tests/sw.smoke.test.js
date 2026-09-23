@@ -35,10 +35,24 @@ const chromeStub = {
         return out;
       },
       async set(values) {
-        for (const [key, value] of Object.entries(values)) storageData.set(key, value);
+        const changes = {};
+        for (const [key, value] of Object.entries(values)) {
+          storageData.set(key, value);
+          changes[key] = { newValue: value };
+        }
+        for (const listener of storageChangeListeners) {
+          listener(changes, 'local');
+        }
       },
       async remove(keys) {
-        for (const key of Array.isArray(keys) ? keys : [keys]) storageData.delete(key);
+        const changes = {};
+        for (const key of Array.isArray(keys) ? keys : [keys]) {
+          storageData.delete(key);
+          changes[key] = { newValue: undefined };
+        }
+        for (const listener of storageChangeListeners) {
+          listener(changes, 'local');
+        }
       },
     },
     onChanged: { addListener(fn) { storageChangeListeners.push(fn); } },
@@ -177,14 +191,20 @@ async function main() {
   assert.ok(messageListeners.length > 0, 'onMessage listener chưa được đăng ký');
   assert.ok(installedListeners.length > 0, 'onInstalled listener chưa được đăng ký');
 
-  // 2. onInstalled: seed config + key DeepL mặc định
+  // 2. onInstalled: seed config (không seed key cứng)
   await installedListeners[0]({ reason: 'install' });
   // onInstalled listener không await, chờ 1 tick
   await new Promise(resolve => setTimeout(resolve, 50));
   const cfg = storageData.get('tm-multi-provider-config');
   assert.ok(cfg, 'config chưa được seed vào storage');
-  assert.equal(cfg.providers.deepl.keys[0].key, '16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx');
+  assert.equal(cfg.providers.deepl.keys.length, 0);
   assert.equal(cfg.tone, 'natural');
+
+  // Nạp dummy key test để kiểm thử các luồng dịch DeepL mà không cần key cứng trong background.js
+  cfg.providers.deepl.keys = [{ key: 'test-deepl-key-0000:fx', label: 'Test Key' }];
+  await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+  configCacheReset();
+  await new Promise(resolve => setTimeout(resolve, 20));
 
   // Helper bắn message như content/popup — sender mặc định kiểu content script.
   // ensureConfig memo hoá config trong bộ nhớ SW; test migrate cần bỏ memo đó.
@@ -290,6 +310,7 @@ async function main() {
       url: 'https://openrouter.ai/api/v1/chat/completions', format: 'auto', model: 'llama',
     };
     await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+    configCacheReset();
     await new Promise(resolve => setTimeout(resolve, 20)); // đợi onChanged xoá cache config
 
     for (const url of ['https://api.groq.com/openai/v1/chat/completions', 'https://openrouter.ai/api/v1/chat/completions']) {
@@ -311,6 +332,7 @@ async function main() {
     delete cfg.providers['openai-2'];
     delete cfg.providers['openai-3'];
     await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+    configCacheReset();
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 
@@ -326,6 +348,8 @@ async function main() {
     cfg.providers.gemini.enabled = true;
     cfg.providers.gemini.keys = [{ key: 'gemini-key-1', label: 'gm' }];
     await chromeStub.storage.local.set({ 'tm-multi-provider-config': cfg });
+    configCacheReset();
+    await new Promise(resolve => setTimeout(resolve, 20));
 
     contextMenuListeners[0](
       { menuItemId: 'npt-translate-image', srcUrl: 'https://example.com/meme.png' },
@@ -359,8 +383,16 @@ async function main() {
     assert.match(visionBody.systemInstruction.parts[0].text, /Vietnamese/);
   }
 
-  // 9. deeplUsage -> quota của key DeepL seed sẵn (chỉ extension page mới gọi được, NPT-017)
+  // 9. deeplUsage -> quota của key DeepL test (chỉ extension page mới gọi được, NPT-017)
   {
+    // Nạp dummy key test để kiểm thử luồng gọi API DeepL mà không cần key cứng.
+    {
+      const c9 = storageData.get('tm-multi-provider-config');
+      c9.providers.deepl.keys = [{ key: 'test-deepl-key-0000:fx', label: 'Test' }];
+      await chromeStub.storage.local.set({ 'tm-multi-provider-config': c9 });
+      configCacheReset();
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     // Negative: sender kiểu content script (không có url extension page) phải bị chặn.
     const rejected = await sendMessage({ type: 'deeplUsage' });
     assert.equal(rejected.ok, false);
@@ -370,14 +402,14 @@ async function main() {
     assert.equal(usage.usages.length, 1);
     assert.equal(usage.usages[0].count, 12345);
     assert.equal(usage.usages[0].limit, 500000);
-    assert.equal(usage.usages[0].free, true); // key seed đuôi :fx
+    assert.equal(usage.usages[0].free, true); // key test đuôi :fx
     assert.match(usage.usages[0].keyMasked, /^.{3}….{4}$/); // dạng mask, không lộ key
 
     // Request phải đi host free, GET kèm auth header của key đó
     const usageCall = fetchCalls.filter(c => c.url.includes('/v2/usage')).pop();
     assert.ok(usageCall.url.startsWith('https://api-free.deepl.com/'));
     assert.equal(usageCall.options.method, 'GET');
-    assert.equal(usageCall.options.headers.Authorization, 'DeepL-Auth-Key 16986bbc-76d3-4d7a-b1f6-58512e011ffc:fx');
+    assert.equal(usageCall.options.headers.Authorization, 'DeepL-Auth-Key test-deepl-key-0000:fx');
   }
 
   // 10. cancelProviderTranslate (NPT-007): content gửi requestId → background abort, trả ok
@@ -591,6 +623,10 @@ async function main() {
 
     const dump = JSON.stringify([...storageData.entries()].filter(([k]) => k !== 'tm-multi-provider-config'));
     assert.equal(dump.includes('sk-legacy-SECRET'), false, 'key thô không được nằm ngoài config');
+
+    // Khôi phục key test cho DeepL để các mục sau (17c) tiếp tục test
+    migrated.providers.deepl.keys = [{ key: 'test-deepl-key-0000:fx', label: 'Test' }];
+    await chromeStub.storage.local.set({ 'tm-multi-provider-config': migrated });
   }
 
   // 17c. Tab ẩn danh KHÔNG được ghi bản dịch xuống cache trên đĩa

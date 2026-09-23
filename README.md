@@ -96,8 +96,7 @@ Kèm theo là một lượt chỉnh giao diện: tab có icon + nền gradient k
 
 Mở popup → **Quản lý key** (hoặc menu chuột phải icon → **Options**):
 
-- **DeepL** — hỗ trợ tiếng Việt. Key free kết thúc bằng `:fx` (endpoint `api-free.deepl.com`), key Pro tự nhận diện.
-  Extension **seed sẵn 1 key DeepL Free mặc định** để dùng ngay — xoá được trong Cài đặt.
+- **DeepL** — hỗ trợ tiếng Việt. Key free kết thúc bằng `:fx` (endpoint `api-free.deepl.com`), key Pro tự nhận diện. Người dùng có thể đăng ký tài khoản và nhận key miễn phí tại [deepl.com](https://www.deepl.com/pro-api) (500.000 ký tự/tháng) rồi dán vào Cài đặt để sử dụng.
 - **Google AI Studio (Gemini)** — lấy key tại <https://aistudio.google.com/apikey>, model mặc định `gemini-3.5-flash-lite` (siêu tốc ~350 tok/s, tiết kiệm token). Có thể dùng `gemini-3.8-flash` cho suy luận sâu và các câu hỏi phức tạp.
   - **Key chuẩn phải bắt đầu bằng `AIza`.** Nếu AI Studio trả về key dạng `AQ.`, tài khoản Google của bạn đang bị giới hạn — Gemini API sẽ từ chối key đó. Cách xử lý: tạo key trong project mới, dùng tài khoản Google khác, hoặc tạo API key tại [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (bật Generative Language API).
   - Tích hợp tuỳ chọn Google Search Grounding và Extended Thinking (`thinkingLevel: "high"`) khi giải câu hỏi khó.
@@ -161,7 +160,7 @@ Mỗi provider thêm được **nhiều key**. Khi dịch:
 - **Custom endpoint chỉ chấp nhận HTTPS** (trừ localhost) — không gửi Bearer key/nội dung qua HTTP plaintext.
 - **Khi dùng fallback miễn phí** (không có API key riêng): nội dung trang được gửi tới endpoint không chính thức của Google (`translate.googleapis.com` / `translate.google.com`) và MyMemory — đây là bản chất của mọi dịch vụ dịch miễn phí. Muốn kiểm soát dữ liệu hoàn toàn, hãy thêm API key riêng (DeepL/Gemini/OpenAI) trong Cài đặt.
 - **Dịch ảnh**: ảnh được tải về background và gửi tới Gemini API (kèm base64) để OCR — không qua bên thứ tư nào khác.
-- **Key DeepL Free seed sẵn là key DÙNG CHUNG** cho mọi ngưởi cài extension (nằm trong mã nguồn public): đủ để dùng thử, nhưng quota chia sẻ và ai cũng lấy được — khuyến nghị thêm key riêng trong Cài đặt cho ổn định và riêng tư.
+- **Không nhúng API key trong mã nguồn (Chuẩn Chrome Web Store)**: Tiện ích không chứa bất kỳ API key nào dựng sẵn để đảm bảo an toàn tuyệt đối và tuân thủ chính sách Developer Program Policies của Google. Người dùng hoàn toàn làm chủ hạn ngạch và tính riêng tư bằng cách sử dụng key cá nhân của mình hoặc sử dụng các bộ dịch tự động miễn phí có sẵn.
 
 ## Quota DeepL
 

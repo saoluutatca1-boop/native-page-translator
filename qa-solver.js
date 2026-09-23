@@ -863,7 +863,10 @@
     });
 
     const statusEl = document.createElement('div');
-    statusEl.innerHTML = `<span style="display:inline-block; animation:nptPulse 1.2s infinite">⏳</span> ${initialStatus}`;
+    const spin = document.createElement('span');
+    spin.style.cssText = 'display:inline-block; animation:nptPulse 1.2s infinite';
+    spin.textContent = '⏳';
+    statusEl.replaceChildren(spin, document.createTextNode(' ' + initialStatus));
     statusEl.style.color = isDark ? '#94a3b8' : '#64748b';
     statusEl.style.fontSize = '13px';
     body.appendChild(statusEl);
@@ -950,7 +953,10 @@
       setStatus: (msg) => {
         body.innerHTML = '';
         const sEl = document.createElement('div');
-        sEl.innerHTML = `<span style="display:inline-block; animation:nptPulse 1.2s infinite">⏳</span> ${msg}`;
+        const spin = document.createElement('span');
+        spin.style.cssText = 'display:inline-block; animation:nptPulse 1.2s infinite';
+        spin.textContent = '⏳';
+        sEl.replaceChildren(spin, document.createTextNode(' ' + msg));
         sEl.style.color = isDark ? '#94a3b8' : '#64748b';
         sEl.style.fontSize = '13px';
         body.appendChild(sEl);
